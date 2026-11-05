@@ -1,0 +1,110 @@
+/* ============ 设置 → 模型 → 模型服务（2026-10-29 重排） ============ */
+.cx { display: flex; flex-direction: column; gap: 10px; }
+
+/* 头像：服务名第一个字，圆角方块 */
+.cx-ava {
+  flex: none; width: 34px; height: 34px; border-radius: 9px;
+  display: grid; place-items: center;
+  font-size: 14px; font-weight: 640; color: var(--fg);
+  background: var(--soft); box-shadow: inset 0 0 0 1px var(--edge);
+}
+.cx-ava.sm { width: 28px; height: 28px; border-radius: 8px; font-size: 12.5px; }
+
+/* ---- 服务卡片 ---- */
+.cx-card { padding: 12px 14px; border-radius: 12px; border: 1px solid var(--edge); background: var(--surface); }
+.cx-card.in-use { border-color: color-mix(in srgb, var(--fg) 22%, transparent); }
+.cx-head { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.cx-title { flex: 1; min-width: 0; }
+.cx-name { display: flex; align-items: center; gap: 8px; font-size: 13.5px; font-weight: 580; }
+.cx-use { font-size: 11px; font-weight: 500; padding: 1px 7px; border-radius: 999px; color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, transparent); }
+.cx-meta { display: flex; align-items: center; gap: 8px; margin-top: 3px; font-size: 11.5px; color: var(--fg-3); min-width: 0; }
+.cx-meta .mono { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; }
+.cx-dot { flex: none; width: 3px; height: 3px; border-radius: 50%; background: var(--fg-3); }
+.cx-acts { display: flex; gap: 2px; flex: none; }
+.cx-confirm { display: flex; align-items: center; gap: 6px; flex: none; font-size: 12px; color: var(--fg-2); }
+.btn.danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 35%, transparent); }
+.btn.danger:hover:not(:disabled) { color: #fff; background: var(--danger); border-color: var(--danger); }
+
+/* 模型小块：点一下设为当前模型；当前的那个实心 */
+.cx-models { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.cx-card .cx-models { padding-left: 46px; }
+.cx-model {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 26px; padding: 0 10px; border-radius: 7px;
+  font-size: 12px; color: var(--fg-2);
+  background: var(--soft); border: 1px solid transparent;
+  transition: border-color 0.12s, color 0.12s, background 0.12s;
+}
+.cx-model .mono { font-size: 11.5px; }
+.cx-model:hover { border-color: var(--edge); color: var(--fg); }
+.cx-model.on { background: var(--accent); color: var(--accent-fg); }
+.cx-ctx { font-size: 11px; opacity: 0.6; }
+
+/* ---- 添加：虚线按钮 → 服务商网格 ---- */
+.cx-add {
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  height: 44px; border-radius: 12px; border: 1px dashed color-mix(in srgb, var(--fg) 18%, transparent);
+  font-size: 13px; color: var(--fg-2); transition: border-color 0.12s, color 0.12s, background 0.12s;
+}
+.cx-add:hover { color: var(--fg); border-color: var(--fg-3); background: var(--hover); }
+.cx-pick { padding: 12px 14px 14px; border-radius: 12px; border: 1px solid var(--edge); background: var(--surface); }
+.cx-pick-head { display: flex; align-items: center; justify-content: space-between; font-size: 13px; font-weight: 560; margin-bottom: 10px; }
+.cx-pick-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+.cx-prov {
+  display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-radius: 10px; text-align: left;
+  border: 1px solid var(--edge); transition: border-color 0.12s, background 0.12s;
+}
+.cx-prov:hover { border-color: var(--fg-3); background: var(--hover); }
+.cx-prov-txt { display: flex; flex-direction: column; min-width: 0; }
+.cx-prov-txt b { font-size: 12.5px; font-weight: 580; color: var(--fg); }
+.cx-prov-txt span { font-size: 11px; color: var(--fg-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ---- 表单：标题 + 三步 + 底栏 ---- */
+.cx-form { border-radius: 12px; border: 1px solid color-mix(in srgb, var(--fg) 22%, transparent); background: var(--surface); }
+.cx-form-title { display: flex; align-items: center; gap: 10px; padding: 12px 14px; font-size: 13.5px; font-weight: 580; }
+.cx-step { padding: 12px 14px 14px; border-top: 1px solid var(--edge); }
+.cx-step-head { display: flex; align-items: center; gap: 8px; width: 100%; font-size: 12.5px; font-weight: 580; color: var(--fg); text-align: left; }
+.cx-step-head i {
+  font-style: normal; width: 18px; height: 18px; border-radius: 50%; display: grid; place-items: center;
+  font-size: 11px; font-weight: 600; color: var(--fg-2); background: var(--soft); box-shadow: inset 0 0 0 1px var(--edge);
+}
+.cx-step-hint { font-size: 11.5px; font-weight: 400; color: var(--fg-3); }
+.cx-adv { cursor: pointer; }
+.cx-adv svg { margin-left: auto; color: var(--fg-3); transition: transform 0.15s; }
+.cx-adv.open svg { transform: rotate(90deg); }
+
+.cx-fields { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
+.cx-field { display: grid; grid-template-columns: 72px 1fr; align-items: center; gap: 12px; }
+.cx-field > span { font-size: 12.5px; color: var(--fg-2); }
+.cx-field .set-input { width: 100%; min-width: 0; }
+.cx-fields > .form-note { margin: -4px 0 0 84px; }
+.cx-key { display: flex; gap: 8px; min-width: 0; }
+.cx-key .btn { flex: none; height: auto; }
+.cx-test { margin-left: 84px; padding: 7px 10px; border-radius: 8px; font-size: 12px; line-height: 1.5; background: var(--soft); }
+.cx-test.ok { color: var(--ok); }
+.cx-test.err { color: var(--danger); }
+
+.cx-fetched { margin-top: 10px; padding: 10px 12px; border-radius: 10px; background: var(--soft); }
+.cx-fetched .form-note { margin: 0; }
+.cx-fetched .cx-models { margin-top: 8px; max-height: 140px; overflow: auto; }
+.cx-fetched .cx-model { background: var(--surface); border-color: var(--edge); }
+.cx-fetched .cx-model.on { background: var(--accent); border-color: var(--accent); }
+
+.cx-mtable { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.cx-mrow { display: grid; grid-template-columns: 1fr 130px 28px; gap: 6px; align-items: center; }
+.cx-mrow .set-input { width: 100%; min-width: 0; }
+.cx-mhead { font-size: 11px; color: var(--fg-3); padding: 0 2px; }
+.cx-addm { display: inline-flex; align-items: center; gap: 4px; align-self: flex-start; margin-top: 2px; }
+
+.cx-opt { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.cx-opt-label { font-size: 12.5px; color: var(--fg); }
+.cx-opt .form-note { margin-top: 2px; }
+
+.cx-foot { display: flex; align-items: center; gap: 8px; padding: 12px 14px; border-top: 1px solid var(--edge); }
+.cx-need { font-size: 11.5px; color: var(--fg-3); }
+
+@media (max-width: 560px) {
+  .cx-field { grid-template-columns: 1fr; gap: 4px; }
+  .cx-fields > .form-note, .cx-test { margin-left: 0; }
+  .cx-card .cx-models { padding-left: 0; }
+}

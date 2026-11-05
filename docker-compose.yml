@@ -1,0 +1,74 @@
+# 启动：docker compose up -d --build
+# 日志：docker compose logs -f
+# 停止：docker compose down        （数据卷不会删；加 -v 才会删数据，别乱加）
+# 固定项目名，这样数据卷名永远是 a-ai-data，不随文件夹名变化
+name: a-ai
+
+services:
+  a-ai:
+    build:
+      context: .
+      args:
+        # run_python 可用的第三方库，空格分隔，例如 "pandas openpyxl matplotlib"。改了要重新 build
+        PY_PACKAGES: ""
+        # 装 npm 依赖和 Python 库用的镜像站，默认国内源（官方源在国内很慢，npm ci 会卡住）。
+        # 想换就在同目录 .env 里写 NPM_REGISTRY=… / PIP_INDEX_URL=…；写成空值（NPM_REGISTRY=）就用官方源
+        NPM_REGISTRY: ${NPM_REGISTRY-https://registry.npmmirror.com}
+        PIP_INDEX_URL: ${PIP_INDEX_URL-https://pypi.tuna.tsinghua.edu.cn/simple}
+    image: a-ai:latest
+    container_name: a-ai
+    restart: always
+    ports:
+      # 左边是服务器端口，右边是容器端口。只想本机反向代理访问，改成 "127.0.0.1:3000:3000"
+      - "3000:3000"
+    environment:
+      # 第一个用户注册完以后改成 "0" 关闭注册，然后 docker compose up -d 生效
+      A_ALLOW_SIGNUP: "1"
+      TZ: Asia/Tokyo
+      # web_search 的搜索 API Key（可选）：写在同目录的 .env 文件里，例如 TAVILY_API_KEY=tvly-xxx
+      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+      BRAVE_SEARCH_API_KEY: ${BRAVE_SEARCH_API_KEY:-}
+      # ---- 终端沙箱（学习笔记 §7.25）----
+      # docker = run_command / run_python 每个会话开一个隔离容器（断网、限内存、只挂工作区和授权目录）
+      A_SANDBOX: docker
+      A_SANDBOX_IMAGE: a-ai-sandbox:latest
+      # 沙箱容器从这个数据卷里挂载用户的工作区（要和下面 volumes 的名字一致）
+      A_SANDBOX_DATA_VOLUME: a-ai-data
+      # 允许 agent 查的宿主机目录，分号分隔，:ro 只读（默认）/ :rw 读写。写宿主机上的真实路径，例：/Users/me/Documents:ro
+      A_SANDBOX_DIRS: ${A_SANDBOX_DIRS:-}
+      # 1 = 沙箱容器可以联网（pip install 要用），默认断网
+      A_SANDBOX_NETWORK: ${A_SANDBOX_NETWORK:-0}
+    # 访问 docker.sock 需要宿主机 docker 组的 GID：Linux 上用 `getent group docker | cut -d: -f3` 查，写进 .env 的 DOCKER_GID；
+    # Docker Desktop（Mac）用默认的 0 就行
+    group_add:
+      - "${DOCKER_GID:-0}"
+    volumes:
+      # 数据库 a.db、每个用户的工作区都在这里，删容器、重建镜像都不会丢
+      - a-ai-data:/app/.data
+      # 让 A.ai 能开沙箱容器。注意：能访问 docker.sock 约等于宿主机 root，所以 A.ai 本身别暴露在公网上不加防护
+      - /var/run/docker.sock:/var/run/docker.sock
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # 只负责构建沙箱镜像（Dockerfile.sandbox：Python + ripgrep/fd/jq/pdftotext 等），构建完立刻退出
+  sandbox-image:
+    build:
+      context: .
+      dockerfile: Dockerfile.sandbox
+      args:
+        PY_PACKAGES: ""
+        # 装系统工具（apt）和 Python 库（pip）用的镜像站，默认清华源（服务器在国内，官方源慢、阿里云 debian 源返回 403）。
+        # 想换别的站，在同目录 .env 里写 APT_MIRROR=… / PIP_INDEX_URL=…，不用改这个文件；
+        # 写成空值（APT_MIRROR=）就用官方源。注意这里是 ${X-默认}（没有冒号）：只有完全没写才用默认值
+        APT_MIRROR: ${APT_MIRROR-https://mirrors.tuna.tsinghua.edu.cn/debian}
+        PIP_INDEX_URL: ${PIP_INDEX_URL-https://pypi.tuna.tsinghua.edu.cn/simple}
+    image: a-ai-sandbox:latest
+    entrypoint: ["true"]
+    restart: "no"
+
+volumes:
+  a-ai-data:
+    name: a-ai-data

@@ -1,0 +1,83 @@
+/* 登录 / 注册页（LoginForm.tsx）。
+   居中一张简洁的卡片，上方是粒子球；背景只有很轻的动效。黑白灰，圆角 10–12px。 */
+.auth {
+  position: relative; height: 100dvh; overflow-y: auto; overflow-x: hidden;
+  display: grid; place-items: center; padding: 32px 16px; background: var(--base);
+}
+
+/* 背景：点阵（中间清楚、四周渐隐，缓慢漂移）+ 两团缓慢移动的淡光 + 颗粒噪点 */
+.auth-bg { position: fixed; inset: 0; pointer-events: none; overflow: hidden; }
+.auth-bg::before {
+  content: ""; position: absolute; inset: 0;
+  background-image: radial-gradient(circle, color-mix(in srgb, var(--fg) 14%, transparent) 1px, transparent 1.3px);
+  background-size: 22px 22px;
+  -webkit-mask-image: radial-gradient(ellipse 50% 55% at 50% 45%, #000 10%, transparent 75%);
+  mask-image: radial-gradient(ellipse 50% 55% at 50% 45%, #000 10%, transparent 75%);
+  animation: auth-drift 26s linear infinite;
+}
+.auth-bg::after {
+  content: ""; position: absolute; inset: 0; opacity: 0.05;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 1 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-size: 160px;
+}
+@keyframes auth-drift { to { background-position: 22px 44px; } }
+.auth-glow {
+  position: absolute; width: 520px; height: 520px; border-radius: 50%; filter: blur(80px);
+  background: color-mix(in srgb, var(--fg) 4%, transparent);
+}
+.auth-glow.a { left: 50%; top: 18%; margin-left: -520px; animation: auth-float-a 18s ease-in-out infinite alternate; }
+.auth-glow.b { left: 50%; top: 40%; background: color-mix(in srgb, var(--surface) 90%, transparent); animation: auth-float-b 22s ease-in-out infinite alternate; }
+@keyframes auth-float-a { to { transform: translate(180px, 80px) scale(1.15); } }
+@keyframes auth-float-b { to { transform: translate(-200px, -60px) scale(0.9); } }
+
+.auth-col { position: relative; width: 100%; max-width: 340px; display: flex; flex-direction: column; align-items: center; }
+
+/* 粒子球：点它回介绍页 */
+.auth-orb { display: grid; place-items: center; color: var(--fg); margin-bottom: 36px; border-radius: 50%; animation: auth-in 1.4s cubic-bezier(0.2, 0.7, 0.2, 1) both; }
+
+/* 卡片：和原来的登录卡片同一个样子，只是更精细一点 */
+.auth-card {
+  width: 100%; display: flex; flex-direction: column; gap: 14px; padding: 26px 24px 18px;
+  background: var(--surface); border: 1px solid var(--edge); border-radius: 12px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 18px 40px -24px rgba(0, 0, 0, 0.25);
+  animation: auth-in 0.9s cubic-bezier(0.2, 0.7, 0.2, 1) 0.15s both;
+}
+.auth-head { margin-bottom: 2px; animation: auth-in 0.4s ease both; }
+.auth-head h1 { margin: 0; font-size: 18px; font-weight: 560; letter-spacing: -0.01em; }
+.auth-head p { margin: 4px 0 0; font-size: 12.5px; color: var(--fg-3); }
+
+.auth-field { display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; color: var(--fg-2); }
+.auth-field > span { display: flex; justify-content: space-between; align-items: baseline; }
+.auth-field em { font-style: normal; font-size: 11px; color: var(--fg-3); }
+.auth-field input {
+  width: 100%; height: 38px; padding: 0 11px; font: inherit; font-size: 14px; color: var(--fg);
+  background: var(--surface); border: 1px solid var(--edge); border-radius: 8px; outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.auth-field input:focus { border-color: color-mix(in srgb, var(--fg) 35%, transparent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--fg) 6%, transparent); }
+.auth-pw { position: relative; }
+.auth-pw input { padding-right: 38px; }
+.auth-eye { position: absolute; right: 4px; top: 4px; width: 30px; height: 30px; display: grid; place-items: center; border: 0; border-radius: 6px; background: none; color: var(--fg-3); cursor: pointer; }
+.auth-eye:hover { color: var(--fg); background: var(--hover); }
+
+.auth-error { font-size: 12.5px; color: var(--danger); animation: auth-shake 0.4s; }
+@keyframes auth-shake { 20%, 60% { transform: translateX(-4px); } 40%, 80% { transform: translateX(4px); } }
+
+/* 提交按钮（类名 login-submit 不改：自动化测试靠它找按钮） */
+.auth .login-submit {
+  display: grid; place-items: center; height: 38px; margin-top: 4px; padding: 0; border: 0; border-radius: 8px;
+  font: inherit; font-size: 14px; background: var(--accent); color: var(--accent-fg); cursor: pointer;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14), 0 1px 2px rgba(0, 0, 0, 0.18);
+  transition: opacity 0.15s, transform 0.15s;
+}
+.auth .login-submit:active:not(:disabled) { transform: scale(0.99); }
+.auth .login-submit:disabled { opacity: 0.4; cursor: default; }
+.auth-spin { width: 14px; height: 14px; border-radius: 50%; border: 1.5px solid currentColor; border-right-color: transparent; animation: auth-spin 0.7s linear infinite; }
+@keyframes auth-spin { to { transform: rotate(360deg); } }
+.auth-switch { align-self: center; border: 0; background: none; font: inherit; font-size: 12.5px; color: var(--fg-3); cursor: pointer; padding: 2px; }
+.auth-switch:hover { color: var(--fg); }
+
+@keyframes auth-in { from { opacity: 0; transform: translateY(10px); filter: blur(6px); } }
+@media (prefers-reduced-motion: reduce) {
+  .auth-bg::before, .auth-glow, .auth-orb, .auth-card { animation: none; }
+}

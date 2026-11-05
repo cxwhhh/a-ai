@@ -1,0 +1,22 @@
+node_modules
+.next
+out
+.data
+.env*
+!.env.example
+*.tsbuildinfo
+next-env.d.ts
+.DS_Store
+
+# 本机缓存、编辑器状态和生成结果；build/ 内是打包图标，需要保留。
+.npm-cache/
+.idea/
+.vscode/
+__pycache__/
+*.pyc
+.venv/
+/release/
+/dist-electron/
+/evals/results/
+*.log
+.dsh-selftest.txt

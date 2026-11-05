@@ -1,0 +1,13 @@
+.message-queue { border: 1px solid var(--line, #8884); border-radius: 12px; padding: 10px 12px; margin-bottom: 10px; max-height: 280px; overflow-y: auto; font-size: 13px; }
+.queue-heading { font-weight: 600; margin-bottom: 6px; }
+.queue-heading span, .queue-hint, .queue-body small { opacity: .65; font-size: 11px; font-weight: 400; }
+.message-queue ol { list-style: none; padding: 0; margin: 0; }
+.message-queue li { display: flex; gap: 8px; padding: 7px 0; border-top: 1px solid var(--line, #8883); }
+.queue-body { flex: 1; min-width: 0; }
+.queue-body p { margin: 3px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 90px; overflow-y: auto; }
+.queue-actions { display: flex; align-items: flex-start; }
+.message-queue .sent { opacity: .65; }
+.queue-editor textarea { display: block; width: 100%; box-sizing: border-box; resize: vertical; min-height: 60px; background: transparent; color: inherit; font: inherit; border: 1px solid var(--line, #8885); border-radius: 6px; padding: 6px; }
+.queue-editor button { margin: 4px 8px 0 0; }
+.queue-error { color: var(--danger, #c33); padding: 4px 0; }
+.queue-hint { margin-top: 6px; }

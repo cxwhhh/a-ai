@@ -1,0 +1,183 @@
+{
+  "about": "执行层（harness）测试：用 Mock 的剧本模式发出固定的工具调用，检查参数校验、结果状态、跳过和取消。用法：node evals/run.mjs --cases evals/harness.json（需要当前模型是 Mock）",
+  "cases": [
+    {
+      "id": "H01",
+      "category": "参数校验",
+      "title": "edit_file 缺 new_string 不改文件",
+      "files": {
+        "a.txt": "keep me\n"
+      },
+      "prompt": "[A.ai:script]{\"steps\": [[{\"name\": \"edit_file\", \"args\": {\"purpose\": \"测试\", \"path\": \"{file:a.txt}\", \"old_string\": \"keep me\"}}]], \"final\": \"完成\"}",
+      "checks": {
+        "statuses": [
+          {
+            "tool": "edit_file",
+            "status": "error"
+          }
+        ],
+        "files": [
+          {
+            "path": "{file:a.txt}",
+            "unchanged": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "H02",
+      "category": "参数校验",
+      "title": "new_string 为空字符串可以删除",
+      "files": {
+        "b.txt": "delete me\nstay\n"
+      },
+      "prompt": "[A.ai:script]{\"steps\": [[{\"name\": \"edit_file\", \"args\": {\"purpose\": \"测试\", \"path\": \"{file:b.txt}\", \"old_string\": \"delete me\\n\", \"new_string\": \"\"}}]], \"final\": \"完成\"}",
+      "checks": {
+        "statuses": [
+          {
+            "tool": "edit_file",
+            "status": "ok"
+          }
+        ],
+        "files": [
+          {
+            "path": "{file:b.txt}",
+            "excludes": [
+              "delete me"
+            ],
+            "includes": [
+              "stay"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "H03",
+      "category": "参数校验",
+      "title": "write_file 缺 content 不写空文件",
+      "prompt": "[A.ai:script]{\"steps\": [[{\"name\": \"write_file\", \"args\": {\"purpose\": \"测试\", \"path\": \"{dir}/empty.txt\"}}]], \"final\": \"完成\"}",
+      "checks": {
+        "statuses": [
+          {
+            "tool": "write_file",
+            "status": "error"
+          }
+        ],
+        "files": [
+          {
+            "path": "{dir}/empty.txt",
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "H04",
+      "category": "参数校验",
+      "title": "写操作不猜参数名（text ≠ content）",
+      "prompt": "[A.ai:script]{\"steps\": [[{\"name\": \"write_file\", \"args\": {\"purpose\": \"测试\", \"path\": \"{dir}/guess.txt\", \"text\": \"hello\"}}]], \"final\": \"完成\"}",
+      "checks": {
+        "statuses": [
+          {
+            "tool": "write_file",
+            "status": "error"
+          }
+        ],
+        "files": [
+          {
+            "path": "{dir}/guess.txt",
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "H05",
+      "category": "参数校验",
+      "title": "run_python 缺 code 不启动空脚本",
+      "prompt": "[A.ai:script]{\"steps\": [[{\"name\": \"run_python\", \"args\": {\"purpose\": \"测试\"}}]], \"final\": \"完成\"}",
+      "checks": {
+        "statuses": [
+          {
+            "tool": "run_python",
+            "status": "error"
+          }
+        ]
+      }
+    },
+    {
+      "id": "H06",
+      "category": "结果状态",
+      "title": "退出码 1 算失败",
+      "prompt": "[A.ai:script]{\"steps\": [[{\"name\": \"run_command\", \"args\": {\"purpose\": \"测试\", \"command\": \"echo boom >&2; exit 1\"}}]], \"final\": \"完成\"}",
+      "checks": {
+        "statuses": [
+          {
+            "tool": "run_command",
+            "status": "error"
+          }
+        ]
+      }
+    },
+    {
+      "id": "H07",
+      "category": "结果状态",
+      "title": "grep 没有匹配算成功",
+      "files": {
+        "c.txt": "apple\n"
+      },
+      "prompt": "[A.ai:script]{\"steps\": [[{\"name\": \"grep\", \"args\": {\"purpose\": \"测试\", \"pattern\": \"banana-not-here\", \"path\": \"{file:c.txt}\"}}]], \"final\": \"完成\"}",
+      "checks": {
+        "statuses": [
+          {
+            "tool": "grep",
+            "status": "ok"
+          }
+        ]
+      }
+    },
+    {
+      "id": "H08",
+      "category": "等待与依赖",
+      "title": "提问和写文件同一步：都不执行",
+      "prompt": "[A.ai:script]{\"steps\": [[{\"name\": \"ask_user\", \"args\": {\"purpose\": \"测试\", \"question\": \"要覆盖吗？\", \"options\": [\"覆盖\", \"不覆盖\"]}}, {\"name\": \"write_file\", \"args\": {\"purpose\": \"测试\", \"path\": \"{dir}/over.txt\", \"content\": \"x\"}}]], \"final\": \"完成\"}",
+      "checks": {
+        "statuses": [
+          {
+            "tool": "write_file",
+            "status": "skipped"
+          },
+          {
+            "tool": "ask_user",
+            "status": "skipped"
+          }
+        ],
+        "files": [
+          {
+            "path": "{dir}/over.txt",
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "H09",
+      "category": "等待与依赖",
+      "title": "写文件失败后不运行依赖它的命令",
+      "prompt": "[A.ai:script]{\"steps\": [[{\"name\": \"write_file\", \"args\": {\"purpose\": \"测试\", \"path\": \"../../outside.py\", \"content\": \"print(1)\"}}, {\"name\": \"run_command\", \"args\": {\"purpose\": \"测试\", \"command\": \"python3 outside.py\"}}]], \"final\": \"完成\"}",
+      "checks": {
+        "statuses": [
+          {
+            "tool": "write_file",
+            "status": "error"
+          },
+          {
+            "tool": "run_command",
+            "status": "skipped"
+          }
+        ]
+      }
+    }
+  ]
+}

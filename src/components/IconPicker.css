@@ -1,0 +1,44 @@
+/* ============ 项目图标选择器（表情面板样式，2026-10-29） ============ */
+.ip { position: relative; display: inline-flex; flex: none; }
+.ip-static { flex: none; }
+.ip-btn {
+  display: grid; place-items: center; width: 24px; height: 24px; border-radius: 6px;
+  color: var(--fg-2); transition: background 0.12s, color 0.12s;
+}
+.ip-btn:hover, .ip-btn.on { background: var(--hover); color: var(--fg); }
+
+.ip-pop {
+  position: absolute; z-index: 60; top: calc(100% + 6px); left: 0;
+  width: 316px; padding: 10px 10px 0; border-radius: 14px;
+  background: var(--surface); border: 1px solid var(--edge);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.12), 0 2px 6px rgba(0, 0, 0, 0.06);
+  animation: ip-in 0.14s ease-out;
+}
+@keyframes ip-in { from { opacity: 0; transform: translateY(-4px) scale(0.98); } }
+
+.ip-search {
+  width: 100%; height: 30px; padding: 0 10px; border-radius: 8px; font: inherit; font-size: 12.5px;
+  color: var(--fg); background: var(--soft); border: 1px solid transparent; outline: none;
+}
+.ip-search:focus { border-color: var(--edge); background: var(--surface); }
+
+.ip-grid {
+  display: grid; grid-template-columns: repeat(8, 1fr); gap: 2px;
+  max-height: 220px; overflow-y: auto; margin-top: 8px; padding-bottom: 6px;
+}
+.ip-cell {
+  display: grid; place-items: center; aspect-ratio: 1; border-radius: 8px; color: var(--fg-2);
+  transition: background 0.1s, color 0.1s, transform 0.1s;
+}
+.ip-cell:hover { background: var(--hover); color: var(--fg); transform: scale(1.12); }
+.ip-cell.on { background: var(--accent); color: var(--accent-fg); }
+.ip-empty { grid-column: 1 / -1; padding: 18px 0; text-align: center; font-size: 12px; color: var(--fg-3); }
+
+/* 底部预览条：放大显示鼠标停着的那个图标 */
+.ip-foot {
+  display: flex; align-items: center; gap: 10px; height: 46px; margin: 0 -10px; padding: 0 12px;
+  border-top: 1px solid var(--edge);
+}
+.ip-big { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 8px; color: var(--fg); background: var(--soft); }
+.ip-name { font-size: 13px; font-weight: 560; color: var(--fg); }
+.ip-id { margin-left: auto; font-size: 11px; color: var(--fg-3); }

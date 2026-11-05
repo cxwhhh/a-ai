@@ -1,0 +1,18 @@
+/* 新建项目 / 项目设置弹窗（ProjectModal.tsx）。遮罩、输入框、分段按钮、开关都沿用设置窗口的样式，这里只管弹窗本身的大小和排版 */
+.pm {
+  width: min(520px, 100%); max-height: calc(100dvh - 48px); overflow-y: auto;
+  display: flex; flex-direction: column; gap: 18px; padding: 22px 24px 20px;
+  background: var(--surface-2); border: 1px solid var(--edge); border-radius: 16px;
+  box-shadow: inset 0 1px 0 var(--edge-hi), 0 30px 80px -20px rgba(0, 0, 0, 0.45);
+  animation: modal-in 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.pm-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: -4px; }
+.pm-head h2 { margin: 0; font-size: 18px; font-weight: 560; letter-spacing: -0.01em; }
+.pm-field { display: flex; flex-direction: column; gap: 8px; }
+.pm-field .set-input { width: 100%; }
+.pm-opt { margin-left: 6px; font-size: 11.5px; color: var(--fg-3); }
+.pm-seg { align-self: flex-start; }
+.pm-row { flex-direction: row; align-items: flex-start; justify-content: space-between; gap: 24px; }
+.pm-row .switch { flex: none; margin-top: 2px; }
+.pm-err { font-size: 12.5px; color: var(--danger); }
+.pm-foot { display: flex; justify-content: flex-end; gap: 8px; padding-top: 4px; }

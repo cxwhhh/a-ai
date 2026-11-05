@@ -1,0 +1,8 @@
+/* 提问卡片（ask_user）的选项：一行一个、占满整行、前面带编号，和命令确认弹窗（ApprovalDock.css）一个样子。
+   单独一个文件，选择器前面多加 .ask-card 提高优先级，盖过 globals.css 里旧的横排样式 */
+.ask-card .ask-opts { display: flex; flex-direction: column; flex-wrap: nowrap; gap: 6px; margin-top: 12px; counter-reset: ask; }
+.ask-card .ask-opt {
+  display: flex; align-items: center; gap: 10px; width: 100%; min-height: 34px; padding: 6px 12px;
+  text-align: left; line-height: 1.5; white-space: normal; border-radius: 8px; font-size: 13px;
+}
+.ask-card .ask-opt::before { counter-increment: ask; content: counter(ask); width: 16px; flex: none; font: 11.5px var(--mono); opacity: 0.55; }

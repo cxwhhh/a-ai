@@ -1,0 +1,47 @@
+# electron-builder 打包配置（npm run dist:win / dist:mac）
+# 产物在 release/ 目录：安装包 + latest.yml / latest-mac.yml（更新用的版本清单）+ .blockmap（差量更新用）
+appId: ai.a.desktop
+productName: A.ai
+copyright: A.ai
+directories:
+  output: release
+  buildResources: build
+
+# 安装包里的 app.asar 只放主进程（esbuild 打好的一个文件），不带 node_modules
+files:
+  - dist-electron/**
+  - package.json
+  - "!node_modules/**"
+
+# Next 服务器整个放在 resources/server，不放进 asar：Next 要按真实路径读文件。
+# 不用 extraResources：它会按规则过滤掉 node_modules 等目录，standalone 就不完整了。改成打包后用脚本原样拷贝
+afterPack: scripts/electron-after-pack.cjs
+# Next 服务器的依赖已经在 standalone/node_modules 里，app.asar 里没有 node_modules，不需要针对 Electron 重新编译
+npmRebuild: false
+
+# 更新源：你自己的服务器上一个能用浏览器访问的目录，把 release/ 里的文件传上去
+# 打包前设置环境变量 A_UPDATE_URL，例：https://你的域名/a-ai-updates/
+publish:
+  provider: generic
+  url: ${env.A_UPDATE_URL}
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  artifactName: A.ai-Setup-${version}.${ext}
+
+nsis:
+  oneClick: false
+  perMachine: false # 装到当前用户目录（%LOCALAPPDATA%\Programs\A.ai），不需要管理员权限
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  shortcutName: A.ai
+  deleteAppDataOnUninstall: false # 卸载时保留聊天记录和设置
+
+mac:
+  target:
+    - dmg
+    - zip # 自动更新在 macOS 上用 zip
+  category: public.app-category.productivity
+  artifactName: A.ai-${version}-${arch}.${ext}

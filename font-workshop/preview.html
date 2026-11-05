@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>折线 · 字体试排</title>
+<style>
+@font-face{font-family:Foldline;src:url('./dist/Foldline-Regular.ttf') format('truetype')}
+*{box-sizing:border-box}body{margin:0;background:#eee9df;color:#243e3b;font:16px/1.7 system-ui,sans-serif}main{max-width:1200px;margin:auto;padding:50px 30px}h1{font-size:22px}label{display:block;margin:16px 0}textarea{width:100%;min-height:110px;background:transparent;border:1px solid #86938c;padding:16px;font:18px system-ui;color:inherit}button{padding:8px 18px;cursor:pointer}.sample{font-family:Foldline,sans-serif;font-size:80px;line-height:1.25;overflow-wrap:anywhere;font-kerning:normal;margin:35px 0}.dark{background:#172e2c;color:#eee9df}small{display:block}#warning{color:#a54120}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(80px,1fr));border-top:1px solid #aaa}.cell{padding:10px;border-bottom:1px solid #aaa;text-align:center}.cell b{font:42px Foldline}.cell small{font:11px system-ui}
+</style>
+<main><h1>折线 / Foldline · 0.100 字体工作样张</h1><p>原创几何标题体练习。先看 H/O 的黑白关系，再看 A/V 的斜线与间距。</p><p id="status">正在加载本地字体…</p>
+<textarea id="input" aria-label="试排文字">FOLDLINE
+AVATAR WAVE TYPE 0123456789</textarea>
+<label>字号 <input id="size" type="range" min="24" max="160" value="80"> <output id="value">80 px</output></label>
+<label><input id="kern" type="checkbox" checked> 启用字偶距（比较 AV / VA / TA）</label><button id="theme">切换明暗底色</button><p id="warning"></p><div id="sample" class="sample" style="white-space:pre-wrap"></div><p>支持字符表 · 共49个字符（含空格）</p><div id="grid" class="grid"></div><p>编辑 svg 后运行 python build.py，然后重新打开页面。中文、小写等未收录字符会回退。</p></main>
+<script>
+const chars='ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.,:;!?-+=/() ';
+const $=id=>document.getElementById(id);
+function update(){const text=$('input').value;$('sample').textContent=text;$('sample').style.fontSize=$('size').value+'px';$('sample').style.fontKerning=$('kern').checked?'normal':'none';$('value').value=$('size').value+' px';const missing=[...new Set([...text].filter(c=>!chars.includes(c)&&c!=='\n'))];$('warning').textContent=missing.length?'未收录字符（会回退）：'+missing.join(' '):'当前输入均在字表范围内。'}
+['input','size','kern'].forEach(id=>$(id).addEventListener('input',update));$('theme').onclick=()=>document.body.classList.toggle('dark');
+for(const c of chars){const cell=document.createElement('div');cell.className='cell';const b=document.createElement('b');b.textContent=c===' '?' ':c;const s=document.createElement('small');s.textContent='U+'+c.codePointAt(0).toString(16).toUpperCase().padStart(4,'0');cell.append(b,s);$('grid').append(cell)}
+document.fonts.load('48px Foldline').then(f=>{$('status').textContent=f.length?'本地 Foldline 字体已加载。':'字体未加载，请检查 dist 路径。'}).catch(()=>{$('status').textContent='加载失败，请确认字体文件位于 dist 目录。'});update();
+</script></html>

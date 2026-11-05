@@ -1,0 +1,55 @@
+/* 点阵加载动画（DotSpinner.tsx）。原版来自 Uiverse.io（abrahamcalsin），改动三处：
+   1. 颜色 --uib-color 从写死的深蓝 #183153 改成 var(--fg)，深色模式下自动变白；
+   2. 光晕 box-shadow 也跟着 --uib-color 走（color-mix 调成 30% 透明度），原来是写死的深蓝；
+   3. 大小由组件的 size 参数通过 --uib-size 传进来，同一份 CSS 画出 12px 和 18px 两种。
+   原理：8 个 .dot-spinner__dot 叠在同一个位置，铺满整个圆；每个依次旋转 45°（nth-child），
+   ::before 画的小圆点就落在圆周上的 8 个位置。每个点跑同一段“缩小 → 放大 → 缩小”的动画，
+   但 animation-delay 依次差 1/8 个周期（负数延迟 = 一开始就处于动画中途），所以亮起来的点一圈圈往前走。 */
+.dot-spinner {
+  --uib-size: 12px;
+  --uib-speed: 0.9s;
+  --uib-color: var(--fg);
+  position: relative; flex: none; align-self: center;
+  display: inline-flex; align-items: center; justify-content: flex-start;
+  height: var(--uib-size); width: var(--uib-size);
+}
+.dot-spinner__dot {
+  position: absolute; top: 0; left: 0;
+  display: flex; align-items: center; justify-content: flex-start;
+  height: 100%; width: 100%;
+}
+.dot-spinner__dot::before {
+  content: "";
+  height: 20%; width: 20%; border-radius: 50%;
+  background-color: var(--uib-color);
+  transform: scale(0); opacity: 0.5;
+  animation: dot-pulse calc(var(--uib-speed) * 1.111) ease-in-out infinite;
+  box-shadow: 0 0 20px color-mix(in srgb, var(--uib-color) 30%, transparent);
+}
+.dot-spinner__dot:nth-child(2) { transform: rotate(45deg); }
+.dot-spinner__dot:nth-child(2)::before { animation-delay: calc(var(--uib-speed) * -0.875); }
+.dot-spinner__dot:nth-child(3) { transform: rotate(90deg); }
+.dot-spinner__dot:nth-child(3)::before { animation-delay: calc(var(--uib-speed) * -0.75); }
+.dot-spinner__dot:nth-child(4) { transform: rotate(135deg); }
+.dot-spinner__dot:nth-child(4)::before { animation-delay: calc(var(--uib-speed) * -0.625); }
+.dot-spinner__dot:nth-child(5) { transform: rotate(180deg); }
+.dot-spinner__dot:nth-child(5)::before { animation-delay: calc(var(--uib-speed) * -0.5); }
+.dot-spinner__dot:nth-child(6) { transform: rotate(225deg); }
+.dot-spinner__dot:nth-child(6)::before { animation-delay: calc(var(--uib-speed) * -0.375); }
+.dot-spinner__dot:nth-child(7) { transform: rotate(270deg); }
+.dot-spinner__dot:nth-child(7)::before { animation-delay: calc(var(--uib-speed) * -0.25); }
+.dot-spinner__dot:nth-child(8) { transform: rotate(315deg); }
+.dot-spinner__dot:nth-child(8)::before { animation-delay: calc(var(--uib-speed) * -0.125); }
+@keyframes dot-pulse {
+  0%, 100% { transform: scale(0); opacity: 0.5; }
+  50% { transform: scale(1); opacity: 1; }
+}
+/* 系统设置了“减少动态效果”：不动，所有点常亮一半 */
+@media (prefers-reduced-motion: reduce) {
+  .dot-spinner__dot::before { animation: none; transform: scale(0.7); opacity: 0.6; }
+}
+
+/* 输出回答时：跟在回答文字后面，单独一行，稍大一点（ChatPane 里 size=18） */
+.answer-spinner { display: flex; margin-top: 10px; }
+/* 思维链是次要信息（文字都是灰色），里面的点阵也用中灰，和原来的环形动画一样；回答里的用正文色 */
+.trace .dot-spinner { --uib-color: var(--fg-2); }

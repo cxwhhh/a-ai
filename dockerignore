@@ -1,0 +1,15 @@
+# 不进镜像的东西：体积大、本地专用、或者含隐私数据
+node_modules
+.next
+.data
+.git
+.gitignore
+.env*
+*.log
+docs
+Dockerfile
+.dockerignore
+docker-compose.yml
+.DS_Store
+.vscode
+.idea

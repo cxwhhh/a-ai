@@ -1,0 +1,202 @@
+[
+  {
+    "name": "chat",
+    "label": "对话"
+  },
+  {
+    "name": "messages",
+    "label": "消息"
+  },
+  {
+    "name": "chat-new",
+    "label": "新对话"
+  },
+  {
+    "name": "history",
+    "label": "历史记录"
+  },
+  {
+    "name": "prompt",
+    "label": "提示词"
+  },
+  {
+    "name": "thinking",
+    "label": "思考"
+  },
+  {
+    "name": "voice",
+    "label": "语音"
+  },
+  {
+    "name": "document",
+    "label": "文档"
+  },
+  {
+    "name": "note",
+    "label": "笔记"
+  },
+  {
+    "name": "spreadsheet",
+    "label": "表格"
+  },
+  {
+    "name": "slides",
+    "label": "演示文稿"
+  },
+  {
+    "name": "pdf",
+    "label": "PDF"
+  },
+  {
+    "name": "template",
+    "label": "模板"
+  },
+  {
+    "name": "edit",
+    "label": "编辑"
+  },
+  {
+    "name": "artifact",
+    "label": "产物"
+  },
+  {
+    "name": "file",
+    "label": "文件"
+  },
+  {
+    "name": "folder",
+    "label": "文件夹"
+  },
+  {
+    "name": "image",
+    "label": "图片"
+  },
+  {
+    "name": "video",
+    "label": "视频"
+  },
+  {
+    "name": "audio",
+    "label": "音频"
+  },
+  {
+    "name": "archive",
+    "label": "压缩包"
+  },
+  {
+    "name": "attachment",
+    "label": "附件"
+  },
+  {
+    "name": "upload",
+    "label": "上传"
+  },
+  {
+    "name": "download",
+    "label": "下载"
+  },
+  {
+    "name": "knowledge-base",
+    "label": "知识库"
+  },
+  {
+    "name": "memory",
+    "label": "记忆"
+  },
+  {
+    "name": "context",
+    "label": "上下文"
+  },
+  {
+    "name": "search",
+    "label": "搜索"
+  },
+  {
+    "name": "web",
+    "label": "网页"
+  },
+  {
+    "name": "link",
+    "label": "链接"
+  },
+  {
+    "name": "citation",
+    "label": "引用来源"
+  },
+  {
+    "name": "database",
+    "label": "数据库"
+  },
+  {
+    "name": "agent",
+    "label": "智能体"
+  },
+  {
+    "name": "tool",
+    "label": "工具调用"
+  },
+  {
+    "name": "skill",
+    "label": "技能"
+  },
+  {
+    "name": "plugin",
+    "label": "插件"
+  },
+  {
+    "name": "api",
+    "label": "连接器 API"
+  },
+  {
+    "name": "code",
+    "label": "代码"
+  },
+  {
+    "name": "terminal",
+    "label": "终端"
+  },
+  {
+    "name": "workflow",
+    "label": "工作流"
+  },
+  {
+    "name": "task",
+    "label": "任务"
+  },
+  {
+    "name": "plan",
+    "label": "计划"
+  },
+  {
+    "name": "calendar",
+    "label": "日程"
+  },
+  {
+    "name": "reminder",
+    "label": "提醒"
+  },
+  {
+    "name": "mail",
+    "label": "邮件"
+  },
+  {
+    "name": "user",
+    "label": "用户"
+  },
+  {
+    "name": "team",
+    "label": "团队"
+  },
+  {
+    "name": "share",
+    "label": "分享"
+  },
+  {
+    "name": "project",
+    "label": "项目"
+  },
+  {
+    "name": "settings",
+    "label": "设置"
+  }
+]

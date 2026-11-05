@@ -1,0 +1,43 @@
+{
+  "AureoleDisplay-Regular.otf": {
+    "glyphs": 14,
+    "mapped_characters": 13,
+    "bytes": 2400,
+    "outline": "CFF",
+    "kerning": "7 study pairs + inherited compatible pairs",
+    "tables": [
+      "GlyphOrder",
+      "head",
+      "hhea",
+      "maxp",
+      "OS/2",
+      "name",
+      "cmap",
+      "post",
+      "CFF ",
+      "GPOS",
+      "hmtx"
+    ]
+  },
+  "AureoleDisplay-Regular.ttf": {
+    "glyphs": 14,
+    "mapped_characters": 13,
+    "bytes": 2552,
+    "outline": "glyf",
+    "kerning": "7 study pairs + inherited compatible pairs",
+    "tables": [
+      "GlyphOrder",
+      "head",
+      "hhea",
+      "maxp",
+      "OS/2",
+      "hmtx",
+      "cmap",
+      "loca",
+      "glyf",
+      "name",
+      "post",
+      "GPOS"
+    ]
+  }
+}

@@ -1,0 +1,266 @@
+{
+ "cases": [
+  {
+   "id": "N01",
+   "category": "新工具",
+   "title": "write_document 生成 docx / xlsx / pptx",
+   "prompt": "[A.ai:script]{\"steps\": [[{\"name\": \"write_document\", \"args\": {\"purpose\": \"测试\", \"path\": \"{dir}/r.docx\", \"content\": \"# 周报\\n- 完成 A\\n\\n| 地区 | 金额 |\\n|---|---|\\n| 东京 | 120 |\"}}, {\"name\": \"write_document\", \"args\": {\"purpose\": \"测试\", \"path\": \"{dir}/d.xlsx\", \"sheets\": [{\"name\": \"销售\", \"rows\": [[\"月份\", \"金额\"], [\"1月\", 120]]}]}}, {\"name\": \"write_document\", \"args\": {\"purpose\": \"测试\", \"path\": \"{dir}/s.pptx\", \"content\": \"# 汇报\\n\\n# 要点\\n- 一\"}}]], \"final\": \"完成\"}",
+   "checks": {
+    "statuses": [
+     {
+      "tool": "write_document",
+      "status": "ok"
+     }
+    ],
+    "files": [
+     {
+      "path": "{dir}/r.docx"
+     },
+     {
+      "path": "{dir}/d.xlsx"
+     },
+     {
+      "path": "{dir}/s.pptx"
+     }
+    ]
+   }
+  },
+  {
+   "id": "N02",
+   "category": "新工具",
+   "title": "write_document 不覆盖已有文件",
+   "files": {
+    "old.docx": "原来的内容"
+   },
+   "prompt": "[A.ai:script]{\"steps\": [[{\"name\": \"write_document\", \"args\": {\"purpose\": \"测试\", \"path\": \"{file:old.docx}\", \"content\": \"# 新\"}}]], \"final\": \"完成\"}",
+   "checks": {
+    "statuses": [
+     {
+      "tool": "write_document",
+      "status": "error"
+     }
+    ],
+    "files": [
+     {
+      "path": "{file:old.docx}",
+      "unchanged": true
+     }
+    ]
+   }
+  },
+  {
+   "id": "N03",
+   "category": "新工具",
+   "title": "query_data 用 SQL 汇总 CSV",
+   "files": {
+    "sales.csv": "month,region,amount\n2026-01,东京,120\n2026-01,大阪,80\n2026-02,东京,130\n"
+   },
+   "prompt": "[A.ai:script]{\"steps\": [[{\"name\": \"query_data\", \"args\": {\"purpose\": \"测试\", \"files\": [\"{file:sales.csv}\"], \"sql\": \"SELECT region, SUM(amount) t FROM sales GROUP BY region\"}}]], \"final\": \"完成\"}",
+   "checks": {
+    "statuses": [
+     {
+      "tool": "query_data",
+      "status": "ok"
+     }
+    ]
+   }
+  },
+  {
+   "id": "N04",
+   "category": "新工具",
+   "title": "query_data 拒绝修改语句",
+   "files": {
+    "sales.csv": "month,region,amount\n2026-01,东京,120\n2026-01,大阪,80\n2026-02,东京,130\n"
+   },
+   "prompt": "[A.ai:script]{\"steps\": [[{\"name\": \"query_data\", \"args\": {\"purpose\": \"测试\", \"files\": [\"{file:sales.csv}\"], \"sql\": \"DELETE FROM sales\"}}]], \"final\": \"完成\"}",
+   "checks": {
+    "statuses": [
+     {
+      "tool": "query_data",
+      "status": "error"
+     }
+    ]
+   }
+  },
+  {
+   "id": "N05",
+   "category": "新工具",
+   "title": "make_chart 生成 SVG",
+   "prompt": "[A.ai:script]{\"steps\": [[{\"name\": \"make_chart\", \"args\": {\"purpose\": \"测试\", \"type\": \"line\", \"title\": \"趋势\", \"labels\": [\"1月\", \"2月\"], \"series\": [{\"name\": \"东京\", \"values\": [120, 130]}], \"path\": \"{dir}/trend.svg\"}}]], \"final\": \"完成\"}",
+   "checks": {
+    "statuses": [
+     {
+      "tool": "make_chart",
+      "status": "ok"
+     }
+    ],
+    "files": [
+     {
+      "path": "{dir}/trend.svg",
+      "includes": [
+       "<svg",
+       "趋势"
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "id": "N06",
+   "category": "新工具",
+   "title": "archive 打包再解压",
+   "files": {
+    "a.txt": "hello zip"
+   },
+   "prompt": "[A.ai:script]{\"steps\": [[{\"name\": \"archive\", \"args\": {\"purpose\": \"测试\", \"action\": \"zip\", \"path\": \"{file:a.txt}\", \"to\": \"{dir}/p.zip\"}}], [{\"name\": \"archive\", \"args\": {\"purpose\": \"测试\", \"action\": \"unzip\", \"path\": \"{dir}/p.zip\", \"to\": \"{dir}/x\"}}]], \"final\": \"完成\"}",
+   "checks": {
+    "statuses": [
+     {
+      "tool": "archive",
+      "status": "ok"
+     }
+    ],
+    "files": [
+     {
+      "path": "{dir}/x/{name:a.txt}",
+      "includes": [
+       "hello zip"
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "id": "N07",
+   "category": "新工具",
+   "title": "http_request 拒绝内网地址",
+   "prompt": "[A.ai:script]{\"steps\": [[{\"name\": \"http_request\", \"args\": {\"purpose\": \"测试\", \"url\": \"http://127.0.0.1:3000/api/info\"}}]], \"final\": \"完成\"}",
+   "checks": {
+    "statuses": [
+     {
+      "tool": "http_request",
+      "status": "error"
+     }
+    ]
+   }
+  },
+  {
+   "id": "N08",
+   "category": "新工具",
+   "title": "remember 不记敏感信息",
+   "prompt": "[A.ai:script]{\"steps\": [[{\"name\": \"remember\", \"args\": {\"purpose\": \"测试\", \"action\": \"add_habit\", \"text\": \"我的密码是 abc123\"}}]], \"final\": \"完成\"}",
+   "checks": {
+    "statuses": [
+     {
+      "tool": "remember",
+      "status": "error"
+     }
+    ]
+   }
+  },
+  {
+   "id": "L01",
+   "category": "按需加载",
+   "title": "load_tools 加载后调用 write_document",
+   "prompt": "[A.ai:script]{\"steps\": [[{\"name\": \"load_tools\", \"args\": {\"purpose\": \"要生成 Word\", \"names\": [\"write_document\"]}}], [{\"name\": \"write_document\", \"args\": {\"purpose\": \"测试\", \"path\": \"{dir}/a.docx\", \"content\": \"# 标题\\n正文\"}}]], \"final\": \"完成\"}",
+   "checks": {
+    "statuses": [
+     {
+      "tool": "load_tools",
+      "status": "ok"
+     },
+     {
+      "tool": "write_document",
+      "status": "ok"
+     }
+    ],
+    "files": [
+     {
+      "path": "{dir}/a.docx"
+     }
+    ]
+   }
+  },
+  {
+   "id": "L02",
+   "category": "按需加载",
+   "title": "load_tools 名字写错时说清楚能加载什么",
+   "prompt": "[A.ai:script]{\"steps\": [[{\"name\": \"load_tools\", \"args\": {\"purpose\": \"测试\", \"names\": [\"pdf_tool\"]}}]], \"final\": \"完成\"}",
+   "checks": {
+    "statuses": [
+     {
+      "tool": "load_tools",
+      "status": "error"
+     }
+    ]
+   }
+  },
+  {
+   "id": "L03",
+   "category": "按需加载",
+   "title": "没加载直接调用按需工具也能执行（自动加载）",
+   "prompt": "[A.ai:script]{\"steps\": [[{\"name\": \"calculator\", \"args\": {\"purpose\": \"测试\", \"expression\": \"12*(3+4)\"}}]], \"final\": \"完成\"}",
+   "checks": {
+    "statuses": [
+     {
+      "tool": "calculator",
+      "status": "ok"
+     }
+    ]
+   }
+  },
+  {
+   "id": "L04",
+   "category": "按需加载",
+   "title": "Mock 演示：先规划，再一次加载要用的按需工具",
+   "prompt": "演示全部工具",
+   "checks": {
+    "mustUse": [
+     "load_tools",
+     "current_time",
+     "calculator"
+    ]
+   }
+  },
+  {
+   "id": "W01",
+   "category": "网页美化",
+   "title": "create_artifact 收到网页片段也能正常展示",
+   "prompt": "[A.ai:script]{\"steps\": [[{\"name\": \"create_artifact\", \"args\": {\"purpose\": \"测试\", \"title\": \"片段\", \"kind\": \"html\", \"content\": \"<h1>你好</h1><div style=\\\"width:1200px\\\">宽</div>\"}}]], \"final\": \"完成\"}",
+   "checks": {
+    "statuses": [
+     {
+      "tool": "create_artifact",
+      "status": "ok"
+     }
+    ]
+   }
+  },
+  {
+   "id": "W02",
+   "category": "网页美化",
+   "title": "没有学会的技能时也能读内置的「网页设计」",
+   "prompt": "[A.ai:script]{\"steps\": [[{\"name\": \"load_skill\", \"args\": {\"purpose\": \"测试\", \"name\": \"网页设计\"}}]], \"final\": \"完成\"}",
+   "checks": {
+    "statuses": [
+     {
+      "tool": "load_skill",
+      "status": "ok"
+     }
+    ]
+   }
+  },
+  {
+   "id": "W03",
+   "category": "网页美化",
+   "title": "Mock：做网页前先读设计规范",
+   "prompt": "帮我做一个介绍咖啡店的网页",
+   "checks": {
+    "mustUse": [
+     "load_skill",
+     "create_artifact"
+    ]
+   }
+  }
+ ]
+}

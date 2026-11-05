@@ -1,0 +1,96 @@
+/* ============ 代码高亮（GitHub 配色）+ 改动对比 + 文件名标记 ============
+   颜色写成变量：浅色主题用 GitHub Light，深色主题用 GitHub Dark，代码里只写 var(--hl-xxx) */
+:root {
+  --hl-kw: #cf222e;      /* 关键字：def / return / import / if */
+  --hl-str: #0a3069;     /* 字符串 */
+  --hl-com: #6e7781;     /* 注释 */
+  --hl-num: #0550ae;     /* 数字、true/false/None、常量、属性名 */
+  --hl-fn: #8250df;      /* 函数名、类名 */
+  --hl-var: #953800;     /* 内置函数、类型、变量 */
+  --hl-tag: #116329;     /* HTML 标签名 */
+  --hl-add-bg: #dafbe1; --hl-add-fg: #1a7f37; --hl-add-ln: #ccffd8;
+  --hl-del-bg: #ffebe9; --hl-del-fg: #cf222e; --hl-del-ln: #ffd7d5;
+  --file-chip-bg: #ddf4ff; --file-chip-fg: #0969da;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --hl-kw: #ff7b72; --hl-str: #a5d6ff; --hl-com: #8b949e; --hl-num: #79c0ff; --hl-fn: #d2a8ff; --hl-var: #ffa657; --hl-tag: #7ee787;
+    --hl-add-bg: rgba(46, 160, 67, 0.15); --hl-add-fg: #3fb950; --hl-add-ln: rgba(46, 160, 67, 0.22);
+    --hl-del-bg: rgba(248, 81, 73, 0.15); --hl-del-fg: #f85149; --hl-del-ln: rgba(248, 81, 73, 0.22);
+    --file-chip-bg: rgba(56, 139, 253, 0.18); --file-chip-fg: #79c0ff;
+  }
+}
+:root[data-theme="dark"] {
+  --hl-kw: #ff7b72; --hl-str: #a5d6ff; --hl-com: #8b949e; --hl-num: #79c0ff; --hl-fn: #d2a8ff; --hl-var: #ffa657; --hl-tag: #7ee787;
+  --hl-add-bg: rgba(46, 160, 67, 0.15); --hl-add-fg: #3fb950; --hl-add-ln: rgba(46, 160, 67, 0.22);
+  --hl-del-bg: rgba(248, 81, 73, 0.15); --hl-del-fg: #f85149; --hl-del-ln: rgba(248, 81, 73, 0.22);
+  --file-chip-bg: rgba(56, 139, 253, 0.18); --file-chip-fg: #79c0ff;
+}
+
+/* highlight.js 的词类 → 颜色（和 GitHub 网页上看代码一样） */
+.hljs-keyword, .hljs-doctag, .hljs-template-tag, .hljs-template-variable, .hljs-type.hljs-keyword, .hljs-variable.language_, .hljs-meta .hljs-keyword { color: var(--hl-kw); }
+.hljs-string, .hljs-regexp, .hljs-meta .hljs-string { color: var(--hl-str); }
+.hljs-comment, .hljs-code, .hljs-formula { color: var(--hl-com); font-style: normal; }
+.hljs-number, .hljs-literal, .hljs-attr, .hljs-attribute, .hljs-variable.constant_, .hljs-selector-attr, .hljs-selector-class, .hljs-selector-id, .hljs-operator, .hljs-meta, .hljs-property, .hljs-symbol { color: var(--hl-num); }
+.hljs-title, .hljs-title.class_, .hljs-title.function_, .hljs-title.class_.inherited__ { color: var(--hl-fn); }
+.hljs-built_in, .hljs-type, .hljs-variable, .hljs-params, .hljs-subst, .hljs-selector-pseudo { color: var(--hl-var); }
+.hljs-params { color: inherit; }
+.hljs-name, .hljs-tag, .hljs-quote, .hljs-selector-tag, .hljs-section, .hljs-bullet { color: var(--hl-tag); }
+.hljs-section, .hljs-strong { font-weight: 600; }
+.hljs-emphasis { font-style: italic; }
+.hljs-addition { color: var(--hl-add-fg); background: var(--hl-add-bg); }
+.hljs-deletion { color: var(--hl-del-fg); background: var(--hl-del-bg); }
+
+/* 改动对比：两列行号 + 符号 + 代码；新增行绿底 “+”，删除行红底 “-” */
+.diff {
+  margin: 0; padding: 4px 0; border-radius: 10px; overflow-x: auto;
+  font: 12.5px/1.65 var(--mono); background: var(--soft); border: 1px solid var(--edge);
+}
+.diff .dl { display: flex; min-width: max-content; white-space: pre; }
+.diff .ln { flex: none; width: 34px; padding: 0 6px 0 4px; text-align: right; color: var(--fg-3); user-select: none; font-size: 11.5px; }
+.diff .sign { flex: none; width: 18px; text-align: center; color: var(--fg-3); user-select: none; }
+.diff .lc { flex: 1; padding-right: 14px; }
+.diff .dl.add { background: var(--hl-add-bg); }
+.diff .dl.add .ln { background: var(--hl-add-ln); }
+.diff .dl.add .sign { color: var(--hl-add-fg); font-weight: 600; }
+.diff .dl.del { background: var(--hl-del-bg); }
+.diff .dl.del .ln { background: var(--hl-del-ln); }
+.diff .dl.del .sign { color: var(--hl-del-fg); font-weight: 600; }
+
+/* 右侧看板里的改动：不再套一个圆角灰底的框，直接白底铺满，和“内容”视图一样 */
+.file-diff { padding: 8px 0 24px; }
+.file-diff .diff { border: 0; border-radius: 0; background: transparent; padding: 0; }
+.diff-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; font-size: 12px; color: var(--fg-2); }
+.diff-stat { display: inline-flex; gap: 8px; font: 500 11.5px var(--mono); }
+.diff-stat .add, .tab-stat .add { color: var(--hl-add-fg); }
+.diff-stat .del, .tab-stat .del { color: var(--hl-del-fg); }
+.tab-stat { display: inline-flex; gap: 4px; margin-left: 4px; font: 500 11px var(--mono); }
+
+/* 对话里提到的文件名：浅蓝底（像 GitHub 里的文件链接） */
+.file-chip {
+  display: inline; padding: 1px 6px; margin: 0 1px; border-radius: 6px; border: 0;
+  font: 0.92em var(--mono); color: var(--file-chip-fg); background: var(--file-chip-bg);
+  white-space: nowrap; /* 文件名不在中间断行 */
+}
+.md code.file-chip { border: 0; color: var(--file-chip-fg); background: var(--file-chip-bg); }
+.viewer-head .seg.text button { display: inline-flex; align-items: center; gap: 2px; }
+
+/* 代码里不要连字：-> 不变成箭头、== 不变成长等号，看到的就是实际写的字符 */
+.hljs, .diff, .lines, .io-code, .md pre, .md code { font-variant-ligatures: none; font-feature-settings: "liga" 0, "calt" 0; }
+.diff .dl.fold { color: var(--fg-3); background: color-mix(in srgb, var(--fg) 4%, transparent); font-size: 11.5px; padding: 2px 0 2px 14px; user-select: none; }
+/* 可点击的文件名：鼠标移上去出现下划线，点击后在右侧打开 */
+.file-chip.link { cursor: pointer; text-underline-offset: 3px; transition: background 0.15s; }
+.file-chip.link:hover { text-decoration: underline 1px; background: color-mix(in srgb, var(--file-chip-bg) 70%, var(--file-chip-fg) 12%); }
+.file-chip.link:focus-visible { outline: 2px solid color-mix(in srgb, var(--file-chip-fg) 50%, transparent); outline-offset: 1px; }
+
+/* 回答里的代码块：外层一张卡片（浅底、细边、10px 圆角），顶部一条标题栏放语言和复制按钮 */
+.md .cb { margin: 0 0 12px; border: 1px solid var(--edge); border-radius: 10px; background: var(--soft); overflow: hidden; }
+.md .cb pre { margin: 0; border: 0; border-radius: 0; background: transparent; padding: 4px 14px 12px; }
+.cb-head { display: flex; align-items: center; justify-content: space-between; height: 32px; padding: 0 6px 0 14px; }
+.cb-lang { font-size: 11.5px; color: var(--fg-3); letter-spacing: 0.02em; }
+.cb-copy {
+  display: inline-flex; align-items: center; gap: 4px; height: 24px; padding: 0 8px; border-radius: 6px;
+  font-size: 11.5px; color: var(--fg-3); transition: background 0.15s, color 0.15s;
+}
+.cb-copy:hover { background: var(--hover); color: var(--fg); }
+.cb-copy:focus-visible { outline: 2px solid var(--fg-3); outline-offset: 1px; }

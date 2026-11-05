@@ -1,0 +1,27 @@
+/* 命令确认弹窗（ApprovalDock）：贴在输入框正上方，按钮一行一个。
+   单独一个文件、类名用 apd- 开头：不和 globals.css 里旧的 .approve-* 混在一起 */
+.apd {
+  margin-bottom: 8px; padding: 12px 14px; border-radius: 12px;
+  background: var(--surface); box-shadow: var(--shadow-card), inset 0 0 0 1px var(--edge);
+  animation: apd-in 0.18s ease-out;
+}
+@keyframes apd-in { from { opacity: 0; transform: translateY(6px); } }
+.apd-head { display: flex; justify-content: space-between; font-size: 11.5px; color: var(--fg-3); margin-bottom: 4px; }
+.apd-reason { font-size: 13.5px; line-height: 1.6; color: var(--fg); margin-bottom: 8px; }
+/* 命令：和回答里的 Markdown 代码块同一个样子（浅灰底 + 细边框 + 10px 圆角），不再用黑底 */
+.apd-cmd {
+  margin: 0 0 10px; padding: 10px 12px; border-radius: 10px;
+  font: 12.5px/1.6 var(--mono); color: var(--fg); background: var(--soft); border: 1px solid var(--edge);
+  white-space: pre-wrap; word-break: break-all; max-height: 140px; overflow: auto;
+}
+.apd-actions { display: flex; flex-direction: column; gap: 6px; }
+.apd-btn {
+  display: flex; align-items: center; gap: 10px; width: 100%; min-height: 34px; padding: 6px 12px; text-align: left;
+  border-radius: 8px; font-size: 13px; cursor: pointer; color: var(--fg); background: var(--surface); border: 1px solid var(--edge);
+}
+.apd-btn:hover:not(:disabled) { background: var(--hover); }
+.apd-btn.primary { color: var(--accent-fg); background: var(--accent); border-color: var(--accent); }
+.apd-btn.primary:hover:not(:disabled) { background: var(--accent); opacity: 0.9; }
+.apd-btn:disabled { opacity: 0.5; cursor: default; }
+.apd-num { width: 16px; font: 11.5px var(--mono); opacity: 0.55; }
+.apd-hint { margin-left: auto; font-size: 11.5px; opacity: 0.55; }

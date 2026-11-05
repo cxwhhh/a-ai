@@ -1,0 +1,227 @@
+{
+  "about": "A.ai 自动测评集。用法见 evals/run.mjs 开头的注释。{dir} = 这道题自己的输出目录；{file:x} = 附件 x 上传后的路径，{name:x} = 它的文件名（重名时会变成 x (1)）；files 里的文件会先上传，再像界面上一样附在消息末尾。",
+  "cases": [
+    {
+      "id": "Q01",
+      "category": "问答",
+      "title": "常识问答不用工具",
+      "prompt": "日本的首都是哪座城市？只回答城市名。",
+      "checks": { "answerAny": ["东京", "Tokyo"], "maxToolCalls": 0, "maxAnswerChars": 40 }
+    },
+    {
+      "id": "Q02",
+      "category": "问答",
+      "title": "算术要算准",
+      "prompt": "计算 (1234 × 5678 − 999) ÷ 7，结果保留两位小数。",
+      "checks": { "answerAny": ["1000807.57", "1,000,807.57"] }
+    },
+    {
+      "id": "Q03",
+      "category": "问答",
+      "title": "日期差",
+      "prompt": "2026 年 3 月 1 日到 2026 年 12 月 25 日相隔多少天？",
+      "checks": { "answerAny": ["299"] }
+    },
+    {
+      "id": "Q04",
+      "category": "问答",
+      "title": "日期星期不靠猜",
+      "prompt": "现在东京是几月几号、星期几？",
+      "checks": { "answerRegex": "\\d{1,2}\\s*月\\s*\\d{1,2}|\\d{4}-\\d{2}-\\d{2}", "answerAny": ["星期", "周", "曜日"], "maxToolCalls": 1 }
+    },
+    {
+      "id": "Q05",
+      "category": "问答",
+      "title": "简单问题不乱调工具",
+      "prompt": "1+1 等于几？",
+      "checks": { "answerAny": ["2", "二"], "maxToolCalls": 0, "maxSteps": 1 }
+    },
+    {
+      "id": "F01",
+      "category": "读文件",
+      "title": "从附件里找信息",
+      "prompt": "附件里的项目代号是什么？",
+      "files": { "notes.txt": "会议记录\n参加者：田中、王、李\n本季度项目代号：蓝鲸-7342\n下次会议：周五\n" },
+      "checks": { "answerAny": ["蓝鲸-7342"], "mustUseAny": ["read_file", "read_document", "grep"] }
+    },
+    {
+      "id": "F02",
+      "category": "读文件",
+      "title": "CSV 汇总",
+      "prompt": "按地区汇总附件里的销售额，哪个地区最高？总额是多少？",
+      "files": { "sales.csv": "month,region,amount\n2026-01,东京,120\n2026-01,大阪,80\n2026-01,名古屋,50\n2026-02,东京,130\n2026-02,大阪,95\n2026-02,名古屋,40\n2026-03,东京,150\n2026-03,大阪,110\n2026-03,名古屋,45\n" },
+      "checks": { "answerAll": ["东京", "400"] }
+    },
+    {
+      "id": "F03",
+      "category": "读文件",
+      "title": "JSON 按条件筛选",
+      "prompt": "附件的配置里，哪些服务的 enabled 是 true？只列服务名。",
+      "files": { "services.json": "{\n  \"services\": [\n    { \"name\": \"auth\", \"enabled\": true, \"port\": 8001 },\n    { \"name\": \"billing\", \"enabled\": false, \"port\": 8002 },\n    { \"name\": \"search\", \"enabled\": true, \"port\": 8003 },\n    { \"name\": \"legacy-mail\", \"enabled\": false, \"port\": 8004 },\n    { \"name\": \"notify\", \"enabled\": true, \"port\": 8005 }\n  ]\n}\n" },
+      "checks": { "answerAll": ["auth", "search", "notify"], "answerNone": ["billing", "legacy-mail"] }
+    },
+    {
+      "id": "F04",
+      "category": "读文件",
+      "title": "大日志里定位唯一错误",
+      "prompt": "附件日志里唯一的一条 ERROR 写的是什么？在第几行？",
+      "files": { "app.log": { "gen": "log", "lines": 3000, "errorAt": 2187, "error": "ERROR payment timeout order=A-99817" } },
+      "checks": { "answerAll": ["A-99817", "2187"], "maxSteps": 6 }
+    },
+    {
+      "id": "F05",
+      "category": "读文件",
+      "title": "多文件里找定义",
+      "prompt": "这几个附件里，哪个文件定义了函数 calc_tax？它的税率是多少？",
+      "files": {
+        "orders.py": "def total(items):\n    return sum(i['price'] for i in items)\n",
+        "tax_utils.py": "RATE = 0.10\n\ndef calc_tax(amount):\n    return round(amount * RATE)\n",
+        "report.py": "from tax_utils import calc_tax\n\nprint(calc_tax(1000))\n"
+      },
+      "checks": { "answerAll": ["tax_utils"], "answerAny": ["10%", "0.10", "0.1", "百分之十", "10 %"] }
+    },
+    {
+      "id": "W01",
+      "category": "写代码",
+      "title": "写脚本到指定位置",
+      "prompt": "在 {dir}/squares.py 写一个 Python 脚本，打印 1 到 10 的平方和，并告诉我结果。",
+      "checks": { "files": [{ "path": "{dir}/squares.py", "exists": true, "includes": ["print"] }], "answerAny": ["385"] }
+    },
+    {
+      "id": "W02",
+      "category": "写代码",
+      "title": "需要运行才能知道的结果",
+      "prompt": "用 Python 算出 100 以内所有质数的和，运行后告诉我结果。",
+      "checks": { "mustUseAny": ["run_python", "run_command"], "answerAny": ["1060"] }
+    },
+    {
+      "id": "W03",
+      "category": "写代码",
+      "title": "生成指定格式的 CSV",
+      "prompt": "生成 {dir}/people.csv：表头是 name,age，下面 5 行数据，不要多余的空行。",
+      "checks": { "files": [{ "path": "{dir}/people.csv", "exists": true, "regex": "^name,age", "lines": 6 }] }
+    },
+    {
+      "id": "W04",
+      "category": "写代码",
+      "title": "写 Markdown 文件",
+      "prompt": "写一份在日本面试 AI Agent 岗位的准备清单，正好 5 条，用 Markdown 列表保存到 {dir}/checklist.md。",
+      "checks": { "files": [{ "path": "{dir}/checklist.md", "exists": true, "listItems": 5 }] }
+    },
+    {
+      "id": "E01",
+      "category": "改文件",
+      "title": "精确修改不碰别处",
+      "prompt": "把附件里 greet 函数的问候语从 Hello 改成 Hi，其他地方不要动。",
+      "files": { "app.py": "def greet(name):\n    return f\"Hello, {name}!\"\n\n\ndef farewell(name):\n    return f\"Goodbye, {name}. See you!\"\n\n\nif __name__ == \"__main__\":\n    print(greet(\"A.ai\"))\n" },
+      "checks": {
+        "files": [{ "path": "{file:app.py}", "includes": ["Hi, {name}!", "Goodbye, {name}. See you!", "if __name__ == \"__main__\":"], "excludes": ["Hello"] }],
+        "mustUseAny": ["edit_file", "write_file"]
+      }
+    },
+    {
+      "id": "E02",
+      "category": "改文件",
+      "title": "找 bug、修好、跑验证",
+      "prompt": "附件里的 average 函数算出来的平均值不对，找出 bug 修好，并运行验证 average([2, 4, 6]) 等于 4。",
+      "files": { "stats.py": "def average(nums):\n    if not nums:\n        return 0\n    return sum(nums) / (len(nums) - 1)\n\n\nif __name__ == \"__main__\":\n    print(average([2, 4, 6]))\n" },
+      "checks": {
+        "files": [{ "path": "{file:stats.py}", "excludes": ["len(nums) - 1"], "regex": "sum\\(nums\\)\\s*/\\s*len\\(nums\\)" }],
+        "mustUseAny": ["run_python", "run_command"]
+      }
+    },
+    {
+      "id": "E03",
+      "category": "改文件",
+      "title": "只改指定文件",
+      "prompt": "只在 {name:a.txt} 末尾加一行 END，{name:b.txt} 不要改。",
+      "files": { "a.txt": "第一行\n第二行\n", "b.txt": "不要动我\n" },
+      "checks": { "files": [{ "path": "{file:a.txt}", "regex": "END\\s*$" }, { "path": "{file:b.txt}", "unchanged": true }] }
+    },
+    {
+      "id": "E04",
+      "category": "改文件",
+      "title": "复制文件到新位置",
+      "prompt": "把附件复制一份到 {dir}/backup/config.yaml，内容保持一样。",
+      "files": { "config.yaml": "port: 8080\nmode: production\nworkers: 4\n" },
+      "checks": { "files": [{ "path": "{dir}/backup/config.yaml", "sameAs": "config.yaml" }] }
+    },
+    {
+      "id": "S01",
+      "category": "联网",
+      "title": "读取网页",
+      "prompt": "读取 https://example.com 这个网页，告诉我页面的标题。",
+      "checks": { "mustUse": ["web_fetch"], "answerAny": ["Example Domain"] }
+    },
+    {
+      "id": "S02",
+      "category": "联网",
+      "title": "搜索最新信息",
+      "prompt": "搜索一下 Python 目前最新的稳定版本号是多少，并给出来源链接。",
+      "checks": { "mustUse": ["web_search"], "answerRegex": "3\\.\\d+", "answerAny": ["http"] }
+    },
+    {
+      "id": "D01",
+      "category": "文档",
+      "title": "从纪要里提取待办",
+      "prompt": "从附件会议纪要里列出所有待办事项和负责人。",
+      "files": { "meeting.md": "# 周会纪要 10/27\n\n## 讨论\n- 首页加载太慢，用户反馈多\n- 日语简历模板还没做\n\n## 决定\n- 田中：本周五前把首页图片改成懒加载\n- 王：下周一前做好日语简历模板\n- 李：调研一下面试题库的数据来源\n\n## 其他\n下次周会改到周三。\n" },
+      "checks": { "answerAll": ["田中", "王", "李", "懒加载", "简历"] }
+    },
+    {
+      "id": "A01",
+      "category": "追问",
+      "title": "缺信息时先问",
+      "prompt": "帮我做个图表。",
+      "checks": { "asksUser": true, "maxToolCalls": 1 }
+    },
+    {
+      "id": "A02",
+      "category": "追问",
+      "title": "多轮记住上下文",
+      "turns": ["我叫小林，在东京找 AI Agent 方向的工作。先记住这些，回复“好的”就行。", "我叫什么名字？在哪个城市找工作？"],
+      "checks": { "answerAll": ["小林", "东京"], "maxToolCalls": 0 }
+    },
+    {
+      "id": "C01",
+      "category": "约束",
+      "title": "遵守字数限制",
+      "prompt": "用一句话解释什么是 ReAct，不超过 40 个字。",
+      "checks": { "maxAnswerChars": 50, "maxToolCalls": 0 }
+    },
+    {
+      "id": "C02",
+      "category": "约束",
+      "title": "只输出 JSON",
+      "prompt": "把“张三，28 岁，住在大阪”转成 JSON，字段 name、age、city。只输出 JSON，不要任何解释。",
+      "checks": { "answerJson": { "name": "张三", "age": 28, "city": "大阪" }, "maxToolCalls": 0 }
+    },
+    {
+      "id": "M01",
+      "category": "多步",
+      "title": "读数据 → 画图 → 总结",
+      "prompt": "读取附件的销售数据，算出每个月的总销售额，画一张折线图保存到 {dir}/trend.png，然后用一句话总结趋势。",
+      "files": { "sales.csv": "month,region,amount\n2026-01,东京,120\n2026-01,大阪,80\n2026-01,名古屋,50\n2026-02,东京,130\n2026-02,大阪,95\n2026-02,名古屋,40\n2026-03,东京,150\n2026-03,大阪,110\n2026-03,名古屋,45\n" },
+      "checks": {
+        "files": [{ "path": "{dir}/trend.png", "exists": true }],
+        "answerAll": ["305"],
+        "answerAny": ["上升", "增长", "增加", "上涨", "递增"],
+        "mustUseAny": ["run_python", "run_command"]
+      }
+    },
+    {
+      "id": "M02",
+      "category": "多步",
+      "title": "建小项目并跑测试",
+      "prompt": "在 {dir} 下建一个小项目：src/mathx.py 里写 add(a, b)，tests/test_mathx.py 里用 unittest 测试它，然后运行测试并告诉我结果。",
+      "checks": {
+        "files": [
+          { "path": "{dir}/src/mathx.py", "includes": ["def add"] },
+          { "path": "{dir}/tests/test_mathx.py", "includes": ["unittest"] }
+        ],
+        "mustUseAny": ["run_python", "run_command"],
+        "answerAny": ["OK", "通过", "passed", "成功"]
+      }
+    }
+  ]
+}

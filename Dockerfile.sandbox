@@ -1,0 +1,43 @@
+# A.ai 的命令沙箱镜像：run_command / run_python 在用这个镜像创建的容器里执行（A_SANDBOX=docker 时）。
+# 构建：docker build -f Dockerfile.sandbox -t a-ai-sandbox:latest .   （docker compose up --build 会自动构建）
+# 里面放“查文件、读文件”常用的工具：ripgrep、fd、jq、pdftotext、file、unzip、git，以及处理 Excel/Word/PDF 的 Python 库。
+FROM python:3.12-slim-bookworm
+
+# 软件源走 https（443 端口），不走 http（80 端口）：有的公司网络 / 服务器只放行 443，http 会连接超时。
+# python 官方镜像自带 ca-certificates，所以一开始就能用 https。
+# 想换成离服务器更近的镜像站，构建时传 APT_MIRROR（主仓库地址，以 /debian 结尾）。
+# 安全更新仓库会一起换成同一个站的 <APT_MIRROR>-security，否则国内服务器连官方 security 源仍然很慢或失败。例如：
+#   https://mirrors.tuna.tsinghua.edu.cn/debian   （国内，docker-compose.yml 的默认值）
+#   https://ftp.jp.debian.org/debian              （日本）
+# 不传或传空 = 用官方 https://deb.debian.org
+ARG APT_MIRROR=""
+RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources \
+ && if [ -n "$APT_MIRROR" ]; then \
+      sed -i -e "s|https://deb.debian.org/debian-security\$|${APT_MIRROR}-security|" \
+             -e "s|https://deb.debian.org/debian\$|${APT_MIRROR}|" /etc/apt/sources.list.d/debian.sources; \
+    fi \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends \
+      ripgrep fd-find jq poppler-utils file unzip zip git curl ca-certificates less tree procps \
+      fonts-wqy-microhei \
+ && ln -s /usr/bin/fdfind /usr/local/bin/fd \
+ && rm -rf /var/lib/apt/lists/*
+
+# 读表格、Word、PDF 的常用库，加上 numpy 和画图用的 matplotlib；想加别的库，构建时传 PY_PACKAGES。
+# 为什么要装 matplotlib：测评里让 agent 画折线图，沙箱里没有画图库，模型就自己手写 PNG 编码器，一个任务耗了 4 分钟、7.5 万 token。
+# pip 也可以换镜像站：构建时传 PIP_INDEX_URL，例如 https://pypi.tuna.tsinghua.edu.cn/simple（docker-compose.yml 的默认值）；不传 = 官方 PyPI
+ARG PY_PACKAGES=""
+ARG PIP_INDEX_URL=""
+RUN pip install --no-cache-dir ${PIP_INDEX_URL:+-i $PIP_INDEX_URL} pandas numpy matplotlib openpyxl python-docx pypdf $PY_PACKAGES
+
+# matplotlib 默认字体没有中文，图上的中文会变成方块。上面装了文泉驿微米黑（fonts-wqy-microhei，约 5 MB），这里把它设成默认字体：
+#   backend Agg = 没有屏幕也能画图（只能 savefig 存成文件）；axes.unicode_minus False = 负号不用 Unicode 字符，否则中文字体里显示成方块
+# MATPLOTLIBRC 指向这个文件。matplotlib 的字体缓存会写在 HOME（= 工作区）下的 .cache 里，第一次 import 会慢几秒
+RUN printf '%s\n' 'backend: Agg' 'font.family: sans-serif' 'font.sans-serif: WenQuanYi Micro Hei, WenQuanYi Zen Hei, Noto Sans CJK SC, DejaVu Sans' 'axes.unicode_minus: False' > /etc/matplotlibrc
+ENV MATPLOTLIBRC=/etc/matplotlibrc MPLBACKEND=Agg
+
+# 和 A.ai 主容器一样用 uid 1000 的普通用户；容器以 --user 1000:1000 --read-only 运行
+RUN useradd --uid 1000 --create-home sandbox
+USER sandbox
+WORKDIR /workspace
+CMD ["sleep", "infinity"]

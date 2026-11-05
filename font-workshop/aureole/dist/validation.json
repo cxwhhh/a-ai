@@ -1,0 +1,41 @@
+{
+  "Aureole-Regular.otf": {
+    "glyphs": 14,
+    "mapped_characters": 13,
+    "bytes": 2144,
+    "outline": "CFF",
+    "kerning": "not tuned",
+    "tables": [
+      "GlyphOrder",
+      "head",
+      "hhea",
+      "maxp",
+      "OS/2",
+      "name",
+      "cmap",
+      "post",
+      "CFF ",
+      "hmtx"
+    ]
+  },
+  "Aureole-Regular.ttf": {
+    "glyphs": 14,
+    "mapped_characters": 13,
+    "bytes": 2320,
+    "outline": "glyf",
+    "kerning": "not tuned",
+    "tables": [
+      "GlyphOrder",
+      "head",
+      "hhea",
+      "maxp",
+      "OS/2",
+      "hmtx",
+      "cmap",
+      "loca",
+      "glyf",
+      "name",
+      "post"
+    ]
+  }
+}

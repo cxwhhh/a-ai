@@ -1,0 +1,80 @@
+/* 左栏的“项目”区（2026-10-28 改）：在“新建项目”下面、“分组”上面，只列已经建好的项目。
+   项目太多时这一块自己滚动，最多占左栏 40% 高，不把下面的分组挤没 */
+.side-section.proj { flex: none; max-height: 40%; overflow-y: auto; }
+/* 项目行比分组的组头醒目一点：字号、颜色和对话行一样，前面多一个文件夹图标 */
+.proj-head { position: relative; height: 30px; font-size: 13px; color: color-mix(in srgb, var(--fg) 45%, var(--fg-2)); }
+.proj-head .proj-ico { flex: none; color: var(--fg-3); }
+.proj-head:hover .proj-ico { color: var(--fg-2); }
+.proj-head.menu-open { background: var(--hover); }
+.proj-head.menu-open .grp-act { display: grid; }
+.proj-grp .grp-items { padding-left: 14px; }
+
+/* 左栏顶部：收起按钮放最左边，logo + “A.ai” 紧跟其后；字号和球都比以前大一点 */
+.side .side-head { justify-content: flex-start; gap: 6px; padding: 0 4px 10px 2px; }
+.side .side-head .brand { gap: 10px; font-size: 23px; }
+.side .brand-text { font-family: var(--font-brand), var(--sans, system-ui), sans-serif; font-weight: 700; letter-spacing: -0.035em; line-height: 1; }
+
+/* 搜索（2026-10-28）：“新建”下面同样一行，图标位置和“新建”的 + 对齐；图标不要灰色圆底，免得和“新建”抢 */
+.side .search-btn .plus { background: transparent; color: var(--fg-2); }
+.side .search-btn:hover .plus { color: var(--fg); }
+/* 点开后：原地变成输入框，高度和位置不变，所以下面的列表不会跳 */
+.side-search-box {
+  display: flex; align-items: center; gap: 9px; height: 32px; padding: 0 4px 0 6px; border-radius: 8px;
+  background: var(--surface); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fg) 18%, transparent);
+}
+.side-search-box .ico { flex: none; width: 22px; display: grid; place-items: center; color: var(--fg-2); }
+.side-search-box input { flex: 1; min-width: 0; border: 0; outline: none; background: transparent; font-size: 13.5px; color: var(--fg); }
+.side-search-box input::placeholder { color: var(--fg-3); }
+.side-search-box .icon-btn { width: 22px; height: 22px; color: var(--fg-3); }
+.side-search-box .icon-btn:hover { color: var(--fg); }
+.side-empty { padding: 8px 10px; font-size: 12.5px; color: var(--fg-3); }
+/* 正在看“产出物”页面时，这一行保持高亮（和选中的对话一样） */
+.side .new-btn.on { background: var(--active); color: var(--fg); }
+
+/* 左栏字号（2026-10-29，设置 → 通用 → 外观 → 左栏字号）：
+   Workspace 把设置写到 <html data-side-fs>，这里换成一个倍数 --side-k，
+   左栏里每一处文字都用 “原字号 × --side-k”，行高也跟着放大一点，字大了不挤。
+   只有顶部 logo 的 “A.ai”（.brand）不在这里，所以它永远不变。 */
+:root { --side-k: 1; }
+:root[data-side-fs="small"] { --side-k: 0.92; }
+:root[data-side-fs="large"] { --side-k: 1.1; }
+:root[data-side-fs="xlarge"] { --side-k: 1.22; }
+.side .new-btn { font-size: calc(13.5px * var(--side-k)); height: calc(32px * var(--side-k)); }
+.side .side-label { font-size: calc(11px * var(--side-k)); }
+.side .side-day { font-size: calc(11px * var(--side-k)); }
+.side .side-item.session { font-size: calc(13px * var(--side-k)); height: calc(30px * var(--side-k)); }
+.side .side-item .grp-input { font-size: calc(13px * var(--side-k)); }
+.side .grp-head { font-size: calc(12px * var(--side-k)); height: calc(28px * var(--side-k)); }
+/* 项目行同时有 .grp-head 和 .proj-head：用三个类的选择器，优先级比上一行高，不靠先后顺序；
+   项目名 .grp-name 也直接写上字号，不依赖继承，开发模式下 CSS 加载顺序变了也不会失效 */
+.side .grp-head.proj-head, .side .proj-head .grp-name { font-size: calc(13px * var(--side-k)); }
+.side .grp-head.proj-head { height: calc(30px * var(--side-k)); }
+.side .grp-count { font-size: calc(11px * var(--side-k)); }
+.side .grp-input { font-size: calc(12px * var(--side-k)); }
+.side .grp-empty { font-size: calc(11.5px * var(--side-k)); }
+.side .side-empty { font-size: calc(12.5px * var(--side-k)); }
+.side .side-search-box { height: calc(32px * var(--side-k)); }
+.side .side-search-box input { font-size: calc(13.5px * var(--side-k)); }
+.side .row-menu .pop-item { font-size: calc(12.5px * var(--side-k)); }
+.side .side-foot { font-size: calc(12px * var(--side-k)); }
+.side .user-id { font-size: calc(13px * var(--side-k)); }
+.side .user-sub { font-size: calc(11.5px * var(--side-k)); }
+/* 图标跟着字号一起缩放：文件夹、展开箭头、新建那一列的图标（SVG 上写死了 width/height 属性，CSS 可以覆盖） */
+.side .proj-ico { width: calc(14px * var(--side-k)); height: calc(14px * var(--side-k)); }
+.side .grp-chev { width: calc(10px * var(--side-k)); height: calc(10px * var(--side-k)); }
+.side .new-btn .plus svg { width: calc(14px * var(--side-k)); height: calc(14px * var(--side-k)); }
+
+/* 左栏文字和按钮加深（2026-10-29）：以前大量用 --fg-3（浅灰），在白底上太淡。
+   统一往深一档：浅灰 --fg-3 → 中灰 --fg-2，中灰 → 正文色 --fg。深色模式下这两个变量自动是对应的亮色，同样更清楚 */
+.side .new-btn { color: var(--fg); }
+.side .search-btn .plus { color: var(--fg); }
+.side .side-label { color: var(--fg-2); font-weight: 500; }
+.side .grp-head { color: var(--fg-2); }
+.side .grp-head:hover { color: var(--fg); }
+.side .grp-chev, .side .grp-count, .side .grp-act, .side .proj-ico, .side .grp-empty { color: var(--fg-2); }
+.side .grp-act:hover { color: var(--fg); }
+.side .grp-act.danger:hover { color: var(--danger); }
+.side .grp-head.proj-head { color: var(--fg); }
+.side .side-item.session { color: color-mix(in srgb, var(--fg) 80%, var(--fg-2)); }
+.side .side-item.session:hover, .side .side-item.session.active { color: var(--fg); }
+.side .row-end .has-file { color: var(--fg-2); }

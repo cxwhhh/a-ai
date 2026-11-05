@@ -1,0 +1,43 @@
+{
+  "Foldline-Regular.otf": {
+    "glyphs": 50,
+    "mapped_characters": 49,
+    "bytes": 4196,
+    "outline": "CFF",
+    "kerning": "GPOS",
+    "tables": [
+      "GlyphOrder",
+      "head",
+      "hhea",
+      "maxp",
+      "OS/2",
+      "name",
+      "cmap",
+      "post",
+      "CFF ",
+      "GPOS",
+      "hmtx"
+    ]
+  },
+  "Foldline-Regular.ttf": {
+    "glyphs": 50,
+    "mapped_characters": 49,
+    "bytes": 4780,
+    "outline": "glyf",
+    "kerning": "GPOS",
+    "tables": [
+      "GlyphOrder",
+      "head",
+      "hhea",
+      "maxp",
+      "OS/2",
+      "hmtx",
+      "cmap",
+      "loca",
+      "glyf",
+      "name",
+      "post",
+      "GPOS"
+    ]
+  }
+}

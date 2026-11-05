@@ -1,0 +1,180 @@
+/* 对话区的界面细节（2026-10-24）。单独放一个文件，不改 globals.css，避免和其他改动冲突。
+   这个文件在 globals.css 之后加载，选择器也多加了一层，所以能覆盖 globals.css 里的旧写法。 */
+
+/* 停止按钮：只有描边，中间是空心圆角方块；静态，不转圈。
+   和发送按钮一样大、一样圆角，按下发送后只是“实心箭头”换成“描边方块” */
+.composer .send.stop {
+  background: var(--surface); color: var(--fg);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fg) 30%, transparent), 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+.composer .send.stop::after { content: none; animation: none; } /* 去掉 globals.css 里那段转圈的弧线 */
+.composer .send.stop svg { width: 14px; height: 14px; }
+.composer .send.stop svg rect { fill: none; stroke: currentColor; stroke-width: 1.5; }
+.composer .send.stop:hover { background: var(--hover); box-shadow: inset 0 0 0 1px var(--fg), 0 1px 2px rgba(0, 0, 0, 0.05); }
+
+/* 回答里的 ---：不画线，只留一段空白；在开头或结尾时直接不显示 */
+.answer .md hr { border: 0; height: 0; margin: 14px 0; }
+.answer .md > hr:first-child, .answer .md > hr:last-child { display: none; }
+
+/* 过程里的终端输出（run_command）：和 Markdown 代码块同一个样子，不再用黑底。
+   提示符 $ 和次要信息用淡灰，报错用红色 */
+.chat .term { color: var(--fg); background: var(--soft); border: 1px solid var(--edge); border-radius: 10px; padding: 10px 12px; font-size: 12px; box-shadow: none; }
+.chat .term-ps, .chat .term-dim { color: var(--fg-3); }
+.chat .term-err { color: var(--danger); }
+
+/* 消息下方的小按钮（复制 / 编辑 / 重新生成）：平时隐藏，鼠标移到这条消息上才淡入；最后一轮的回答一直显示 */
+.msg.user { flex-direction: column; align-items: flex-end; gap: 4px; }
+.msg-actions { display: flex; gap: 2px; opacity: 0; transition: opacity 0.15s; }
+.msg-actions .icon-btn { width: 28px; height: 28px; color: var(--fg-3); }
+.msg-actions .icon-btn:hover:not(:disabled) { color: var(--fg); }
+.msg-actions .icon-btn:disabled { opacity: 0.35; cursor: default; }
+.msg:hover .msg-actions, .msg-actions:focus-within, .msg-actions.always { opacity: 1; }
+.msg.assistant .msg-actions { margin: -8px 0 0 -6px; }
+@media (hover: none) { .msg-actions { opacity: 1; } } /* 触屏没有悬停，直接显示 */
+
+/* 编辑用户消息：气泡变成和输入框同一风格的编辑框 */
+.msg.user.editing { align-items: stretch; }
+.edit-bubble {
+  display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border-radius: 10px;
+  background: var(--surface); border: 1px solid color-mix(in srgb, var(--fg) 25%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--fg) 5%, transparent);
+}
+.edit-bubble textarea {
+  width: 100%; resize: none; border: 0; outline: none; background: transparent; padding: 0;
+  font: inherit; color: var(--fg); line-height: 1.6;
+}
+.edit-foot { display: flex; align-items: center; gap: 6px; }
+.edit-foot span { flex: 1; min-width: 0; font-size: 11.5px; color: var(--fg-3); }
+.edit-cancel, .edit-send { height: 28px; padding: 0 12px; border-radius: 8px; font-size: 12.5px; }
+.edit-cancel { color: var(--fg-2); }
+.edit-cancel:hover { background: var(--hover); color: var(--fg); }
+.edit-send { background: var(--accent); color: var(--accent-fg); }
+.edit-send:disabled { opacity: 0.4; }
+
+/* 切换对话：加载时旧内容变淡，顶部一条细进度条来回滑；新内容到了以后整体轻轻淡入上浮 */
+.chat .chat-scroll { transition: opacity 0.2s; }
+.chat.loading .chat-scroll { opacity: 0.35; }
+.chat-loading {
+  position: absolute; top: 0; left: 0; right: 0; height: 2px; z-index: 5; overflow: hidden;
+}
+.chat-loading::after {
+  content: ""; position: absolute; top: 0; bottom: 0; width: 30%; border-radius: 2px;
+  background: var(--fg); opacity: 0.5; animation: chat-loading 0.9s ease-in-out infinite;
+}
+@keyframes chat-loading { from { left: -30%; } to { left: 100%; } }
+.thread { animation: thread-in 0.24s cubic-bezier(0.2, 0.8, 0.2, 1); }
+@keyframes thread-in { from { opacity: 0; transform: translateY(6px); } }
+@media (prefers-reduced-motion: reduce) {
+  .thread, .chat-loading::after { animation: none; }
+}
+
+/* ===== 输入框（2026-10-28 改）=====
+   框里只有：附件卡片（有的话占满第一行）+ 输入文字 + 右边的发送 / 停止，文字和按钮上下居中。
+   上传按钮挪到框下面那一行（.under-row），不放在框里 */
+.composer-wrap .composer { flex-wrap: wrap; align-items: center; gap: 4px 8px; padding: 8px 8px 8px 14px; }
+.composer-wrap .composer textarea { flex: 1 1 0; padding: 4px 0; min-height: 26px; }
+.chat.is-empty .composer-wrap .composer { padding: 14px 12px 14px 20px; }
+.chat.is-empty .composer-wrap .composer textarea { min-height: 0; padding: 6px 0; }
+/* 输入框下面那一行：左边“上传文件”，右边上下文和模型（.cbar 自带 spacer 把它们推到右边） */
+.under-row { display: flex; align-items: center; margin-top: 6px; padding: 0 4px; }
+.under-row .cbar { flex: 1; min-width: 0; margin-top: 0; padding: 0; }
+.att-under { margin-left: -4px; }
+/* 文件拖到输入框上方时：边框变成虚线，提示可以松手 */
+.composer-wrap .composer.drag { border-style: dashed; border-color: var(--fg-3); background: color-mix(in srgb, var(--soft) 60%, var(--surface)); }
+
+/* 附件卡片：输入框里（可删）和已发消息里（可点开）共用 */
+.att-list { display: flex; flex-wrap: wrap; gap: 6px; padding: 4px 6px 2px 0; flex-basis: 100%; }
+.att-list.sent { justify-content: flex-end; padding: 0; }
+.att {
+  position: relative; display: flex; align-items: center; gap: 8px; max-width: 220px; min-width: 0;
+  padding: 6px 10px 6px 6px; border-radius: 10px; text-align: left;
+  background: var(--surface); box-shadow: inset 0 0 0 1px var(--edge);
+}
+button.att:hover { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fg) 25%, transparent); }
+.att-ico { flex: none; width: 30px; height: 30px; border-radius: 7px; display: grid; place-items: center; background: var(--soft); color: var(--fg-2); }
+.att-main { display: flex; flex-direction: column; min-width: 0; gap: 1px; }
+.att-name { font-size: 12.5px; color: var(--fg); line-height: 1.3; }
+.att-sub { font-size: 11px; color: var(--fg-3); line-height: 1.3; font-variant-numeric: tabular-nums; }
+.att.up .att-ico { animation: att-pulse 1.2s ease-in-out infinite; }
+@keyframes att-pulse { 50% { opacity: 0.45; } }
+.att.err .att-sub { color: var(--danger); }
+/* 右上角的删除小圆点：鼠标移上去才出现 */
+.att-x {
+  position: absolute; top: -6px; right: -6px; width: 18px; height: 18px; border-radius: 50%;
+  display: grid; place-items: center; background: var(--surface); color: var(--fg-2);
+  box-shadow: 0 0 0 1px var(--edge), 0 1px 3px rgba(0, 0, 0, 0.12); opacity: 0; transition: opacity 0.12s;
+}
+.att:hover .att-x, .att-x:focus-visible { opacity: 1; }
+@media (hover: none) { .att-x { opacity: 1; } }
+
+/* ===== 项目（2026-10-28）===== */
+/* 新对话页问候语下面：这次对话会建在哪个项目里 */
+.welcome-proj { display: inline-flex; align-items: center; gap: 6px; margin-top: -10px; padding: 3px 10px; border-radius: 999px; font-size: 12.5px; color: var(--fg-2); background: var(--soft); }
+/* 对话顶部标题前面的“项目名 /” */
+.head-proj { flex: none; max-width: 30%; display: inline-flex; align-items: center; gap: 5px; font-size: 13px; color: var(--fg-3); }
+.head-proj i { font-style: normal; margin: 0 2px 0 4px; opacity: 0.6; }
+
+/* 标题下的分隔横线（2026-10-29）：
+   画在 .chat-head 的 ::after 上，right 设成 -100vw 让它一直延伸到窗口右边，
+   右侧任务面板 / 文件大视图打开时，横线也连续地穿过它们上方。
+   右侧一列整体从横线下面开始（margin-top = 标题栏 48px + 10px 间距），
+   于是右上角按钮点开的面板、悬浮的文件列表都在横线下面。 */
+.chat-head { position: relative; }
+.chat-head::after {
+  content: ""; position: absolute; left: 0; right: -100vw; bottom: 0; height: 1px;
+  background: var(--edge); pointer-events: none;
+}
+.app { overflow: hidden; }
+/* 文件按钮的悬浮列表：原来离按钮 6px，会压在横线上；往下挪到横线下 8px。
+   中间的空隙用 ::before 透明块补上，鼠标从按钮移过去不会断 */
+.chat-head .peek { top: calc(100% + 16px); }
+.chat-head .peek::before { top: -18px; height: 18px; }
+
+/* 任务与文件按钮（2026-10-29）：固定在窗口最右上角，在横线上面的标题栏里。
+   以前它跟着对话区走，右侧面板一打开，按钮就停在屏幕中间；
+   大视图打开时又搬到大视图标题栏里，位置一直在变。现在只有这一个按钮、一个位置。 */
+.chat-head .out-wrap { position: fixed; top: 10px; right: 12px; z-index: 5; }
+/* 任务面板永远贴在最右边，正好在按钮下面；文件大视图同时打开时排在面板左边（只用 order 换顺序，DOM 不动） */
+.right .panel { order: 2; }
+
+/* ===== 右侧一列贴边（2026-10-29）=====
+   参照 Claude：右侧不再是悬浮的圆角卡片，而是直接贴在窗口右边占一整条，
+   左边一条细竖线和对话区分开，没有圆角、阴影和外边距。
+   - 只开任务面板：面板从标题横线下面开始（横线照常穿过它上方），一直到底。
+   - 打开了文件（网页 / md 等）：文件视图从窗口最顶上开始，连横线那一行也占用；
+     它自己的标题栏高 48px，和对话标题栏一样高，底下的线正好接上对话区的横线。
+     这时对话区的横线只画到对话区右边为止，任务按钮也跟着回到对话区标题栏的最右边。 */
+.app .right {
+  margin: 0; align-self: stretch; gap: 0;
+  border-left: 1px solid var(--edge); background: var(--surface-2);
+}
+.app .right.panel-only { margin-top: 48px; }
+.app .right .viewer,
+.app .right .panel {
+  border: 0; border-radius: 0; box-shadow: none; background: transparent;
+}
+.app .right .panel {
+  align-self: stretch; height: auto; max-height: none; overflow-y: auto;
+}
+/* 面板和文件同时打开：两条之间也是一条细竖线 */
+.app .right.with-panel:not(.panel-only) { gap: 0; }
+.app .right.with-panel:not(.panel-only) .panel { border-left: 1px solid var(--edge); }
+.app .right .viewer-head { min-height: 48px; height: 48px; padding-top: 0; padding-bottom: 0; }
+.app .right .resize-handle { left: -5px; }
+.app.right-open .chat-head::after { right: 0; }
+/* 放回标题栏的普通排版里（不再绝对定位），这样“运行中”状态和按钮各占各的位置，不会叠在一起 */
+.app.right-open .chat-head .out-wrap { position: relative; top: auto; right: auto; }
+.app.right-open .chat-head .peek { right: 0; }
+@media (max-width: 900px) {
+  .app .right, .app .right.panel-only { margin: 0; border-left: 0; }
+}
+
+/* 修复（2026-10-29）：没打开文件时，文件按钮固定在窗口右上角（position: fixed），不占标题栏的位置，
+   标题栏里最右边的“运行中”就会钻到按钮底下。给有文件按钮的标题栏右边留出按钮的宽度 */
+.app:not(.right-open) .chat-head:has(.out-wrap) .head-status { margin-right: 64px; }
+
+/* 修复（2026-10-29）：思维链里一行展开后，下面的代码框紧贴着这一行的底边（.tr-body 上内边距是 0），
+   鼠标移到这一行时整行变灰，灰底和代码框的边框挨在一起，看起来像压住了代码框。
+   给展开内容上面留 6px，并让悬停的灰底变成左右缩进、带圆角的一块，不再顶到代码框上 */
+.chat .tr-body { padding-top: 6px; }
+.chat .tr.can > .tr-row { margin: 2px 6px; padding-left: 8px; padding-right: 8px; border-radius: 8px; }

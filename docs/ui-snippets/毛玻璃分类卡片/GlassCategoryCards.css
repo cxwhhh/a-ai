@@ -1,0 +1,59 @@
+/* 毛玻璃 + 彩色光斑分类卡片（2026-10-29 产出物页用过的一版，用户要求保存备用）。
+   用法见同目录 GlassCategoryCards.tsx 顶部注释。类名都加了 glass- / gc- 前缀，直接 import 也不会和现有页面冲突。 */
+/* ===== 分类卡片（2026-10-29 第四版：毛玻璃 + 彩色光斑）=====
+   参考 Uiverse.io（adamgiebl）。原理：卡片里先放 4 个大圆角色块（.blob），再盖一层铺满的“毛玻璃”（.glass-cat-glass）：
+   半透明白色渐变 + backdrop-filter: blur(20px)。backdrop-filter 会把它“后面”的东西模糊掉，
+   于是 4 个边界清楚的色块透过玻璃，变成一整片柔和的、互相晕开的渐变色。
+   实测：backdrop-filter 在一些环境（无 GPU 的浏览器、部分 Linux）下不生效，色块会露出硬边。
+   所以模糊直接加在色块自己身上（filter: blur），玻璃层只保留半透明渐变——效果一样，而且哪里都能用。
+   卡片底色用本类第二种颜色，色块模糊后边缘透出来的也是同色系，不会露出灰边。
+   卡片 overflow: hidden 把伸出去的色块裁掉；z-index 让色块在玻璃下面（-1），玻璃在上面（1）。
+   原版是 190×254 的竖卡，这里改成正方形、缩小到 132px；色块的位置按原版的比例换算成百分比，卡片大小变了也不走样。 */
+/* 4 等分、最大 160px：页面宽时每张 160px，页面窄时一起等比例缩小，始终一行 4 张 */
+.glass-cats { display: grid; grid-template-columns: repeat(4, minmax(0, 160px)); gap: 16px; margin-bottom: 20px; }
+/* 每类 4 个光斑颜色 --b1～--b4。照源码的思路：不是同一个颜色的深浅，而是 4 个饱和、色相相邻的颜色
+   （源码是 橙 #ff930f / 紫 #bf0fff / 玫红 #ff1b6b / 蓝 #0061ff），透过白色毛玻璃后变成明亮又不刺眼的渐变。
+   全部 = 紫粉系，网页 = 蓝青系，文档 = 橙黄系，代码 = 绿系。--glow 是卡片下面的彩色投影 */
+.gc-all { --b1: #bf0fff; --b2: #ff1b6b; --b3: #7c3aed; --b4: #ff6bd6; --glow: #bf0fff; --c: #6b21a8; }
+.gc-html { --b1: #0061ff; --b2: #22d3ee; --b3: #6366f1; --b4: #38bdf8; --glow: #0061ff; --c: #1e40af; }
+.gc-markdown { --b1: #ff930f; --b2: #ffd60a; --b3: #ff6b1a; --b4: #fbbf24; --glow: #ff930f; --c: #9a3412; }
+.gc-code { --b1: #10b981; --b2: #a3e635; --b3: #14b8a6; --b4: #4ade80; --glow: #10b981; --c: #065f46; }
+.glass-cat {
+  position: relative; z-index: 1; overflow: hidden; isolation: isolate;
+  width: 100%; aspect-ratio: 1 / 1; padding: 0; border-radius: 21px;
+  background: #fff;
+  /* 原版的彩色投影：0 15px 40px -5px，颜色换成每类自己的，透明度 26% */
+  box-shadow: 0 15px 40px -5px color-mix(in srgb, var(--glow) 26%, transparent); /* 源码 #d11bff42 ≈ 26% 不透明 */
+  transition: transform 0.18s, box-shadow 0.18s;
+}
+.glass-cat:hover { transform: translateY(-3px); box-shadow: 0 18px 44px -6px color-mix(in srgb, var(--glow) 40%, transparent); }
+/* 选中：外面一圈正文色细环，环和卡片之间留 3px 缝（先画页面底色，再画环） */
+.glass-cat.on { box-shadow: 0 0 0 3px var(--surface), 0 0 0 4.5px var(--fg), 0 15px 40px -5px color-mix(in srgb, var(--glow) 40%, transparent); }
+.glass-cat .blob { position: absolute; z-index: -1; width: 105%; height: 105%; border-radius: 40%; filter: blur(14px); opacity: 0.55; }
+/* 原版位置（卡片 190×254，色块 200×200）按比例换算：left / 190、top / 254 */
+.glass-cat .blob:nth-child(2) { left: -26%; top: -35%; background: var(--b1); }
+.glass-cat .blob:nth-child(3) { left: 58%; top: -8%; background: var(--b2); }
+.glass-cat .blob:nth-child(4) { left: -21%; top: 39%; background: var(--b3); }
+.glass-cat .blob:nth-child(5) { left: 53%; top: 71%; background: var(--b4); }
+.glass-cat-glass {
+  position: absolute; inset: 0; z-index: 1; border-radius: inherit;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
+  background: linear-gradient(rgba(255, 255, 255, 0.47), rgba(150, 150, 150, 0.25));
+}
+/* 2026-10-29 01:05 用户说颜色太深：光斑保留同样的饱和色相，但 opacity 降到 .55、卡片底色改成白色，
+   等于在白底上铺一层淡淡的彩色，整体变成“浅色系”；文字和图标随之从白色改成本类的深色 --c，保证看得清 */
+/* 中间只放一个 24px 的小图标，下面小字是名称和数量，都用本类深色 */
+.glass-cat-glass > svg { color: var(--c); }
+.glass-cat-label { display: inline-flex; align-items: baseline; gap: 5px; font-size: 12.5px; font-weight: 600; color: var(--c); }
+.glass-cat-label em { font-style: normal; font-weight: 500; opacity: 0.85; font-variant-numeric: tabular-nums; }
+/* 深色模式：玻璃换成偏暗的半透明，光斑稍微压暗，免得在深色页面上太刺眼 */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .glass-cat { background: #232326; }
+  :root:not([data-theme="light"]) .glass-cat .blob { opacity: 0.45; }
+  :root:not([data-theme="light"]) .glass-cat-glass > svg, :root:not([data-theme="light"]) .glass-cat-label { color: #fff; }
+  :root:not([data-theme="light"]) .glass-cat-glass { background: linear-gradient(rgba(255, 255, 255, 0.16), rgba(0, 0, 0, 0.25)); }
+}
+:root[data-theme="dark"] .glass-cat { background: #232326; }
+:root[data-theme="dark"] .glass-cat .blob { opacity: 0.45; }
+:root[data-theme="dark"] .glass-cat-glass > svg, :root[data-theme="dark"] .glass-cat-label { color: #fff; }
+:root[data-theme="dark"] .glass-cat-glass { background: linear-gradient(rgba(255, 255, 255, 0.16), rgba(0, 0, 0, 0.25)); }

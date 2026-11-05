@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'" />
+    <title>A.ai</title>
+    <style>
+      /* 服务器启动要几秒：先显示这一页，免得窗口白屏 */
+      html, body { height: 100%; margin: 0; }
+      body { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; background: #f7f6f3; color: #6b6964; font: 14px -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+      .logo { font-size: 28px; font-weight: 500; color: #2b2a27; letter-spacing: .5px; }
+      .dots { display: flex; gap: 6px; }
+      .dots i { width: 6px; height: 6px; border-radius: 50%; background: #b9b6ae; animation: b 1.2s infinite ease-in-out; }
+      .dots i:nth-child(2) { animation-delay: .15s; }
+      .dots i:nth-child(3) { animation-delay: .3s; }
+      @keyframes b { 0%, 80%, 100% { opacity: .3; transform: scale(.8); } 40% { opacity: 1; transform: scale(1); } }
+      @media (prefers-color-scheme: dark) { body { background: #1f1e1c; color: #9a978f; } .logo { color: #ecebe7; } }
+    </style>
+  </head>
+  <body>
+    <div class="logo">A.ai</div>
+    <div class="dots"><i></i><i></i><i></i></div>
+    <div>正在启动…</div>
+  </body>
+</html>

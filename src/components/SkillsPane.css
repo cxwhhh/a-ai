@@ -1,0 +1,40 @@
+/* 设置 → 技能（SkillsPane.tsx）和对话结束后的“学会了新技能”提示（SkillToast.tsx）。沿用设置页的颜色变量和 .set-* 样式 */
+
+.sk-sec-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; }
+.sk-n { margin-left: 6px; padding: 0 6px; border-radius: 5px; background: var(--soft); font-size: 11px; color: var(--fg-2); font-variant-numeric: tabular-nums; }
+
+.sk-item { padding: 4px 0; }
+.sk-head { display: flex; align-items: center; gap: 10px; }
+.sk-main { flex: 1; min-width: 0; display: flex; align-items: flex-start; gap: 8px; padding: 9px 0; text-align: left; }
+.sk-chev { flex: none; margin-top: 4px; color: var(--fg-3); transition: transform 0.2s; }
+.sk-item.open .sk-chev { transform: rotate(90deg); }
+.sk-text { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.sk-name { font-size: 13.5px; color: var(--fg); }
+.sk-desc { font-size: 12.5px; color: var(--fg-2); line-height: 1.55; }
+.sk-meta { font-size: 11.5px; color: var(--fg-3); font-variant-numeric: tabular-nums; }
+.sk-main:hover .sk-name { text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--fg-3); }
+.sk-quick { flex: none; display: flex; gap: 6px; }
+
+.sk-edit { padding: 6px 0 14px 20px; }
+.sk-edit .form-grid { grid-template-columns: 72px 1fr; }
+.sk-edit .set-input.area { font-size: 12.5px; }
+.sk-err { margin-top: 8px; font-size: 12px; color: var(--danger); }
+.sk-hist { list-style: none; margin: 12px 0 0; padding: 10px 12px; border-radius: 9px; background: var(--soft); display: flex; flex-direction: column; gap: 4px; }
+.sk-hist li { font-size: 12px; color: var(--fg-2); line-height: 1.5; }
+.sk-hist li span { margin-right: 10px; color: var(--fg-3); font-variant-numeric: tabular-nums; }
+
+/* 学会了新技能：左上方（对话标题下面）浮出，不挡输入框，几秒后自动消失 */
+.sk-toast {
+  position: fixed; left: calc(var(--side-w) + 20px); top: 60px; z-index: 60;
+  display: flex; align-items: center; gap: 10px; max-width: min(440px, calc(100vw - 40px));
+  padding: 10px 12px 10px 14px; border-radius: 12px;
+  background: var(--surface); box-shadow: 0 0 0 1px var(--edge), var(--shadow-card);
+  font-size: 13px; color: var(--fg);
+  animation: sk-in 0.22s ease-out;
+}
+.sk-toast svg { flex: none; color: var(--fg-2); }
+.sk-toast-text { min-width: 0; line-height: 1.5; }
+.sk-toast-text b { font-weight: 560; }
+.sk-toast .btn { flex: none; height: 26px; }
+@keyframes sk-in { from { opacity: 0; transform: translateY(-6px); } }
+@media (max-width: 760px) { .sk-toast { left: 20px; } }
