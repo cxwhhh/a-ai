@@ -50,7 +50,8 @@ async function probeSandbox(workspace: string): Promise<string> {
   if (probe && Date.now() - probe.at < PROBE_TTL) return probe.text;
   probing ??= (async () => {
     const root = sandboxRoot(workspace);
-    const bin = sandboxInfo().mode === "docker" ? "python3" : process.env.A_PYTHON || "python3";
+    // 加引号：A_PYTHON 可能是 Windows 的 C:\Users\…\python.exe（bash 会把没加引号的 \ 吃掉），路径里也可能有空格
+    const bin = sandboxInfo().mode === "docker" ? "python3" : `'${(process.env.A_PYTHON || "python3").replace(/'/g, `'\\''`)}'`;
     let out = "";
     const r = await runInSandbox({
       sessionId: "env-probe",

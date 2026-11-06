@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ArtifactMeta, Project } from "@/lib/shared";
 import { api } from "@/lib/client";
-import { ICode, IDoc, IFolder, IGlobe, IMore, IPanelLeft, IPlus, ISearch, IX } from "./Icons";
+import { AgentIcon, ICode, IDoc, IFolder, IGlobe, IMore, IPanelLeft, IPlus, ISearch, IX } from "./Icons";
 import "./ArtifactsPage.css";
 
 /** 每种产出物：名字、小图标（卡片底部）。颜色在 CSS 里按 c-html / c-markdown / c-code 区分 */
@@ -70,9 +70,90 @@ const IListView = () => (
   </svg>
 );
 
-function CatIcon({ k, size = 20 }: { k: CatKey; size?: number }) {
+/** 产出物属于哪个色系：SVG 算“图表”（粉），其余按类型（网页蓝 / 文档黄 / 代码绿） */
+function tone(a: ArtifactMeta): CatKey {
+  return a.svg ? "chart" : a.kind;
+}
+function toneIcon(a: ArtifactMeta) {
+  return a.svg ? <CatIcon k="chart" size={18} /> : KIND[a.kind].icon;
+}
+
+/** 新建卡片翻开后里面的小场景：纯 HTML/CSS 画的缩略图，不用图片 */
+function BookScene({ k }: { k: CatKey }) {
+  // 网页：一个全白的 Mac 浏览器窗口，只有左上角红黄绿三个按钮（关闭 / 最小化 / 全屏）
+  if (k === "html")
+    return (
+      <span className="bk-browser">
+        <span className="bk-bar">
+          <i />
+          <i />
+          <i />
+        </span>
+      </span>
+    );
+  if (k === "markdown")
+    return (
+      <span className="bk-stack">
+        <span className="bk-sheet back2" />
+        <span className="bk-sheet back1" />
+        <span className="bk-sheet front">
+          <span className="bk-doc-title">产品方案</span>
+          <span className="bk-doc-date">Oct 29 · 文档</span>
+          <span className="bk-line w90" />
+          <span className="bk-line w80" />
+          <span className="bk-line w60" />
+        </span>
+      </span>
+    );
+  if (k === "code")
+    return (
+      <span className="bk-term">
+        <span className="bk-bar">
+          <i />
+          <i />
+          <i />
+        </span>
+        <span className="bk-term-body">
+          <span>
+            <em>$</em> npm run dev
+          </span>
+          <span className="ok">✓ ready in 1.2s</span>
+          <span>
+            <em>$</em> <u />
+          </span>
+        </span>
+      </span>
+    );
+  // 图表：和文档一样是一张白纸，上面一行小标题，下面五根柱子 + 底线
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round">
+    <span className="bk-chart">
+      <span className="bk-doc-title">月度数据</span>
+      <span className="bk-bars">
+        {[42, 68, 52, 86, 64].map((h, i) => (
+          <span key={i} style={{ height: `${h}%` }} />
+        ))}
+      </span>
+    </span>
+  );
+}
+
+/** 封面底纹：几笔很淡的手绘线条（仿 Claude 的新建卡片），颜色跟图标一样，透明度很低 */
+function Doodle() {
+  return (
+    <svg className="art-doodle" viewBox="0 0 160 110" preserveAspectRatio="none" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+      <path d="M8 84c10-26 22-40 30-34s-6 30 4 30 18-40 30-38" />
+      <path d="M112 14c14 2 30 8 38 18M118 96h30v-24" />
+      <path d="M96 100c4-8 12-12 20-10" />
+    </svg>
+  );
+}
+
+/** 分类图标：网页/文档/代码/全部用图标库里的，图表库里没有，用自己画的柱状图 */
+const CAT_LIB: Partial<Record<CatKey, string>> = { all: "artifact", html: "web", markdown: "document", code: "code" };
+function CatIcon({ k, size = 20, stroke = 1.7 }: { k: CatKey; size?: number; stroke?: number }) {
+  if (CAT_LIB[k]) return <AgentIcon name={CAT_LIB[k]!} width={size} height={size} strokeWidth={stroke} />;
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={stroke} strokeLinecap="round" strokeLinejoin="round">
       {CAT_PATHS[k]}
     </svg>
   );
@@ -88,7 +169,8 @@ export function ArtifactsPage(props: {
   leftOpen: boolean;
   modKey: string;
   onToggleLeft(): void;
-  onOpen(sessionId: string, artifactId?: string): void;
+  /** 打开产出物：artifactId 是面板里的产出物；file 是生成的文件（Word / Excel / PPT），按文件打开 */
+  onOpen(sessionId: string, artifactId?: string, file?: string): void;
   /** 顶部 4 张卡片：新开一个对话，输入框里预先填好 text */
   onCreate(text: string): void;
 }) {
@@ -163,16 +245,26 @@ export function ArtifactsPage(props: {
           </div>
           <p className="arts-desc">对话里生成的网页、文档、代码和图表都收在这里</p>
 
-          {/* 新建卡片（2026-10-29）：4 张小正方形，点一下 = 新开一个对话，输入框里预先填好开头（如“帮我做一个网页：”），
-              光标停在末尾，接着写需求就能发。不是筛选按钮（筛选在下面的工具栏里，只管下面的产出物列表） */}
+          {/* 新建卡片（2026-10-29 改成“翻书”样式，参考 Uiverse eslam-hany 的 book）：
+              封面 = 彩色图标 + 名称；鼠标移上去封面像书一样向左翻开，露出里面的小场景
+              （网页 = Mac 浏览器、文档 = 一叠纸、代码 = 终端、图表 = 柱状图）。
+              点一下 = 新开一个对话，输入框里预先填好开头（如“帮我做一个网页：”）。不是筛选按钮 */}
+          <div className="arts-new-title">创建新内容</div>
           <div className="arts-cats">
             {CREATE.map((c) => (
-              <button key={c.k} className={`art-cat c-${c.k}`} onClick={() => props.onCreate(c.text)} title={`新建${c.label}`}>
-                <span className="art-cat-plus" aria-hidden>
-                  <IPlus width={10} height={10} />
+              <button key={c.k} className={`art-new c-${c.k}`} onClick={() => props.onCreate(c.text)} title={`新建${c.label}`}>
+                <span className="art-book">
+                  <span className="art-book-in" aria-hidden>
+                    <span className="bk-scene">
+                      <BookScene k={c.k} />
+                    </span>
+                  </span>
+                  <span className="art-book-cover">
+                    <Doodle />
+                    <CatIcon k={c.k} size={34} stroke={2.1} />
+                  </span>
                 </span>
-                <CatIcon k={c.k} size={20} />
-                <span className="art-cat-label">{c.label}</span>
+                <span className="art-new-label">{c.label}</span>
               </button>
             ))}
           </div>
@@ -274,11 +366,11 @@ export function ArtifactsPage(props: {
                   className={`arts-row ${rowMenu === a.id ? "menu-open" : ""}`}
                   role="button"
                   tabIndex={0}
-                  onClick={() => props.onOpen(a.sessionId, a.id)}
-                  onKeyDown={(e) => e.key === "Enter" && props.onOpen(a.sessionId, a.id)}
+                  onClick={() => props.onOpen(a.sessionId, a.file ? undefined : a.id, a.file)}
+                  onKeyDown={(e) => e.key === "Enter" && props.onOpen(a.sessionId, a.file ? undefined : a.id, a.file)}
                   title={`${a.title}\n来自：${projName(a.projectId) ? `${projName(a.projectId)} · ` : ""}${a.sessionTitle}`}
                 >
-                  <span className={`arts-row-ico c-${a.kind}`}>{KIND[a.kind].icon}</span>
+                  <span className={`arts-row-ico c-${tone(a)}`}>{toneIcon(a)}</span>
                   <span className="arts-row-title ellipsis">{a.title}</span>
                   <span className="arts-when">创建于 {ago(a.createdAt)}</span>
                   <div className="arts-more-wrap" ref={rowMenu === a.id ? rowMenuRef : undefined} onClick={(e) => e.stopPropagation()}>
@@ -287,7 +379,7 @@ export function ArtifactsPage(props: {
                     </button>
                     {rowMenu === a.id && (
                       <div className="row-menu">
-                        <button className="pop-item" onClick={() => (setRowMenu(null), props.onOpen(a.sessionId, a.id))}>打开</button>
+                        <button className="pop-item" onClick={() => (setRowMenu(null), props.onOpen(a.sessionId, a.file ? undefined : a.id, a.file))}>打开</button>
                         <button className="pop-item" onClick={() => (setRowMenu(null), props.onOpen(a.sessionId))}>打开所在对话</button>
                         <button
                           className="pop-item"
@@ -307,14 +399,49 @@ export function ArtifactsPage(props: {
           ) : (
             <div className="arts-grid">
               {shown.map((a) => (
-                <button key={a.id} className="art-card" onClick={() => props.onOpen(a.sessionId, a.id)} title={`打开：${a.title}\n来自：${projName(a.projectId) ? `${projName(a.projectId)} · ` : ""}${a.sessionTitle}`}>
-                  {/* 仿 Claude 的产出物卡片：灰色底板上“立着”一张白色小页面，只露出上半截，里面是内容开头 */}
-                  <div className={`art-preview ${a.kind}`}>
+                <button key={a.id} className="art-card" onClick={() => props.onOpen(a.sessionId, a.file ? undefined : a.id, a.file)} title={`打开：${a.title}\n来自：${projName(a.projectId) ? `${projName(a.projectId)} · ` : ""}${a.sessionTitle}`}>
+                  {/* 仿 Claude 的产出物卡片：底板上“立着”一张小页面，只露出上半截。
+                      2026-10-29：四种类型的小页面长得不一样，一眼能分开——
+                      文档 = 白纸（衬线标题 + 正文）；代码 = 深色编辑器（文件名标签 + 行号 + 等宽字）；
+                      网页 = 浏览器窗口（三个圆点 + 地址栏 + 色块横幅）；图表 = 白底直接显示图。
+                      底板和下面的图标块都带上这一类的颜色（和顶部新建卡片同一套：网页蓝、文档黄、代码绿、图表粉） */}
+                  <div className={`art-preview p-${tone(a)} c-${tone(a)}`}>
                     <div className="art-page">
                       {a.svg ? (
                         // SVG 用 <img> 画：图片里的脚本不会执行，比直接插进页面安全
                         // eslint-disable-next-line @next/next/no-img-element
                         <img src={`data:image/svg+xml;charset=utf-8,${encodeURIComponent(a.svg)}`} alt="" />
+                      ) : a.kind === "code" ? (
+                        <>
+                          <div className="art-bar">
+                            <i />
+                            <i />
+                            <i />
+                            <span>{a.language || "code"}</span>
+                          </div>
+                          <div className="art-code">
+                            {(a.snippet || "").split("\n").slice(0, 9).map((l, i) => (
+                              <span key={i}>
+                                <em>{i + 1}</em>
+                                {l || " "}
+                              </span>
+                            ))}
+                          </div>
+                        </>
+                      ) : a.kind === "html" ? (
+                        <>
+                          <div className="art-bar">
+                            <i />
+                            <i />
+                            <i />
+                            <span />
+                          </div>
+                          <div className="art-web">
+                            <b>{a.title}</b>
+                            <span className="art-hero" />
+                            <span>{a.snippet || "（空）"}</span>
+                          </div>
+                        </>
                       ) : (
                         <>
                           <b className="art-page-title">{a.title}</b>
@@ -324,11 +451,11 @@ export function ArtifactsPage(props: {
                     </div>
                   </div>
                   <div className="art-meta">
-                    <span className={`art-meta-ico c-${a.kind}`}>{KIND[a.kind].icon}</span>
+                    <span className={`art-meta-ico c-${tone(a)}`}>{toneIcon(a)}</span>
                     <div className="art-meta-text">
                       <div className="art-title ellipsis">{a.title}</div>
                       <div className="art-sub ellipsis">
-                        {a.svg ? "SVG" : a.kind === "code" && a.language ? a.language : KIND[a.kind].label} · 创建于 {ago(a.createdAt)}
+                        {a.svg ? "SVG" : a.file ? a.file.split(".").pop()!.toUpperCase() : a.kind === "code" && a.language ? a.language : KIND[a.kind].label} · 创建于 {ago(a.createdAt)}
                       </div>
                     </div>
                   </div>

@@ -7,12 +7,13 @@ import { Avatar, type SettingsTab } from "./UserMenu";
 import { Connections } from "./Connections";
 import { SandboxPane } from "./SandboxPane";
 import { SkillsPane } from "./SkillsPane";
-import { IChart, IChip, IGear, IInfo, IKeyboard, ISpark, IThink, IX } from "./Icons";
+import { IChart, IChip, IGear, IInfo, IKeyboard, ISpark, ITerminal, IMemory, IX } from "./Icons";
 
 const TABS: { id: SettingsTab; label: string; icon: React.ReactNode }[] = [
   { id: "general", label: "通用", icon: <IGear /> },
   { id: "model", label: "模型", icon: <IChip /> },
-  { id: "memory", label: "记忆", icon: <IThink /> },
+  { id: "agent", label: "运行", icon: <ITerminal /> },
+  { id: "memory", label: "记忆", icon: <IMemory /> },
   { id: "skills", label: "技能", icon: <ISpark /> },
   { id: "usage", label: "用量", icon: <IChart /> },
   { id: "keys", label: "快捷键", icon: <IKeyboard /> },
@@ -173,6 +174,17 @@ export function SettingsModal(props: {
                         onChange={(v) => update({ sideFontSize: v as Settings["sideFontSize"] })}
                       />
                     </Row>
+                    {/* 代码字体：下拉选，下面一行用选中的字体实时预览（0O 1lI 这些容易混的字符放在一起看） */}
+                    <Row label="代码字体" hint="代码块、思维链里的代码和行内代码；中文仍用苹方 / 雅黑">
+                      <select className="set-input select" value={s.codeFont} onChange={(e) => update({ codeFont: e.target.value as Settings["codeFont"] })}>
+                        {CODE_FONT_OPTIONS.map(([v, label]) => (
+                          <option key={v} value={v}>
+                            {label}
+                          </option>
+                        ))}
+                      </select>
+                    </Row>
+                    <pre className="set-code-preview">{`def fib(n: int) -> int:  # 0O 1lI {}[] != =>\n    return n if n < 2 else fib(n - 1) + fib(n - 2)`}</pre>
                   </Section>
 
                   <Section title="使用习惯">
@@ -196,7 +208,7 @@ export function SettingsModal(props: {
               {props.tab === "model" && (
                 <>
                   <Section title="当前模型">
-                    <Row label="对话使用的模型" hint="也可以在输入框下方随时切换">
+                    <Row label="对话使用的模型" hint="也可以点下面的模型名，或在输入框下方随时切换">
                       <select className="set-input select" value={s.currentModel} onChange={(e) => update({ currentModel: e.target.value })}>
                         {Object.entries(groupBy(modelOptions(s), (o) => o.group)).map(([g, opts]) => (
                           <optgroup key={g} label={g}>
@@ -211,11 +223,12 @@ export function SettingsModal(props: {
                     </Row>
                   </Section>
 
-                  <Section title="模型连接" hint="填写 API 地址和 Key 接入 DeepSeek、OpenAI、Kimi、Ollama 等 OpenAI 兼容服务。Key 只保存在服务器上。">
+                  <Section title="模型服务" hint="接入 Claude、OpenAI、DeepSeek、通义千问、Ollama 以及任意 OpenAI 兼容服务；点模型名即可设为当前模型。Key 只保存在服务器上。">
                     <div className="set-block">
                       <Connections
                         connections={s.connections}
                         currentModel={s.currentModel}
+                        onPick={(m) => update({ currentModel: m })}
                         onSave={async (connections, currentModel) => {
                           props.onChange(await api.saveSettings(currentModel ? { connections, currentModel } : { connections }));
                           flash();
@@ -223,7 +236,11 @@ export function SettingsModal(props: {
                       />
                     </div>
                   </Section>
+                </>
+              )}
 
+              {props.tab === "agent" && (
+                <>
                   <Section title="Agent 运行">
                     <Row label="最大步数" hint="一轮对话最多调用模型几次，防止无限循环">
                       <Stepper value={s.maxSteps} min={1} max={100} onChange={(v) => update({ maxSteps: v }, 400)} />
@@ -603,6 +620,17 @@ function Row(props: { label: string; hint?: string; children: React.ReactNode })
     </div>
   );
 }
+
+const CODE_FONT_OPTIONS: [Settings["codeFont"], string][] = [
+  ["jetbrains", "JetBrains Mono（默认）"],
+  ["fira", "Fira Code"],
+  ["plex", "IBM Plex Mono"],
+  ["source", "Source Code Pro"],
+  ["geist", "Geist Mono"],
+  ["roboto", "Roboto Mono"],
+  ["cascadia", "Cascadia Mono（Windows 11 自带）"],
+  ["consolas", "Consolas（Windows 自带）"],
+];
 
 function Seg(props: { value: string; options: [string, string][]; onChange(v: string): void }) {
   return (

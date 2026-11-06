@@ -111,7 +111,8 @@ button.att:hover { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fg) 25%,
 /* 新对话页问候语下面：这次对话会建在哪个项目里 */
 .welcome-proj { display: inline-flex; align-items: center; gap: 6px; margin-top: -10px; padding: 3px 10px; border-radius: 999px; font-size: 12.5px; color: var(--fg-2); background: var(--soft); }
 /* 对话顶部标题前面的“项目名 /” */
-.head-proj { flex: none; max-width: 30%; display: inline-flex; align-items: center; gap: 5px; font-size: 13px; color: var(--fg-3); }
+.head-proj { flex: none; max-width: 30%; min-width: 0; display: inline-flex; align-items: center; gap: 4px; font-size: 13px; color: var(--fg-3); }
+.head-proj > .ellipsis { min-width: 0; }
 .head-proj i { font-style: normal; margin: 0 2px 0 4px; opacity: 0.6; }
 
 /* 标题下的分隔横线（2026-10-29）：
@@ -178,3 +179,6 @@ button.att:hover { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fg) 25%,
    给展开内容上面留 6px，并让悬停的灰底变成左右缩进、带圆角的一块，不再顶到代码框上 */
 .chat .tr-body { padding-top: 6px; }
 .chat .tr.can > .tr-row { margin: 2px 6px; padding-left: 8px; padding-right: 8px; border-radius: 8px; }
+
+/* 思维链展开后，代码框和输出框之间原来只有 6px，看起来几乎挨着；拉开到 10px（2026-10-29） */
+.chat .tr-body > * + * { margin-top: 10px; }

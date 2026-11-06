@@ -14,7 +14,7 @@ export interface OutputItem {
   key: string;
   name: string;
   ext: string; // 右侧的类型标签：MD / HTML / PY / TXT …
-  icon: "code" | "doc" | "web" | "file" | "folder";
+  icon: "code" | "doc" | "web" | "chart" | "file" | "folder";
   view: View;
   ts: number; // 产生时间，用于排序
 }
@@ -46,9 +46,13 @@ export function artifactExt(a: Artifact) {
   return LANG_EXT[l] || l || "txt";
 }
 
-function iconForExt(ext: string): OutputItem["icon"] {
-  if (ext === "md" || ext === "txt" || ext === "csv") return "doc";
-  if (ext === "html" || ext === "htm" || ext === "svg") return "web";
+/** 按扩展名决定显示哪种图标（和颜色，见 KindIcon）：svg 是图表，html 是网页 */
+export function iconForExt(ext: string): OutputItem["icon"] {
+  if (ext === "dir") return "folder";
+  if (ext === "md" || ext === "txt" || ext === "csv" || ext === "docx" || ext === "pptx" || ext === "pdf") return "doc";
+  if (ext === "xlsx") return "code";
+  if (ext === "svg") return "chart";
+  if (ext === "html" || ext === "htm") return "web";
   if (CODE_EXT.has(ext)) return "code";
   return "file";
 }
@@ -64,7 +68,7 @@ export function collectOutputs(messages: StoredMessage[], artifacts: Artifact[])
   // 产出物
   for (const a of artifacts) {
     const ext = artifactExt(a);
-    outputs.push({ key: "a:" + a.id, name: a.title, ext, icon: a.kind === "html" ? "web" : iconForExt(ext), view: { type: "artifact", id: a.id }, ts: a.createdAt });
+    outputs.push({ key: "a:" + a.id, name: a.title, ext, icon: iconForExt(ext), view: { type: "artifact", id: a.id }, ts: a.createdAt });
   }
 
   // 工具调用：写入的文件算“输出”，读取 / 目录 / 网页算“已使用”
@@ -79,7 +83,8 @@ export function collectOutputs(messages: StoredMessage[], artifacts: Artifact[])
         continue;
       }
       const path = String(args.path ?? "");
-      if ((c.name === "write_file" || c.name === "edit_file") && path) { // 写入或修改过的文件都算“输出”，点开能看改动
+      // 写入或修改过的文件都算“输出”，点开能看改动；write_document 生成的 Word / Excel / PPT 也算（以前漏了，生成了却不在“输出”里）
+      if ((c.name === "write_file" || c.name === "edit_file" || c.name === "write_document") && path) {
         const k = "f:" + path;
         const i = outputs.findIndex((o) => o.key === k);
         if (i >= 0) outputs.splice(i, 1); // 同一文件写多次只保留最新一次

@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { DragEvent } from "react";
 import type { Groups, Project, SessionMeta } from "@/lib/shared";
 import { CoreLogo } from "./CoreLogo";
-import { IChevron, ICode, IDoc, IFile, IFolder, IGlobe, IFolderPlus, IMore, IPanelLeft, IPencil, IPlus, IGear, ILayers, ISearch, ITable, IX } from "./Icons";
+import { AgentIcon, IChevron, ICode, IDoc, IFile, IFolder, IGlobe, IMore, IPanelLeft, IPencil, IPlus, IGear, IFolderPlusLine, ILayersLine, ISearchLine, ITable, IX } from "./Icons";
 import "./Sidebar.css";
 import { UserMenu, type SettingsTab } from "./UserMenu";
 
@@ -57,6 +57,10 @@ export function Sidebar(props: {
   onEditProject(p: Project): void;
   onDeleteProject(id: string): void;
   onNewInProject(id: string): void;
+  /** 点项目名：打开项目页 */
+  onOpenProject(id: string): void;
+  /** 当前打开的项目页（左栏这一行高亮） */
+  projectHomeId?: string;
   onMoveToProject(sessionId: string, projectId: string | null): void;
   /** 固定模式下是“收起”，悬浮模式下是“固定” */
   onCollapse(): void;
@@ -88,6 +92,8 @@ export function Sidebar(props: {
   const [renaming, setRenaming] = useState<string | null>(null);
   const [dropOn, setDropOn] = useState<string | null>(null);
   const [dragging, setDragging] = useState<string | null>(null);
+  /** 拖到某一行上时，插入线画在这一行的上面还是下面 */
+  const [rowDrop, setRowDrop] = useState<{ id: string; after: boolean } | null>(null);
   /** 打开了“…”菜单的对话 */
   const [menu, setMenu] = useState<string | null>(null);
   useEffect(() => {
@@ -112,10 +118,18 @@ export function Sidebar(props: {
       const gid = valid.has(groups.assign[s.id]) ? groups.assign[s.id] : UNGROUPED;
       m.set(gid, [...(m.get(gid) ?? []), s]);
     }
+    // 组内排序：没拖过的（新对话）按最近更新排在最上面，拖过的按 order 里的先后
+    const rank = new Map((groups.order ?? []).map((id, i) => [id, i]));
+    for (const [gid, list] of m) {
+      const fresh = list.filter((s) => !rank.has(s.id));
+      const placed = list.filter((s) => rank.has(s.id)).sort((a, b) => rank.get(a.id)! - rank.get(b.id)!);
+      m.set(gid, [...fresh, ...placed]);
+    }
     return m;
   }, [sessions, groups, q]);
 
-  const sections = [{ id: UNGROUPED, name: "未分组" }, ...groups.groups];
+  // 自建分组在上（新建的在最前面），“未分组”放在最下面
+  const sections = [...groups.groups, { id: UNGROUPED, name: "未分组" }];
 
   // 每个项目里的对话（同样按最近更新排序；搜索时一起筛选）
   const byProject = useMemo(() => {
@@ -132,11 +146,25 @@ export function Sidebar(props: {
     const assign = { ...groups.assign };
     if (gid === UNGROUPED) delete assign[sessionId];
     else assign[sessionId] = gid;
-    props.onGroupsChange({ ...groups, assign });
+    // 拖到分组标题上：不指定位置，排到这个组的最上面
+    props.onGroupsChange({ ...groups, assign, order: (groups.order ?? []).filter((x) => x !== sessionId) });
+  }
+  /** 拖到某个分组里某一行的上面 / 下面：先归到这个组，再把这个组的顺序整体写进 order */
+  function placeAt(sessionId: string, gid: string, targetId: string, after: boolean) {
+    if (sessionId === targetId) return;
+    if (sessions.find((x) => x.id === sessionId)?.projectId) props.onMoveToProject(sessionId, null);
+    const assign = { ...groups.assign };
+    if (gid === UNGROUPED) delete assign[sessionId];
+    else assign[sessionId] = gid;
+    const list = (byGroup.get(gid) ?? []).map((s) => s.id).filter((id) => id !== sessionId);
+    const at = list.indexOf(targetId);
+    list.splice(after ? at + 1 : at, 0, sessionId);
+    const inList = new Set(list);
+    props.onGroupsChange({ ...groups, assign, order: [...(groups.order ?? []).filter((id) => !inList.has(id)), ...list] });
   }
   function addGroup() {
     const id = "g" + Date.now().toString(36);
-    props.onGroupsChange({ ...groups, groups: [...groups.groups, { id, name: "新分组" }] });
+    props.onGroupsChange({ ...groups, groups: [{ id, name: "新分组" }, ...groups.groups] });
     setEditing(id);
   }
   function rename(id: string, name: string) {
@@ -175,22 +203,55 @@ export function Sidebar(props: {
       e.preventDefault();
       const id = e.dataTransfer.getData(DRAG_TYPE);
       setDropOn(null);
+      // 拖到别的分组后这一行会在新位置重新创建，原来那个元素收不到 dragend，所以在这里清掉“拖动中”的半透明状态
+      setDragging(null);
+      setRowDrop(null);
       if (id) onDrop(id);
     },
   });
 
-  /** 一行对话（分组里和项目里共用）：点击打开，拖到别的分组 / 项目上移动，右边“…”菜单 */
-  const renderRow = (s: SessionMeta) => (
+  /**
+   * 一行对话（分组里和项目里共用）：点击打开，拖到别的分组 / 项目上移动，右边“…”菜单。
+   * 传了 gid（在分组里）时，这一行本身也能接住拖拽：鼠标在上半截插到它上面，下半截插到它下面。
+   */
+  const renderRow = (s: SessionMeta, gid?: string) => (
     <div
       key={s.id}
-      className={`side-item session ${s.id === currentId ? "active" : ""} ${dragging === s.id ? "dragging" : ""} ${menu === s.id ? "menu-open" : ""}`}
+      className={`side-item session ${s.id === currentId ? "active" : ""} ${dragging === s.id ? "dragging" : ""} ${menu === s.id ? "menu-open" : ""} ${
+        rowDrop?.id === s.id ? (rowDrop.after ? "drop-after" : "drop-before") : ""
+      }`}
       draggable={renaming !== s.id}
       onDragStart={(e) => {
         e.dataTransfer.setData(DRAG_TYPE, s.id);
         e.dataTransfer.effectAllowed = "move";
         setDragging(s.id);
       }}
-      onDragEnd={() => (setDragging(null), setDropOn(null))}
+      onDragEnd={() => (setDragging(null), setDropOn(null), setRowDrop(null))}
+      {...(gid !== undefined && {
+        onDragOver: (e: DragEvent) => {
+          if (!e.dataTransfer.types.includes(DRAG_TYPE)) return;
+          e.preventDefault();
+          e.stopPropagation();
+          e.dataTransfer.dropEffect = "move";
+          const r = e.currentTarget.getBoundingClientRect();
+          const after = e.clientY > r.top + r.height / 2;
+          if (rowDrop?.id !== s.id || rowDrop.after !== after) setRowDrop({ id: s.id, after });
+          if (dropOn !== gid) setDropOn(gid);
+        },
+        onDragLeave: (e: DragEvent) => {
+          if (!e.currentTarget.contains(e.relatedTarget as Node)) setRowDrop((v) => (v?.id === s.id ? null : v));
+        },
+        onDrop: (e: DragEvent) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const id = e.dataTransfer.getData(DRAG_TYPE);
+          const after = rowDrop?.id === s.id ? rowDrop.after : false;
+          setRowDrop(null);
+          setDropOn(null);
+          setDragging(null);
+          if (id) placeAt(id, gid, s.id, after);
+        },
+      })}
       onClick={() => renaming !== s.id && props.onOpen(s.id)}
       title={s.title}
     >
@@ -281,7 +342,7 @@ export function Sidebar(props: {
       {searching ? (
         <div className="side-search-box">
           <span className="ico">
-            <ISearch width={14} height={14} />
+            <ISearchLine width={14} height={14} />
           </span>
           <input
             autoFocus
@@ -298,7 +359,7 @@ export function Sidebar(props: {
       ) : (
         <button className="new-btn search-btn" onClick={() => setSearching(true)}>
           <span className="plus">
-            <ISearch width={14} height={14} />
+            <ISearchLine width={14} height={14} />
           </span>
           <span>搜索</span>
         </button>
@@ -307,7 +368,7 @@ export function Sidebar(props: {
       {/* 新建项目：和“新建”“搜索”同样的一行，点了弹出窗口（Workspace 里的 ProjectModal） */}
       <button className="new-btn search-btn" onClick={props.onNewProject}>
         <span className="plus">
-          <IFolderPlus width={14} height={14} />
+          <IFolderPlusLine width={14} height={14} />
         </span>
         <span>新建项目</span>
       </button>
@@ -315,7 +376,7 @@ export function Sidebar(props: {
       {/* 产出物：所有对话里做出来的网页、文档、代码集中在一页（ArtifactsPage） */}
       <button className={`new-btn search-btn ${props.artifactsActive ? "on" : ""}`} onClick={props.onOpenArtifacts}>
         <span className="plus">
-          <ILayers width={14} height={14} />
+          <ILayersLine width={14} height={14} />
         </span>
         <span>产出物</span>
       </button>
@@ -334,9 +395,16 @@ export function Sidebar(props: {
             const isFolded = !folded.has(key) && !q && !items.some((x) => x.id === currentId);
             return (
               <div key={p.id} className={`grp proj-grp ${dropOn === key ? "drop" : ""}`} {...dropHandlers(key, (sid) => props.onMoveToProject(sid, p.id))}>
-                <div className={`grp-head proj-head ${projMenu === p.id ? "menu-open" : ""}`} onClick={() => toggleFold(key)} title={p.description || p.name}>
-                  <IChevron width={10} height={10} className={`grp-chev ${isFolded ? "" : "rot"}`} />
-                  <IFolder width={14} height={14} className="proj-ico" />
+                {/* 点项目名进入项目页（Workspace 的 ProjectHome）；前面的箭头单独一个按钮，只管展开 / 收起 */}
+                <div
+                  className={`grp-head proj-head ${projMenu === p.id ? "menu-open" : ""} ${props.projectHomeId === p.id ? "on" : ""}`}
+                  onClick={() => props.onOpenProject(p.id)}
+                  title={p.description || p.name}
+                >
+                  <button className="proj-fold" title={isFolded ? "展开" : "收起"} onClick={(e) => (e.stopPropagation(), toggleFold(key))}>
+                    <IChevron width={10} height={10} className={`grp-chev ${isFolded ? "" : "rot"}`} />
+                  </button>
+                  <AgentIcon name={p.icon || "folder"} width={14} height={14} className="proj-ico" />
                   <span className="grp-name ellipsis">{p.name}</span>
                   <span className="grp-count">{items.length || ""}</span>
                   <button className="grp-act" title="在这个项目里新建对话" onClick={(e) => {
@@ -367,8 +435,7 @@ export function Sidebar(props: {
                 </div>
                 {!isFolded && (
                   <div className="grp-items">
-                    {items.map(renderRow)}
-                    {!items.length && <div className="grp-empty">还没有对话。点右边的 + 新建，或把对话拖到这里</div>}
+                    {items.map((s) => renderRow(s))}
                   </div>
                 )}
               </div>
@@ -426,8 +493,7 @@ export function Sidebar(props: {
 
                 {!isFolded && (
                   <div className="grp-items">
-                    {items.map(renderRow)}
-                    {!items.length && g.id && <div className="grp-empty">把对话拖到这里</div>}
+                    {items.map((s) => renderRow(s, g.id))}
                   </div>
                 )}
               </div>

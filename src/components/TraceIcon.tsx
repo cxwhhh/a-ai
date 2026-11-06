@@ -1,5 +1,5 @@
 import {
-  IBook, ICalc, IChart, ICheck, IClock, ICode, IDownload, IFile,
+  IDoc, ICalc, IChart, ICheck, IClock, ICode, IDownload, IFile,
   IFileEdit, IFolder, IGlobe, IInfo, ILayers, ISearch, ISpark, ITerminal, IThink, IWrench,
 } from "./Icons";
 
@@ -10,7 +10,7 @@ import {
  */
 const ICONS = {
   thinking: IThink, plan: ICheck, note: IInfo, compact: ILayers, check: ICheck, retry: IWrench,
-  read_file: IBook, read_document: IBook, list_files: IFolder,
+  read_file: IDoc, read_document: IDoc, list_files: IFolder,
   write_file: IFileEdit, edit_file: IFileEdit, file_op: IFolder, write_document: IFileEdit,
   run_command: ITerminal, run_python: ICode,
   glob: ISearch, grep: ISearch, web_search: ISearch, research: ISearch,

@@ -16,18 +16,19 @@ export interface ToolCall {
 }
 
 export interface ChatMessage {
-  /** 请求视图中的原始消息 ID，仅供内部确认投递；provider 转换协议时不发送此字段。 */
-  sourceMessageId?: string;
   role: Role;
   content: string;
   /** assistant 的思考过程（推理模型才有；只用于展示，不再发回给模型） */
   reasoning?: string;
-  /** provider 专用的原始回复（如带签名的思考块）；由对应适配器校验后读取。 */
-  raw?: unknown;
   /** assistant 发起的工具调用 */
   toolCalls?: ToolCall[];
   /** role=tool 时，对应哪一次调用 */
   toolCallId?: string;
+  /**
+   * assistant：模型原始返回的内容块（只有部分 provider 有，格式由 provider 自己定）。
+   * Claude 的思考块带签名，下次请求要原样发回，所以整条回复原样存着（见 providers/anthropic.ts）
+   */
+  raw?: unknown;
 }
 
 /** JSON Schema（只用到常见子集） */
@@ -76,7 +77,7 @@ export type StreamChunk =
   | { type: "text"; delta: string }
   | { type: "tool_call_delta"; index: number; name: string; delta: string }
   | { type: "tool_call"; call: ToolCall }
-  | { type: "raw"; raw: unknown }
+  | { type: "raw"; raw: unknown } // 原始回复，agent 存进 assistant 消息的 raw 字段
   | { type: "done"; finishReason?: "stop" | "tool_calls" | "length" | string; usage?: Usage };
 
 export interface LLMProvider {

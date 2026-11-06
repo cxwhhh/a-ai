@@ -21,7 +21,7 @@ export const runPython: Tool<{ code: string; purpose?: string }> = {
       "在沙箱里运行一段 Python 3 代码，返回 {exitCode, timedOut, stdout, stderr}（各保留最后 8000 字）。结果必须用 print 输出，否则看不到。" +
       "适合：数据处理与分析（pandas）、读写 csv/json/xlsx、多步计算、画图（matplotlib，plt.savefig 保存成 png，中文字体已配置好）、处理图片等二进制文件、验证代码。" +
       "工作目录是工作区，能直接读写工作区里的文件，也能读授权目录（用绝对路径）。限时 20 秒。Docker 沙箱里装了 pandas、numpy、matplotlib、openpyxl、python-docx、pypdf，实际可用的以系统提示的「运行环境」为准；没装的库不要自己从头实现（例如手写 PNG 编码），换别的办法或告诉用户。" +
-      "不要用于：单个算式（用 calculator）；读 PDF/Word/Excel/PPT 的文字（用 read_document）；联网（沙箱默认断网，用 web_fetch、download_file）；git、跑测试、解压这类命令行操作（用 run_command）。",
+      "不要用于：单个算式（用 calculator）；读 PDF/Word/Excel/PPT 的文字（用 read_document）；git、跑测试、解压这类命令行操作（用 run_command）。联网以当前沙箱设置为准，关闭时使用 web_fetch、download_file。",
     parameters: {
       type: "object",
       properties: {
@@ -51,6 +51,8 @@ export const runPython: Tool<{ code: string; purpose?: string }> = {
       workspace: ctx.workspace,
       cwd: root,
       script: `exec ${shellQuote(bin)} .runs/${name}`,
+      // Windows：不经过 bash，直接 python.exe 脚本路径（没装 Git Bash 也能跑；路径里的 \ 和空格也不用转义）
+      argv: [bin, path.join(".runs", name)],
       env: sandboxEnv(root),
       timeoutMs: TIMEOUT_MS,
       signal: ctx.signal,

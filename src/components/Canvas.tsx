@@ -2,12 +2,13 @@
 import { useEffect, useMemo, useState } from "react";
 import type { Artifact, StoredMessage } from "@/lib/shared";
 import { fileChanges, originalOf } from "@/lib/diff";
-import { artifactExt, extOf, type View } from "@/lib/outputs";
+import { artifactExt, extOf, iconForExt, type View } from "@/lib/outputs";
+import { KindIcon } from "./KindIcon";
 import { Markdown } from "./Markdown";
 import { CodeLines, FileBody, fmtSize, useFile } from "./FileDrawer";
 import { SvgFrame } from "./SvgFrame";
 import { FileDiff, diffStat } from "./Code";
-import { ICheck, ICode, ICopy, IDownload, IEye, IFile, IFolder, ILayers, IX } from "./Icons";
+import { ICheck, ICode, ICopy, IDownload, IEye, IX } from "./Icons";
 
 /**
  * 右侧大视图（嵌入式卡片）：代码、Markdown、网页、工作区文件都在这里“大”显示。
@@ -66,9 +67,10 @@ export function Canvas(props: {
   return (
     <section className="viewer">
       <div className="viewer-head">
-        <span className="viewer-icon">{artifact ? <ILayers /> : isDir ? <IFolder /> : <IFile />}</span>
+        <KindIcon kind={isDir ? "folder" : iconForExt(ext)} tile className="viewer-icon" />
         <div className="viewer-title">
           <div className={`ellipsis ${view.type === "file" ? "mono" : ""}`}>{title}</div>
+          {artifact?.file && <div className="viewer-sub">已保存到 {artifact.file}</div>}
           {file?.type === "file" && (
             <div className="viewer-sub">
               {fmtSize(file.size)} · {new Date(file.mtime).toLocaleString()}
@@ -101,6 +103,11 @@ export function Canvas(props: {
               <ICode />
             </button>
           </div>
+        )}
+        {file?.type === "file" && file.binary && (
+          <a className="icon-btn" href={`/api/files?download=1&path=${encodeURIComponent(file.path)}`} download title="下载">
+            <IDownload />
+          </a>
         )}
         {content && (
           <>

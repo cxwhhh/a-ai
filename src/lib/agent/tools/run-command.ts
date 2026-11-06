@@ -2,7 +2,7 @@ import "server-only";
 import { existsSync, promises as fs, realpathSync } from "node:fs";
 import path from "node:path";
 import { audit } from "../../server/audit";
-import { checkCommand, networkHint, runInSandbox, sandboxEnv, sandboxInfo, sandboxRoot } from "../../server/sandbox";
+import { checkCommand, networkHint, runInSandbox, sandboxEnv, sandboxInfo, sandboxRoot, within } from "../../server/sandbox";
 import type { Tool, ToolContext } from "./types";
 
 const DEFAULT_TIMEOUT = 30_000;
@@ -36,7 +36,7 @@ export const runCommand: Tool<{ command: string; purpose?: string; description?:
       "当前目录会保留：每条命令都从上一条命令结束时的目录开始执行（不是每次回到工作区根目录）。ranIn 是这条命令开始时的目录，cwd 是结束后的目录（相对工作区，. = 工作区根目录），下一条命令就从 cwd 开始。" +
       "cd 之前先看上一次结果的 cwd：已经在目标目录就不要再 cd；命令里的相对路径是相对当前目录的。" +
       "适合：git、运行脚本和测试（python -m unittest、pytest、npm test）、解压、批量处理文件。" +
-      "不要用于：读写文件（用 read_file、read_document、edit_file、write_file、file_op，不要用 cat、sed、echo >、mkdir、mv、rm）；找文件（用 glob、grep，不要用 find、rg）；纯 Python 计算（用 run_python）；联网（默认断网，pip install、curl 会失败，用 web_fetch、download_file）。" +
+      "不要用于：读写文件（用 read_file、read_document、edit_file、write_file、file_op，不要用 cat、sed、echo >、mkdir、mv、rm）；找文件（用 glob、grep，不要用 find、rg）；纯 Python 计算（用 run_python）。联网以当前沙箱设置为准，关闭时使用 web_fetch、download_file。" +
       "只能访问工作区和授权目录（系统提示里有列表），其他路径和密钥文件会被拒绝。默认限时 30 秒，最长 120 秒。" +
       "不能交互：没有输入，不要运行 vim、top、python（不带脚本）这类等待输入的程序；不要用 & 启动后台常驻进程，命令结束时会被一起结束。" +
       "会修改东西的命令会先请用户确认；被拒绝时不要换个写法再试，换一种做法或询问用户。",
@@ -90,7 +90,9 @@ export const runCommand: Tool<{ command: string; purpose?: string; description?:
     const timeout = Math.min(Math.max(Number(timeout_ms) || DEFAULT_TIMEOUT, 1000), MAX_TIMEOUT);
     // 命令结束（包括中途 exit）时，trap 在 stdout 最后打印一行“目录标记”，用来实现“cd 会保留”。
     // （以前用第 4 个管道 fd 3 传目录，但 docker exec 只转发 stdout/stderr，所以改成标记行，收到后从输出里去掉）
-    const script = `trap 'printf "\\n${MARK}%s\\n" "$(pwd -P)"' EXIT\n${cmd}`;
+    // Windows 的 Git Bash 里 pwd 是 /c/Users/… 这种写法，用 cygpath -w 换回 C:\Users\…，才能和工作区路径对上
+    const pwd = process.platform === "win32" && info.mode !== "docker" ? `$(cygpath -w "$(pwd -P)")` : "$(pwd -P)";
+    const script = `trap 'printf "\\n${MARK}%s\\n" "${pwd}"' EXIT\n${cmd}`;
     const out = new HeadTail(HEAD, TAIL);
     const live = { out: "", err: "" };
     let flushTimer: ReturnType<typeof setTimeout> | undefined;
@@ -181,7 +183,7 @@ function classify(cmd: string): { deny?: string; readonly: boolean } {
 const dirs = new Map<string, string>();
 
 const allowedRoots = (root: string) => [root, ...sandboxInfo().dirs.map((d) => d.path)];
-const inside = (p: string, roots: string[]) => roots.some((r) => p === r || p.startsWith(r + "/"));
+const inside = within;
 
 async function currentDir(ctx: ToolContext, root: string) {
   const d = dirs.get(ctx.sessionId);

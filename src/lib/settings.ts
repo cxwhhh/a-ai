@@ -14,7 +14,7 @@ export interface ModelEntry {
 export interface Connection {
   id: string;
   name: string;
-  preset: "deepseek" | "custom";
+  preset: "deepseek" | "anthropic" | "custom";
   baseUrl: string;
   /** 只保存在服务端 .data/settings.json；发给浏览器时会被打码成 ••••abcd */
   apiKey: string;
@@ -36,6 +36,19 @@ export const PRESETS: Record<Connection["preset"], Omit<Connection, "id" | "apiK
       { id: "deepseek-v4-pro", contextWindow: 1_000_000 },
     ],
     sendReasoning: true,
+    thinking: "default",
+  },
+  // Claude：Anthropic 原生接口（不是 OpenAI 兼容），模型名和上下文长度来自官方文档（2026-10）
+  anthropic: {
+    name: "Claude",
+    preset: "anthropic",
+    baseUrl: "https://api.anthropic.com",
+    models: [
+      { id: "claude-opus-5-5", contextWindow: 1_000_000 },
+      { id: "claude-sonnet-5-5", contextWindow: 1_000_000 },
+      { id: "claude-haiku-5-5", contextWindow: 1_000_000 },
+    ],
+    sendReasoning: false,
     thinking: "default",
   },
   custom: { name: "自定义", preset: "custom", baseUrl: "", models: [], sendReasoning: false, thinking: "default" },
@@ -80,6 +93,8 @@ export interface Settings {
   fontSize: "small" | "normal" | "large";
   /** 左栏字号：小 / 标准 / 大 / 特大（只影响左栏文字，logo 的 “A.ai” 不变） */
   sideFontSize: "small" | "normal" | "large" | "xlarge";
+  /** 代码字体（代码块、思维链里的代码、行内代码）。前 6 款打包在仓库里；cascadia / consolas 用电脑自带的，没装就退回 JetBrains Mono */
+  codeFont: CodeFont;
   /** 发送方式：Enter 发送，或 ⌘/Ctrl+Enter 发送（Enter 换行） */
   sendKey: "enter" | "mod-enter";
   /** 生成新产出时自动在右侧大视图打开 */
@@ -109,12 +124,16 @@ export interface Settings {
   version: number;
 }
 
+export const CODE_FONTS = ["jetbrains", "fira", "plex", "source", "geist", "roboto", "cascadia", "consolas"] as const;
+export type CodeFont = (typeof CODE_FONTS)[number];
+
 export const DEFAULT_SETTINGS: Settings = {
   name: "用户",
   theme: "system",
   chatWidth: "normal",
   fontSize: "normal",
   sideFontSize: "normal",
+  codeFont: "jetbrains",
   sendKey: "enter",
   autoOpen: true,
   systemPrompt: "",
@@ -139,6 +158,7 @@ export function normalizeSettings(input: unknown): Settings {
     chatWidth: s.chatWidth === "narrow" || s.chatWidth === "wide" ? s.chatWidth : "normal",
     fontSize: s.fontSize === "small" || s.fontSize === "large" ? s.fontSize : "normal",
     sideFontSize: s.sideFontSize === "small" || s.sideFontSize === "large" || s.sideFontSize === "xlarge" ? s.sideFontSize : "normal",
+    codeFont: CODE_FONTS.includes(s.codeFont as CodeFont) ? (s.codeFont as CodeFont) : d.codeFont,
     sendKey: s.sendKey === "mod-enter" ? "mod-enter" : "enter",
     autoOpen: typeof s.autoOpen === "boolean" ? s.autoOpen : d.autoOpen,
     systemPrompt: typeof s.systemPrompt === "string" ? s.systemPrompt.slice(0, 8000) : d.systemPrompt,
@@ -164,7 +184,7 @@ function normalizeConnection(x: unknown): Connection | null {
   const c = x as Record<string, unknown>;
   const id = typeof c.id === "string" && /^[a-z0-9_-]{1,40}$/i.test(c.id) ? c.id : null;
   if (!id) return null;
-  const preset = c.preset === "deepseek" ? "deepseek" : "custom";
+  const preset = c.preset === "deepseek" || c.preset === "anthropic" ? c.preset : "custom";
   const models = Array.isArray(c.models)
     ? c.models
         .map((m) => {

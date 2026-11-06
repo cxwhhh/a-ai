@@ -78,3 +78,12 @@
 .side .side-item.session { color: color-mix(in srgb, var(--fg) 80%, var(--fg-2)); }
 .side .side-item.session:hover, .side .side-item.session.active { color: var(--fg); }
 .side .row-end .has-file { color: var(--fg-2); }
+
+/* 分组内拖拽排序：插入位置画一条 2px 的线（行的上沿或下沿） */
+.side .side-item.session.drop-before::before,
+.side .side-item.session.drop-after::after {
+  content: ""; position: absolute; left: 6px; right: 6px; height: 2px; border-radius: 2px;
+  background: var(--fg); pointer-events: none;
+}
+.side .side-item.session.drop-before::before { top: -2px; }
+.side .side-item.session.drop-after::after { bottom: -2px; }

@@ -1,7 +1,7 @@
 import "server-only";
 import type { ChatMessage, LLMProvider, ToolCall, ToolSpec } from "../llm/types";
-import { inferStatus, type AgentEvent, type Artifact, type ErrorKind, type Session, type StoredMessage, type QueuedMessage, type ToolStatus } from "../shared";
-import { addArtifact, addMessage, newId } from "../server/store";
+import { inferStatus, type AgentEvent, type Artifact, type ErrorKind, type Session, type StoredMessage, type ToolStatus } from "../shared";
+import { addArtifact, addMessage, newId, replaceArtifact } from "../server/store";
 import { allowSession, isSessionAllowed, waitApproval } from "../server/approvals";
 import type { Settings } from "../settings";
 import { SYSTEM_PROMPT } from "./prompt";
@@ -16,6 +16,10 @@ import { buildContext, compactThreshold, estimateRequest, estimateUsage, planCom
 import { envPrompt, turnEnv } from "./env";
 import { budgetHint, isPlanOnly, Progress, selfCheck } from "./steer";
 import { RESEARCH_SPEC, runResearch } from "./subagent";
+import { mkdirSync, writeFileSync, existsSync } from "node:fs";
+import nodePath from "node:path";
+import { resolvePath } from "../server/access";
+import { artifactExt } from "../outputs";
 
 /** 防止模型无限调用工具：一轮对话最多走这么多步（可在设置里改） */
 const DEFAULT_MAX_STEPS = 25;
@@ -78,12 +82,8 @@ export async function* runAgent(opts: {
   maxFixRounds?: number;
   /** 长期记忆（已经排好版的一段文字），接在系统提示词后面 */
   memory?: string;
-  /** 查看用户明确选择插队的持久草稿；尚未选择的内容不发送给模型。 */
-  notes?: () => QueuedMessage[];
-  /** 写入历史后记录关联；模型响应到达后，才确认本次实际发送的补充内容。 */
-  noteSaved?: (id: string, messageId: string) => void;
-  notesSent?: (messages: ChatMessage[]) => void;
-  onClosing?: () => void;
+  /** 取走用户在运行中补充的想法（/api/chat/note 放进来的） */
+  notes?: () => string[];
   /** 这次运行用不了的工具：名字 → 原因（例如 Docker 沙箱不可用时的 run_command / run_python）。不发给模型，并在提示词里说明 */
   disabledTools?: Record<string, string>;
   /** 当前模型的上下文长度（token），决定什么时候压缩历史。默认 128k */
@@ -110,7 +110,8 @@ export async function* runAgent(opts: {
   let checked = false; // 已经自检过
   let toolRuns = 0;
   const pending: Artifact[] = [];
-  const held: QueuedMessage[] = []; // 已取出、还没写进历史的补充想法
+  const made = new Map<string, string>(); // 这一轮做出的产出物：“类型:标题” → id
+  const held: string[] = []; // 已取出、还没写进历史的补充想法
   let budget = maxSteps;
 
   /**
@@ -166,11 +167,8 @@ export async function* runAgent(opts: {
     const hint = lastStep ? null : budgetHint(step, budget);
     if (hint) messages = [...messages, { role: "user", content: hint }];
 
-    let received = false;
     try {
       for await (const chunk of provider.stream({ messages, tools: stepTools, signal })) {
-        // 请求有响应才确认送达；仅写入消息历史不能证明模型接收过。
-        if (!received) { opts.notesSent?.(messages); received = true; }
         if (chunk.type === "reasoning") {
           if (!thinkStart) thinkStart = Date.now();
           assistant.reasoning = (assistant.reasoning ?? "") + chunk.delta;
@@ -186,7 +184,7 @@ export async function* runAgent(opts: {
           endThinking();
           calls.push({ ...chunk.call, arguments: normalizeArgs(chunk.call.arguments) });
         } else if (chunk.type === "raw") {
-          assistant.raw = chunk.raw;
+          assistant.raw = chunk.raw; // Claude 的原始回复（含思考签名），下次请求原样发回
         } else if (chunk.type === "done" && chunk.usage) {
           assistant.usage = chunk.usage; // 记下 token 用量，“用量”页面据此统计
         }
@@ -238,8 +236,8 @@ export async function* runAgent(opts: {
       }
       if (!fb) {
         // 模型刚写完回答，用户又补充了想法：不结束，带上补充再来一步
-        if (opts.notes && hasNotes()) {
-          budget = Math.max(budget, step + 4);
+        if (!lastStep && opts.notes && hasNotes()) {
+          budget = Math.max(budget, step + 2);
           continue;
         }
         break; // 通过（或修复轮数用完）：交付
@@ -258,7 +256,7 @@ export async function* runAgent(opts: {
     }
 
     // 相邻的只读工具一起并行执行，有副作用的工具（写文件、跑代码）单独按顺序执行
-    const ctx: ExecCtx = { sessionId: session.id, userId: opts.userId, workspace: opts.workspace, signal, pending, emit, confirm, disabled, provider };
+    const ctx: ExecCtx = { sessionId: session.id, userId: opts.userId, workspace: opts.workspace, signal, pending, made, emit, confirm, disabled, provider };
     const batches = toBatches(calls);
     /** 这一步里失败的有副作用操作：后面的操作可能依赖它（例如写文件失败后再运行这个文件），一律跳过 */
     let failed: ToolCall | null = null;
@@ -303,18 +301,13 @@ export async function* runAgent(opts: {
     if (step === warmup && calls.every((c) => c.name === "load_skill")) warmup++;
 
     // ask_user：问题已经显示给用户，本轮到此结束，等用户回答
-    if (asks.length) {
-      if (opts.notes && hasNotes()) { budget = Math.max(budget, step + 4); continue; }
-      break;
-    }
+    if (asks.length) break;
 
     // 连续几步没有新进展：发一条反馈，要求停下来重新规划（见 steer.ts）
     const stall = progress.endStep();
     if (stall && !signal?.aborted) yield* sendFeedback(session, stall);
   }
 
-  // 在发 done 之前关闭插队入口，避免最后一次检查后又接受一条永远等不到下一步的消息。
-  opts.onClosing?.();
   yield { type: "done" };
 
   /**
@@ -385,28 +378,22 @@ export async function* runAgent(opts: {
     }
   }
 
-  /** 队列读取不删除：按 ID 去重暂存，成功保存正式消息后才推进投递状态。
-   * 崩溃发生在“保存消息”和“确认队列”之间时，用稳定 ID 找回已写入消息，不重复插入。 */
+  /** notes() 是“取走”，这里先取出来暂存，hasNotes 判断、injectNotes 写入 */
   function hasNotes() {
-    const known = new Set(held.map((n) => n.id));
-    for (const n of opts.notes?.() ?? []) if (!known.has(n.id)) { held.push(n); known.add(n.id); }
+    held.push(...(opts.notes?.() ?? []));
     return held.length > 0;
   }
   function* injectNotes(): Generator<AgentEvent> {
     hasNotes();
-    for (const note of held.splice(0)) {
-      const text = note.text;
-      const existing = session.messages.find((m) => m.id === (note.messageId ?? "mq_" + note.id));
-      if (existing) { opts.noteSaved?.(note.id, existing.id); continue; }
+    for (const text of held.splice(0)) {
       const m: StoredMessage = {
-        id: note.messageId ?? "mq_" + note.id,
+        id: newId("m"),
         role: "user",
         content: NOTE_TAG + text,
         feedback: { kind: "note", summary: text },
         createdAt: Date.now(),
       };
       addMessage(session, m);
-      opts.noteSaved?.(note.id, m.id);
       yield { type: "message", message: m };
     }
   }
@@ -445,6 +432,8 @@ interface ExecCtx {
   workspace: string;
   signal?: AbortSignal;
   pending: Artifact[];
+  /** 这一轮已经做出的产出物（“类型:标题” → id）。同一轮里同类型同标题再提交 = 修改那一份，不新建 */
+  made: Map<string, string>;
   emit(e: AgentEvent): void;
   confirm(callId: string, req: ApprovalRequest): Promise<boolean>;
   disabled: Record<string, string>;
@@ -535,10 +524,17 @@ async function execTool(call: ToolCall, session: Session, ctx: ExecCtx): Promise
       onOutput: (delta, stream) => ctx.emit({ type: "tool_output", callId: call.id, stream, delta }),
       confirm: (req) => ctx.confirm(call.id, req),
       emitArtifact: (a) => {
-        // 来源由执行器绑定，工具只提供内容，不需要自己拼调用 ID。
-        // 先记来源再保存：即使工具产出后报错、没有留下 artifactId 结果，也能定位到这次调用。
-        const art: Artifact = { ...a, sourceToolCallId: call.id, id: newId("a"), createdAt: Date.now() };
-        addArtifact(session, art);
+        // create_artifact 的网页检查会让模型“改好后用同一个标题重新提交”，以前每次提交都新建一份，
+        // 结果一个网页出现两三个产出物。现在同一轮里同类型同标题的再提交，原地替换那一份（id 不变）
+        const key = `${a.kind}:${a.title}`;
+        const prev = session.artifacts.find((x) => x.id === ctx.made.get(key));
+        const art: Artifact = prev ? { ...a, id: prev.id, createdAt: prev.createdAt } : { ...a, id: newId("a"), createdAt: Date.now() };
+        // 同时存一份到工作区 output/ 下，在文件夹里也能找到、下载（和 write_document 生成的文件放在一起）
+        art.file = prev?.file ?? saveArtifactFile(ctx.workspace, art);
+        if (art.file) writeArtifactFile(ctx.workspace, art.file, art.content);
+        if (prev) replaceArtifact(session, art);
+        else addArtifact(session, art);
+        ctx.made.set(key, art.id);
         ctx.pending.push(art);
         return art;
       },
@@ -559,4 +555,31 @@ async function execTool(call: ToolCall, session: Session, ctx: ExecCtx): Promise
   }
   result.durationMs = Date.now() - startedAt;
   return result;
+}
+
+/* ---------------- 产出物同时保存成文件 ---------------- */
+
+/** 给产出物挑一个 output/ 下的文件名：标题 + 扩展名；重名时加 (2)、(3)，不覆盖别的对话的文件 */
+function saveArtifactFile(workspace: string, a: Artifact): string | undefined {
+  try {
+    const base = a.title.replace(/[\\/:*?"<>|\s]+/g, "_").replace(/^[._]+|_+$/g, "").slice(0, 60) || "artifact";
+    const ext = artifactExt(a);
+    for (let i = 1; i < 100; i++) {
+      const rel = `output/${base}${i > 1 ? ` (${i})` : ""}.${ext}`;
+      if (!existsSync(/*turbopackIgnore: true*/ resolvePath(workspace, rel, "write").full)) return rel;
+    }
+  } catch {
+    /* 工作区不可写就只放在面板里 */
+  }
+  return undefined;
+}
+
+function writeArtifactFile(workspace: string, rel: string, content: string) {
+  try {
+    const { full } = resolvePath(workspace, rel, "write");
+    mkdirSync(/*turbopackIgnore: true*/ nodePath.dirname(full), { recursive: true });
+    writeFileSync(/*turbopackIgnore: true*/ full, content, "utf8");
+  } catch {
+    /* 写失败不影响产出物本身 */
+  }
 }

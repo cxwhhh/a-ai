@@ -1,6 +1,6 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { AgentEvent, Groups, Project, Session, SessionMeta, StoredMessage, ToolInfo } from "@/lib/shared";
+import type { AgentEvent, Groups, Project, ProjectChat, Session, SessionMeta, StoredMessage, ToolInfo } from "@/lib/shared";
 import { api, mod, streamChat } from "@/lib/client";
 import { liveStore } from "@/lib/live";
 import { Sidebar } from "./Sidebar";
@@ -9,12 +9,12 @@ import { Canvas } from "./Canvas";
 import { OutputsCard } from "./OutputsCard";
 import { collectOutputs, type View } from "@/lib/outputs";
 import { DEFAULT_SETTINGS, currentOption, type Settings } from "@/lib/settings";
-import { MessageQueue } from "./MessageQueue";
 import { ComposerBar } from "./ComposerBar";
 import { joinAttachments, type PendingAttachment } from "@/lib/attachments";
 import { SettingsModal } from "./SettingsModal";
 import { ProjectModal } from "./ProjectModal";
 import { ArtifactsPage } from "./ArtifactsPage";
+import { ProjectChats, ProjectHead } from "./ProjectHome";
 import { SkillToast } from "./SkillToast";
 import type { SettingsTab } from "./UserMenu";
 
@@ -64,8 +64,6 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
   const [sessions, setSessions] = useState<SessionMeta[]>([]);
   const [cur, setCur] = useState<Session>(emptySession);
   const [streaming, setStreaming] = useState(false);
-  /** 刷新页面后仍可能有旧请求在收尾；远端运行状态只用于入队，不冒充本地可停止的连接。 */
-  const [remoteRunning, setRemoteRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   /** 输入框里的附件：选完文件立刻上传到工作区 uploads/，发送时把路径附在消息末尾 */
@@ -81,6 +79,9 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
   const [projectModal, setProjectModal] = useState<"new" | Project | null>(null);
   /** 中间显示什么：对话，或“产出物”页面 */
   const [page, setPage] = useState<"chat" | "artifacts">("chat");
+  /** 项目页：点左栏项目名打开的那个项目（新对话输入框上面是项目头，下面是这个项目的全部对话）；projectChats：那些对话，null = 读取中 */
+  const [projectHome, setProjectHome] = useState<string | null>(null);
+  const [projectChats, setProjectChats] = useState<ProjectChat[] | null>(null);
   /** 右侧大视图正在显示什么（null = 关闭）：产出物或工作区文件 */
   const [view, setView] = useState<View | null>(null);
   /** 任务面板（点右上角文件按钮弹出的悬浮卡片：进度 / 输出 / 已使用）是否打开 */
@@ -121,10 +122,8 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
   const curIdRef = useRef("");
   /** 当前对话所在的项目（新对话还没发出去时也有：发第一条消息时告诉服务端建在哪个项目里） */
   const curProjectRef = useRef<string | undefined>(undefined);
-  /** 入队成功后刷新输入框上方的队列；草稿正文保存在服务端，不混进正式消息列表。 */
-  const [queueVersion, setQueueVersion] = useState(0);
-  const queueSending = useRef(false);
-  const queueRetry = useRef<{ sessionId: string; text: string; id: string } | null>(null);
+  /** 已经发给服务端、但 agent 还没收到的补充想法（收到时服务端会推一条 note 消息回来） */
+  const pendingNotes = useRef<string[]>([]);
   curIdRef.current = cur.id;
   curProjectRef.current = cur.projectId;
 
@@ -203,7 +202,8 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
     el.setAttribute("data-width", settings.chatWidth);
     el.setAttribute("data-fs", settings.fontSize);
     el.setAttribute("data-side-fs", settings.sideFontSize);
-  }, [settings.chatWidth, settings.fontSize, settings.sideFontSize]);
+    el.setAttribute("data-code-font", settings.codeFont);
+  }, [settings.chatWidth, settings.fontSize, settings.sideFontSize, settings.codeFont]);
 
   // URL 与当前会话同步：刷新不丢位置。只换地址不跳转（replaceState），页面不会重新加载
   useEffect(() => {
@@ -223,8 +223,8 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
   /** 新对话；传 projectId = 在这个项目里新建（发第一条消息时才真正建到项目里） */
   const newChat = useCallback((projectId?: string) => {
     stop();
-    setRemoteRunning(false);
     setPage("chat");
+    setProjectHome(null);
     setCur({ ...emptySession(), ...(projectId ? { projectId } : {}) });
     setView(null);
     setListOpen(false);
@@ -235,11 +235,27 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
   }, [stop]);
 
   /* ---------- 项目 ---------- */
+  /** 点左栏项目名：开项目页 = 在这个项目里开一个新对话 + 标记成项目页（发出第一条消息后就是普通对话） */
+  function openProject(id: string) {
+    newChat(id);
+    setProjectHome(id);
+  }
   async function saveProject(p: Omit<Project, "id" | "createdAt">) {
     const editing = projectModal && projectModal !== "new" ? projectModal : null;
     const saved = await api.saveProject(p, editing?.id);
     setProjects((l) => (editing ? l.map((x) => (x.id === saved.id ? saved : x)) : [...l, saved]));
     setProjectModal(null);
+  }
+  /** 换项目图标：先改界面（立刻看到），再存到服务端；失败了改回去 */
+  async function setProjectIcon(id: string, icon: string) {
+    const p = projects.find((x) => x.id === id);
+    if (!p || p.icon === icon) return;
+    setProjects((l) => l.map((x) => (x.id === id ? { ...x, icon } : x)));
+    try {
+      await api.saveProject({ name: p.name, description: p.description, memory: p.memory, share: p.share, icon }, id);
+    } catch {
+      setProjects((l) => l.map((x) => (x.id === id ? { ...x, icon: p.icon } : x)));
+    }
   }
   async function deleteProject(id: string) {
     await api.deleteProject(id);
@@ -276,10 +292,8 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
     const paths = attachments.filter((a) => a.path).map((a) => a.path!);
     const text = joinAttachments(draft.trim(), paths);
     if (!text) return;
-    const keys = new Set(attachments.map((a) => a.key));
-    void send(text).then((ok) => {
-      if (ok) setAttachments((items) => items.filter((a) => !keys.has(a.key)));
-    });
+    setAttachments([]);
+    void send(text);
   }
 
   /** 正在加载的对话 id：左栏马上高亮它，中间先变淡并显示一条细进度条，加载完再淡入 */
@@ -287,14 +301,17 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
   const openSeq = useRef(0);
 
   /** 打开一个对话。artifactId：打开后右侧直接显示这个产出物（从“产出物”页面点进来时用） */
-  async function open(id: string, artifactId?: string) {
+  async function open(id: string, artifactId?: string, file?: string) {
     setPage("chat");
+    // 从产出物页点进来要打开的东西：面板里的产出物，或生成的文件（Word / Excel / PPT）
+    const target: View | null = file ? { type: "file", path: file } : artifactId ? { type: "artifact", id: artifactId } : null;
     if (id === curIdRef.current) {
-      if (artifactId) setView({ type: "artifact", id: artifactId });
+      // 从产出物页打开“当前这个对话”里的产出物：和对话里点开一样，右侧只留文件视图，把任务面板收起
+      // （以前这里只设了 view，面板如果开着就会和产出物并排出现）
+      if (target) openView(target);
       return;
     }
     stop();
-    setRemoteRunning(false);
     const seq = ++openSeq.current; // 连点几个对话时，只认最后一次点击，前面慢返回的结果丢掉
     setLoadingId(id);
     const s = await api.get(id).catch(() => null);
@@ -306,9 +323,9 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
     // 恢复这个对话上次离开时右侧的样子（产出物已经不存在了就不恢复那个视图）
     const p = loadPanels()[id];
     const v = p?.view;
-    setView(artifactId ? { type: "artifact", id: artifactId } : v && (v.type === "file" || s.artifacts.some((a) => a.id === v.id)) ? v : null);
+    setView(target ?? (v && (v.type === "file" || s.artifacts.some((a) => a.id === v.id)) ? v : null));
     // 右侧同一时间只放一样东西：上次两个都开着的话，只恢复文件视图
-    setListOpen(!!p?.list && !(artifactId || v));
+    setListOpen(!!p?.list && !(target || v));
     setTimeout(() => inputRef.current?.focus());
   }
 
@@ -333,6 +350,10 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
         setSessions((l) => [{ ...l.find((s) => s.id === e.session.id), ...e.session }, ...l.filter((s) => s.id !== e.session.id)]);
         break;
       case "message":
+        if (e.message.feedback?.kind === "note") {
+          const i = pendingNotes.current.indexOf(e.message.feedback.summary);
+          if (i >= 0) pendingNotes.current.splice(i, 1);
+        }
         setCur((c) => {
           const msgs = c.messages.slice();
           // 服务端确认的用户消息替换掉本地先显示的临时消息：补充想法换 tmpnote，正常发送换 tmp
@@ -393,7 +414,13 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
         break;
       case "artifact":
         // 新产出（代码 / 文档 / 网页）直接在右侧大视图打开
-        setCur((c) => ({ ...c, artifacts: [...c.artifacts, e.artifact] }));
+        // 同一个 id 再来一次 = 这一轮里改好重新提交的版本，原地替换，不多出一份
+        setCur((c) => ({
+          ...c,
+          artifacts: c.artifacts.some((a) => a.id === e.artifact.id)
+            ? c.artifacts.map((a) => (a.id === e.artifact.id ? e.artifact : a))
+            : [...c.artifacts, e.artifact],
+        }));
         if (settingsRef.current.autoOpen) {
           setView({ type: "artifact", id: e.artifact.id });
         }
@@ -439,42 +466,33 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
   }, [apply]);
 
   /**
-   * 运行中发送只保存排队草稿，不立即改变当前任务；用户在队列第一条上点“插入当前任务”才投递。
-   * 不用文本比较识别回执，同样一句话也可以是不同的两条消息。
+   * 发送。text 不传 = 发输入框里的内容；提问卡片点选项时直接传回答。
+   * 运行中发送 = 补充想法：放进服务端队列，agent 下一步就能看到（不打断当前运行）
    */
-  async function send(text = draft.trim()): Promise<boolean> {
+  async function send(text = draft.trim()) {
     text = text.trim();
-    if (!text) return false;
-    if (streaming || remoteRunning || abortRef.current) {
-      const id = curIdRef.current;
-      if (!id) { setError("会话正在建立，请稍后发送"); return false; }
-      if (queueSending.current) return false;
-      queueSending.current = true;
-      const request = queueRetry.current?.sessionId === id && queueRetry.current.text === text
-        ? queueRetry.current
-        : { sessionId: id, text, id: globalThis.crypto?.randomUUID?.() ?? "q" + Date.now().toString(36) + Math.random().toString(36).slice(2) };
-      queueRetry.current = request;
-      try {
-        await api.queue(id, "enqueue", request.id, text);
-        queueRetry.current = null;
-        if (curIdRef.current === id) {
-          setQueueVersion((n) => n + 1);
-          setDraft((current) => current === draft ? "" : current);
-        }
-        return true;
-      } catch (e) {
-        setError(e instanceof Error ? e.message : "入队失败，请重试");
-        return false;
-      } finally { queueSending.current = false; }
-    }
+    if (!text) return;
     setDraft("");
-    void start(text);
-    return true;
+    if (streaming && curIdRef.current) {
+      const tmp: StoredMessage = { id: "tmpnote" + Date.now(), role: "user", content: text, feedback: { kind: "note", summary: text }, createdAt: Date.now() };
+      setCur((c) => ({ ...c, messages: [...c.messages, tmp] }));
+      pendingNotes.current.push(text);
+      if (await api.note(curIdRef.current, text).catch(() => false)) return;
+      // 服务端说已经不在运行了。如果本地的运行也已结束（finally 已经跑过），就直接当新消息发；
+      // 否则留在 pendingNotes 里，等 start 的 finally 统一补发
+      if (!abortRef.current) {
+        pendingNotes.current.splice(pendingNotes.current.indexOf(text), 1);
+        setCur((c) => ({ ...c, messages: c.messages.filter((m) => m.id !== tmp.id) }));
+        await start(text);
+      }
+      return;
+    }
+    if (!streaming) await start(text);
   }
 
   /**
    * 重新生成 / 编辑后重发：从某条用户消息开始往后的内容都不要了，用 text 重新发一遍。
-   * 先在界面上把那一段去掉（马上有反应），服务端收到 truncateFrom 后将这一段保留为旧版本
+   * 先在界面上把那一段去掉（马上有反应），服务端收到 truncateFrom 后也会删掉同样的部分
    */
   async function resend(fromId: string, text: string) {
     text = text.trim();
@@ -483,7 +501,7 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
     await start(text, fromId);
   }
 
-  async function start(text: string, truncate?: string, queuedMessageId?: string) {
+  async function start(text: string, truncate?: string) {
     setError(null);
     const tmp: StoredMessage = { id: "tmp" + Date.now(), role: "user", content: text, createdAt: Date.now() };
     setCur((c) => {
@@ -497,7 +515,7 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
     abortRef.current = ac;
     try {
       await streamChat(
-        { sessionId: curIdRef.current || undefined, message: text, truncateFrom: truncate, queuedMessageId, projectId: curIdRef.current ? undefined : curProjectRef.current },
+        { sessionId: curIdRef.current || undefined, message: text, truncateFrom: truncate, projectId: curIdRef.current ? undefined : curProjectRef.current },
         batcher.push,
         ac.signal,
       );
@@ -516,8 +534,12 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
         if (i <= 0) return l;
         return [{ ...l[i], updatedAt: Date.now() }, ...l.slice(0, i), ...l.slice(i + 1)];
       });
-      // 未选择发送的草稿保留在队列；停止或结束后不擅自拼成下一轮任务。
-      setQueueVersion((n) => n + 1);
+      // 运行结束时还有没被 agent 收到的补充想法（结束前一瞬间才发的）：当作下一条消息自动发出去
+      const left = pendingNotes.current.splice(0);
+      if (left.length && !ac.signal.aborted) {
+        setCur((c) => ({ ...c, messages: c.messages.filter((m) => !m.id.startsWith("tmpnote")) }));
+        await start(left.join("\n"));
+      }
     }
   }
 
@@ -616,6 +638,24 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
   };
   const hasSteps = cur.messages.some((m) => m.toolCalls?.length || m.drafts?.length);
 
+  // 项目页只在“还没发消息的项目新对话”时显示；打开别的对话、发了消息、进产出物页，它自然就不满足了
+  const homeProject =
+    page === "chat" && projectHome && !cur.id && cur.messages.length === 0 && cur.projectId === projectHome
+      ? projects.find((p) => p.id === projectHome)
+      : undefined;
+  const sessionsKey = sessions.filter((s) => s.projectId === homeProject?.id).map((s) => `${s.id}:${s.updatedAt}:${s.title}`).join("|");
+  // 换了项目先显示“读取中”，再读这个项目的对话
+  useEffect(() => setProjectChats(null), [homeProject?.id]);
+  useEffect(() => {
+    if (!homeProject) return;
+    let off = false;
+    api.projectChats(homeProject.id).then((l) => !off && setProjectChats(l));
+    return () => {
+      off = true;
+    };
+    // 左栏里这个项目的对话有变化（新建、改名、删除、移动）就重新读一次
+  }, [homeProject?.id, sessionsKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const sidebarProps = {
     // 当前对话有没有文件，直接用前端算好的 outputs（生成过程中就能实时出现图标）
     sessions: sessions.map((s) => (s.id === cur.id ? { ...s, hasFiles: outputs.length > 0 } : s)),
@@ -635,6 +675,8 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
     onEditProject: (p: Project) => setProjectModal(p),
     onDeleteProject: (id: string) => void deleteProject(id),
     onNewInProject: (id: string) => newChat(id),
+    onOpenProject: openProject,
+    projectHomeId: homeProject?.id,
     onMoveToProject: (sid: string, pid: string | null) => void moveToProject(sid, pid),
     onDelete: remove,
     onRename: rename,
@@ -660,7 +702,7 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
           leftOpen={showLeft}
           modKey={modKey}
           onToggleLeft={expandLeft}
-          onOpen={(sid, aid) => void open(sid, aid)}
+          onOpen={(sid, aid, file) => void open(sid, aid, file)}
           onCreate={(text) => {
             // 产出物页顶部的“新建”卡片：开一个新对话，输入框预填开头，光标放到末尾（newChat 先清空草稿，这里再填）
             newChat();
@@ -673,8 +715,16 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
         />
       ) : (
         <ChatPane
+          home={
+            homeProject && {
+              head: <ProjectHead project={homeProject} onIcon={(i) => setProjectIcon(homeProject.id, i)} onSettings={() => setProjectModal(homeProject)} />,
+              chats: <ProjectChats chats={projectChats} onOpen={(id) => void open(id)} />,
+            }
+          }
           title={cur.title}
           projectName={projects.find((p) => p.id === cur.projectId)?.name}
+          projectIcon={projects.find((p) => p.id === cur.projectId)?.icon}
+          onProjectIcon={cur.projectId ? (icon: string) => setProjectIcon(cur.projectId!, icon) : undefined}
           onRename={cur.id ? (t: string) => rename(cur.id, t) : undefined}
           messages={cur.messages}
           artifacts={cur.artifacts}
@@ -683,7 +733,6 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
           hasSteps={hasSteps}
           running={running}
           streaming={streaming}
-          queueing={streaming || remoteRunning}
           error={error}
           draft={draft}
           setDraft={setDraft}
@@ -701,24 +750,6 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
               onPickModel={pickModel}
               onManage={() => setSettingsTab("model")}
               onUsage={() => setSettingsTab("usage")}
-            />
-          }
-          queue={
-            <MessageQueue key={cur.id || "new"} sessionId={cur.id} streaming={streaming} refreshKey={queueVersion}
-              onRunningChange={setRemoteRunning}
-              onSend={(item) => {
-                if (abortRef.current) { setError("任务还在收尾，请稍后重试"); return; }
-                void start(item.text, undefined, item.id);
-              }}
-              onHistoryChange={() => {
-                const id = curIdRef.current;
-                if (!id || abortRef.current) return;
-                void api.get(id).then((s) => {
-                  if (s && curIdRef.current === id && !abortRef.current) setCur(s);
-                }).catch((e) => {
-                  if (curIdRef.current === id) setError(e instanceof Error ? e.message : "更新对话失败");
-                });
-              }}
             />
           }
           modKey={modKey}

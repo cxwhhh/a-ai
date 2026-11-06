@@ -2,6 +2,7 @@ import { getSettings } from "@/lib/server/settings";
 import { isMasked } from "@/lib/settings";
 import { currentUser, unauthorized } from "@/lib/server/auth";
 import { joinUrl, readError } from "@/lib/llm/providers/openai-compatible";
+import Anthropic from "@anthropic-ai/sdk";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -14,7 +15,7 @@ export const dynamic = "force-dynamic";
 export async function POST(req: Request) {
   const user = await currentUser();
   if (!user) return unauthorized();
-  const b = (await req.json().catch(() => ({}))) as { id?: string; baseUrl?: string; apiKey?: string };
+  const b = (await req.json().catch(() => ({}))) as { id?: string; baseUrl?: string; apiKey?: string; preset?: string };
   let key = (b.apiKey ?? "").trim();
   if (!key || isMasked(key)) key = getSettings(user.id).connections.find((c) => c.id === b.id)?.apiKey ?? "";
   const base = (b.baseUrl ?? "").trim();
@@ -22,6 +23,7 @@ export async function POST(req: Request) {
   if (!key) return Response.json({ ok: false, error: "请先填写 API Key" });
 
   const t0 = Date.now();
+  if (b.preset === "anthropic") return Response.json(await testAnthropic(base, key, t0));
   let res: Response;
   try {
     res = await fetch(joinUrl(base, "/models"), {
@@ -39,6 +41,22 @@ export async function POST(req: Request) {
 
   const models = parseModels(await res.json().catch(() => null));
   return Response.json({ ok: true, ms: Date.now() - t0, models, note: models.length ? undefined : NO_LIST });
+}
+
+/** Claude：用官方 SDK 列出模型（Anthropic 的 /v1/models 和 OpenAI 的格式、鉴权方式都不一样） */
+async function testAnthropic(base: string, key: string, t0: number) {
+  const client = new Anthropic({ apiKey: key, baseURL: base.replace(/\/+$/, "").replace(/\/v1$/, ""), timeout: 15000, maxRetries: 0 });
+  try {
+    const models: string[] = [];
+    for await (const m of client.models.list()) models.push(m.id);
+    return { ok: true, ms: Date.now() - t0, models };
+  } catch (e) {
+    if (e instanceof Anthropic.AuthenticationError) return { ok: false, error: "API Key 无效（401）" };
+    if (e instanceof Anthropic.PermissionDeniedError) return { ok: false, error: "这个 Key 没有权限（403）" };
+    if (e instanceof Anthropic.APIConnectionError) return { ok: false, error: `连接失败：${causeOf(e)}` };
+    if (e instanceof Anthropic.APIError) return { ok: false, error: `接口返回 ${e.status}：${e.message.slice(0, 300)}` };
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
 }
 
 const NO_LIST = "这个接口没有返回模型列表。点下面的“+ 添加模型”，手动填上模型名（和你在其他客户端里填的一样）即可";

@@ -5,17 +5,14 @@ import type { ChatMessage, Usage } from "./llm/types";
 export type ArtifactKind = "markdown" | "html" | "code";
 
 export interface Artifact {
-  /**
-   * 生成这个产出的工具调用 ID：编辑重发时，用它判断产出属于哪段回答。
-   * 不靠创建时间猜归属（两个产出可能在同一毫秒生成）；旧数据没有此字段仍可读取。
-   */
-  sourceToolCallId?: string;
   id: string;
   title: string;
   kind: ArtifactKind;
   language?: string;
   content: string;
   createdAt: number;
+  /** 同时保存到工作区的文件路径（例：output/周报模板.html）。2026-10-29 以前的产出物没有 */
+  file?: string;
 }
 
 /** “产出物”页面用：一个产出物的概要（不带全文，全文太大），加上它来自哪个对话、哪个项目 */
@@ -34,15 +31,8 @@ export interface ArtifactMeta {
   size: number;
   /** SVG 图（kind=code 但内容是 svg）：卡片上直接画出来 */
   svg?: string;
-}
-
-/** 排队草稿的状态不能与工具运行状态混用；sent 只表示请求已收到模型响应，不代表需求已完成。 */
-export interface QueuedMessage {
-  id: string;
-  text: string;
-  position: number;
-  status: "queued" | "ready" | "received" | "sent";
-  messageId?: string;
+  /** 不是 create_artifact 的产出物，而是生成的文件（Word / Excel / PPT）：工作区里的路径。打开时按文件打开 */
+  file?: string;
 }
 
 export interface StoredMessage extends ChatMessage {
@@ -170,27 +160,29 @@ export type ProjectMemoryMode = "global" | "project" | "off";
 export interface Project {
   id: string;
   name: string;
-  /** 可选的内置图标名；旧项目未设置时界面显示文件夹。 */
-  icon?: string;
   /** 项目说明：每次对话都会告诉 agent（项目背景、要求、约定） */
   description: string;
   memory: ProjectMemoryMode;
   share: boolean;
+  /** 项目图标：图标库（src/lib/agentIcons.ts）里的名字，比如 "code"。没设时显示文件夹 */
+  icon?: string;
   createdAt: number;
+}
+
+/** 项目页下面的对话列表：一行一个对话，带最后一句回复和生成的文件数 */
+export interface ProjectChat {
+  id: string;
+  title: string;
+  updatedAt: number;
+  /** 最后一条有文字的回复，开头一小段 */
+  preview: string;
+  /** 产出物 + 写过的文件（去重后的路径）个数 */
+  files: number;
 }
 
 export interface Session extends SessionMeta {
   messages: StoredMessage[];
   artifacts: Artifact[];
-}
-
-/** 项目首页的对话预览；files 统计当前版本的产出与去重后的写文件路径，不保证磁盘文件仍存在。 */
-export interface ProjectChat {
-  id: string;
-  title: string;
-  updatedAt: number;
-  preview: string;
-  files: number;
 }
 
 /**
@@ -204,6 +196,8 @@ export interface Group {
 export interface Groups {
   groups: Group[];
   assign: Record<string, string>;
+  /** 手动拖过位置的对话 id，按先后排列（每个分组内部按它排；没拖过的新对话排在组的最上面） */
+  order?: string[];
 }
 
 /** 左栏展示用：当前注册了哪些工具 */

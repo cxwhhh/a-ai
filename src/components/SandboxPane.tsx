@@ -2,8 +2,8 @@
 import { useEffect, useState } from "react";
 
 /**
- * 设置 → 模型 里的「沙箱与审计」：
- *   上半部分：命令在哪里执行（docker / seatbelt / 本机）、能访问哪些本机目录、能不能联网 —— 只读展示，改要改服务端环境变量
+ * 设置 → Agent 里的「沙箱与审计」：
+ *   上半部分：隔离方式与目录展示部署配置；Docker 联网可由管理账号在这里保存。
  *   下半部分：审计日志，agent 执行过或被拦下的每一条命令（最近 200 条）
  * 数据来自 /api/sandbox。类型在这里单独写一份：服务端的 sandbox.ts / audit.ts 是 server-only，前端不能引用。
  */
@@ -30,7 +30,9 @@ const MODE: Record<Info["mode"], string> = {
 const DECISION: Record<Entry["decision"], string> = { allowed: "已执行", denied: "用户拒绝", blocked: "已拦截" };
 
 export function SandboxPane() {
-  const [data, setData] = useState<{ info: Info; audit: Entry[] } | null>(null);
+  const [data, setData] = useState<{ info: Info; audit: Entry[]; canManageNetwork: boolean } | null>(null);
+  const [savingNetwork, setSavingNetwork] = useState(false);
+  const [networkMessage, setNetworkMessage] = useState("");
   const [err, setErr] = useState("");
   const [filter, setFilter] = useState<"all" | "blocked">("all");
   const [open, setOpen] = useState<number | null>(null);
@@ -42,6 +44,26 @@ export function SandboxPane() {
       .catch((e) => setErr(e instanceof Error ? e.message : String(e)));
   useEffect(() => void load(), []);
 
+  /** 以服务器回执为准更新开关；失败保留原状态，避免界面显示已联网而实际未保存。 */
+  const changeNetwork = async (network: boolean) => {
+    if (savingNetwork) return;
+    setSavingNetwork(true);
+    setNetworkMessage("");
+    try {
+      const response = await fetch("/api/sandbox", {
+        method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ network }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "保存失败");
+      setData((old) => old ? { ...old, info: { ...old.info, network: result.network } } : old);
+      setNetworkMessage("已保存，从下一次工具执行生效；正在运行的命令不受影响。");
+    } catch (e) {
+      setNetworkMessage(e instanceof Error ? e.message : "保存失败，请重试");
+    } finally {
+      setSavingNetwork(false);
+    }
+  };
+
   if (err) return <div className="set-hint">沙箱信息读取失败：{err}</div>;
   if (!data) return null;
   const { info } = data;
@@ -52,7 +74,7 @@ export function SandboxPane() {
       <section className="set-sec">
         <div className="set-sec-head">
           <h3>沙箱</h3>
-          <div className="set-hint">终端命令和 Python 在这里执行。修改方式：服务端环境变量 A_SANDBOX、A_SANDBOX_DIRS、A_SANDBOX_NETWORK（见 .env.example）</div>
+          <div className="set-hint">终端命令和 Python 在这里执行。隔离方式与授权目录由服务器配置，Docker 联网可在下面切换。</div>
         </div>
         <div className="set-group">
           <div className="set-row">
@@ -64,11 +86,20 @@ export function SandboxPane() {
           </div>
           <div className="set-row">
             <div>
-              <div className="set-label">网络</div>
-              <div className="set-hint">{info.network ? "沙箱里可以联网（pip install 可用）" : "默认断网：数据不会被命令发到外面"}</div>
+              <div className="set-label">Docker 沙箱联网</div>
+              <div className="set-hint">{info.mode === "docker" ? "允许终端命令和 Python 访问网络。对所有会话生效，服务器仍需具备外网连接。" : "此开关仅用于 Docker 沙箱，当前使用其他执行方式。"}</div>
             </div>
-            <div className="set-ctl sbx-dim">{info.network ? "允许" : "断开"}</div>
+            <div className="set-ctl">
+              <label>
+                <input type="checkbox" role="switch" aria-label="允许 Docker 沙箱联网"
+                  checked={info.network} disabled={savingNetwork || !data.canManageNetwork || info.mode !== "docker"}
+                  onChange={(e) => void changeNetwork(e.target.checked)} />
+                {savingNetwork ? " 保存中…" : info.network ? " 已开启" : " 已关闭"}
+              </label>
+            </div>
           </div>
+          {!data.canManageNetwork && <div className="set-hint">请使用最早注册的管理账号修改全局联网设置。</div>}
+          {networkMessage && <div className="set-hint" role="status">{networkMessage}</div>}
           <div className="set-row sbx-dirs">
             <div>
               <div className="set-label">授权的本机目录</div>

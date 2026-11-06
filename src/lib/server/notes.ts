@@ -1,26 +1,27 @@
 import "server-only";
-import { randomUUID } from "node:crypto";
 
 /**
- * 这里只登记当前进程中的运行状态；可编辑队列与投递状态保存在 message-queue.ts 的 SQLite 表中。
- * 关闭运行不会删除队列。执行器在下一个请求边界读取 ready 草稿，而不是中途改写已发出的请求。
+ * 运行中的“补充想法”：agent 正在工作时，用户在输入框里又想到什么，可以随时发过来。
+ *
+ * /api/chat 开始运行时 openRun 登记，结束时 closeRun；
+ * 运行期间 /api/chat/note 把文字放进这个会话的队列（addNote），
+ * agent 循环每次调用模型前取走（takeNotes），作为一条用户消息加进历史 —— 模型下一步就能看到。
+ *
+ * 只放在内存里：补充想法只在“这一次运行”里有意义，运行结束就没用了，不用进数据库。
+ * 挂在 globalThis 上：开发模式热更新时不会丢。
  */
 /** 补充想法发给模型时的开头，模型和 mock 都靠它认出“这是用户中途补充的” */
 export const NOTE_TAG = "【用户补充】";
 
 interface Run {
-  id: string;
   userId: string;
+  notes: string[];
 }
 const g = globalThis as unknown as { __aRuns?: Map<string, Run> };
 const runs = (g.__aRuns ??= new Map());
 
 export function openRun(sessionId: string, userId: string) {
-  // 同步检查并占用：两个请求都等到“空闲”后，也只能有一个真正启动执行。
-  if (runs.has(sessionId)) return false;
-  const id = randomUUID();
-  runs.set(sessionId, { id, userId });
-  return id;
+  runs.set(sessionId, { userId, notes: [] });
 }
 
 /** 这个会话现在有没有正在运行的 agent */
@@ -39,11 +40,20 @@ export async function waitIdle(sessionId: string, waitMs = 5000): Promise<boolea
   return true;
 }
 
-export function closeRun(sessionId: string, lease?: string) {
-  // 旧请求的 finally 可能晚于新运行，带上占用凭证，不能误删新运行的登记。
-  if (lease && runs.get(sessionId)?.id !== lease) return;
+export function closeRun(sessionId: string) {
   runs.delete(sessionId);
 }
 
-/** 兼容已有调用方：补充内容先持久排队，再由用户明确选择插队。 */
-export { readyNotes as takeNotes } from "./message-queue";
+/** 返回 false = 这个会话现在没有在运行（或不是你的），前端改成正常发送 */
+export function addNote(sessionId: string, userId: string, text: string): boolean {
+  const r = runs.get(sessionId);
+  if (!r || r.userId !== userId) return false;
+  r.notes.push(text.slice(0, 4000));
+  return true;
+}
+
+export function takeNotes(sessionId: string): string[] {
+  const r = runs.get(sessionId);
+  if (!r?.notes.length) return [];
+  return r.notes.splice(0);
+}

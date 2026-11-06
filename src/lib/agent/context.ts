@@ -141,11 +141,11 @@ function slim(messages: StoredMessage[], tight = false): ChatMessage[] {
 
   return messages.map((m, i): ChatMessage => {
     const old = i < turnStart;
-    const out: ChatMessage = { sourceMessageId: m.id, role: m.role, content: m.content, toolCalls: m.toolCalls, toolCallId: m.toolCallId, reasoning: m.reasoning, raw: m.raw };
+    const out: ChatMessage = { role: m.role, content: m.content, toolCalls: m.toolCalls, toolCallId: m.toolCallId, reasoning: m.reasoning, raw: m.raw };
     if (m.role === "assistant") {
       if (old) {
         out.reasoning = undefined;
-        out.raw = undefined; // 旧轮次不携带原始思考块；当前轮保留签名，供专用适配器回传。
+        out.raw = undefined; // 旧轮次的思考也不再发回（Claude 允许从最前面开始去掉思考块）
         out.toolCalls = m.toolCalls?.map((c) => (c.arguments.length > OLD_ARGS_CHARS ? { ...c, arguments: omitArgs(c.arguments) } : c));
       }
     } else if (m.role === "tool") {

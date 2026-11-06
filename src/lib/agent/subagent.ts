@@ -87,9 +87,11 @@ export async function runResearch(call: ToolCall, ctx: ResearchCtx): Promise<{ c
     let text = "";
     const calls: ToolCall[] = [];
     let usage: Usage | undefined;
+    let raw: unknown;
     for await (const chunk of ctx.provider.stream({ messages, tools: last ? undefined : tools, signal: ctx.signal })) {
       if (chunk.type === "text") text += chunk.delta;
       else if (chunk.type === "tool_call") calls.push({ ...chunk.call, arguments: normalizeArgs(chunk.call.arguments) });
+      else if (chunk.type === "raw") raw = chunk.raw;
       else if (chunk.type === "done" && chunk.usage) usage = chunk.usage;
     }
     if (usage) {
@@ -101,7 +103,7 @@ export async function runResearch(call: ToolCall, ctx: ResearchCtx): Promise<{ c
       answer = text.trim();
       break;
     }
-    messages.push({ role: "assistant", content: text, toolCalls: calls });
+    messages.push({ role: "assistant", content: text, toolCalls: calls, raw });
     // 子 agent 的工具都是只读的，一步里的调用全部并行
     const results = await Promise.all(calls.map((c) => execReadOnly(c, ctx)));
     calls.forEach((c, i) => {

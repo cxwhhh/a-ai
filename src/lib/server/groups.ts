@@ -13,7 +13,8 @@ export function getGroups(userId: string): Groups {
   const assign: Record<string, string> = {};
   for (const r of db().prepare("SELECT id, group_id FROM sessions WHERE user_id = ? AND group_id IS NOT NULL").all(userId))
     assign[r.id as string] = r.group_id as string;
-  return { groups, assign };
+  const order = db().prepare("SELECT id FROM sessions WHERE user_id = ? AND group_sort IS NOT NULL ORDER BY group_sort").all(userId).map((r) => r.id as string);
+  return { groups, assign, order };
 }
 
 /** 整份覆盖保存。每条 SQL 都带 user_id，前端传来别人的分组或会话 id 也改不到别人的数据 */
@@ -34,6 +35,13 @@ export function saveGroups(userId: string, g: Groups): Groups {
       "UPDATE sessions SET group_id = ? WHERE id = ? AND user_id = ? AND EXISTS (SELECT 1 FROM groups WHERE id = ? AND user_id = ?)",
     );
     for (const [sid, gid] of Object.entries(g.assign ?? {})) if (typeof gid === "string") move.run(gid, sid, userId, gid, userId);
+
+    // 拖拽排序：order 里的第 i 个对话 group_sort = i，其余清空
+    if (Array.isArray(g.order)) {
+      db().prepare("UPDATE sessions SET group_sort = NULL WHERE user_id = ?").run(userId);
+      const sort = db().prepare("UPDATE sessions SET group_sort = ? WHERE id = ? AND user_id = ?");
+      g.order.slice(0, 5000).forEach((sid, i) => typeof sid === "string" && sort.run(i, sid, userId));
+    }
   });
   return getGroups(userId);
 }

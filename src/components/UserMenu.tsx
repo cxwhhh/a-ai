@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { IChart, IGear, IInfo, IKeyboard, ILogout, IUpDown } from "./Icons";
 import { api } from "@/lib/client";
 
-export type SettingsTab = "general" | "model" | "memory" | "skills" | "usage" | "keys" | "about";
+export type SettingsTab = "general" | "model" | "agent" | "memory" | "skills" | "usage" | "keys" | "about";
 
 /**
  * 左下角：头像 + 名字。点击弹出菜单（仿 Claude），再从菜单进入设置的各个页面。

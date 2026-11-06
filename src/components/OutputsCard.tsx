@@ -5,14 +5,17 @@ import { describeStep, rowState, type RowState } from "./Trace";
 import { useEffect, useMemo, useState } from "react";
 import { countDiff, diffLines, fileChanges } from "@/lib/diff";
 import "./OutputsCard.css";
-import { ICheck, IChevron, ICode, IDoc, IFile, IFolder, IGlobe, IX } from "./Icons";
+import { ICheck, IChevron, IX } from "./Icons";
+import { KindIcon } from "./KindIcon";
 
+/** 类型图标带颜色（KindIcon）：代码绿、网页蓝、文档橙、图表粉 */
 const ICON = {
-  code: <ICode />,
-  doc: <IDoc />,
-  web: <IGlobe />,
-  file: <IFile />,
-  folder: <IFolder />,
+  code: <KindIcon kind="code" />,
+  doc: <KindIcon kind="doc" />,
+  web: <KindIcon kind="web" />,
+  chart: <KindIcon kind="chart" />,
+  file: <KindIcon kind="file" />,
+  folder: <KindIcon kind="folder" />,
 };
 
 /**

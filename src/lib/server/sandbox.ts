@@ -1,9 +1,10 @@
 import "server-only";
-import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { execFile, execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { DATA_DIR } from "./db";
+import { networkPolicy } from "./sandbox-network";
 
 /**
  * 沙箱：让 run_command / run_python 只能碰到“工作区 + 部署者授权的目录”。
@@ -17,10 +18,10 @@ import { DATA_DIR } from "./db";
  *        seatbelt ：macOS 自带的 sandbox-exec，用规则限制读写路径和网络，不需要装 Docker
  *        local    ：没有隔离，只有第 1、2 层（开发时用，设置页会提示“未隔离”）
  *
- * 配置都在服务端环境变量里（.env.local 或 docker-compose.yml），只有部署者能改，聊天里的模型改不了：
+ * 隔离方式与目录在服务端环境变量里（.env.local 或 docker-compose.yml）；Docker 联网可由管理账号在设置页保存，聊天里的模型改不了：
  *   A_SANDBOX         auto（默认）| docker | seatbelt | local
  *   A_SANDBOX_DIRS    授权目录，分号分隔，每个后面可加 :ro（只读，默认）或 :rw。例：/Users/me/Documents:ro;/Users/me/data:rw
- *   A_SANDBOX_NETWORK 1 = 允许联网（pip install 需要），默认断网
+ *   A_SANDBOX_NETWORK 1 = 首次默认允许联网；设置页保存后以数据库为准，默认断网
  *   A_SANDBOX_IMAGE   docker 模式用的镜像，默认 a-ai-sandbox:latest（Dockerfile.sandbox）
  *   A_SANDBOX_DATA_VOLUME  A.ai 自己跑在 Docker 里时填数据卷名（a-ai-data），沙箱容器用它挂载工作区
  */
@@ -54,7 +55,8 @@ export const isSensitivePath = (p: string) => SENSITIVE_RE.test(p);
 let cached: SandboxInfo | null = null;
 
 export function sandboxInfo(): SandboxInfo {
-  if (cached) return cached;
+  // 目录与隔离模式仍缓存；联网策略每次读取，设置页保存后不必重启服务。
+  if (cached) return cached.mode === "docker" ? { ...cached, network: networkPolicy().enabled } : cached;
   const warnings: string[] = [];
   const dirs: AllowedDir[] = [];
   for (const raw of (process.env.A_SANDBOX_DIRS ?? "").split(/[;\n]/)) {
@@ -87,7 +89,7 @@ export function sandboxInfo(): SandboxInfo {
   if (mode === "local") warnings.push("当前是本机模式：命令没有被隔离，只有路径检查和确认在起作用。部署给别人用时请改成 docker");
 
   cached = { mode, isolated: mode !== "local", network: process.env.A_SANDBOX_NETWORK === "1", dirs, warnings };
-  return cached;
+  return cached.mode === "docker" ? { ...cached, network: networkPolicy().enabled } : cached;
 }
 
 /* ---------------- 第 1 层：路径检查 ---------------- */
@@ -116,7 +118,18 @@ export function checkCommand(command: string, root: string, cwd: string): string
   return null;
 }
 
-export const within = (p: string, roots: string[]) => roots.some((r) => p === r || p.startsWith(r.endsWith("/") ? r : r + "/"));
+/**
+ * p 是不是在某个 roots 目录里（或就是它）。分隔符用 path.sep：Windows 上路径是 C:\\Users\\me\\…，
+ * 只认 "/" 的话工作区子目录里的文件全都会被当成“超出范围”。Windows 的路径不分大小写，比较前统一转小写。
+ */
+export const within = (p: string, roots: string[]) => {
+  const norm = (x: string) => (process.platform === "win32" ? x.toLowerCase() : x);
+  const q = norm(p);
+  return roots.some((r0) => {
+    const r = norm(r0);
+    return q === r || q.startsWith(r.endsWith("/") || r.endsWith(path.sep) ? r : r + path.sep);
+  });
+};
 
 /* ---------------- 执行 ---------------- */
 
@@ -128,7 +141,9 @@ export const within = (p: string, roots: string[]) => roots.some((r) => p === r 
 export function sandboxEnv(root: string): Record<string, string | undefined> {
   const docker = sandboxInfo().mode === "docker";
   return {
-    PATH: `${path.join(root, ".local", "bin")}:${docker ? "/usr/local/bin:/usr/bin:/bin" : (process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin")}`,
+    ...(docker ? {} : windowsEnv()),
+    // PATH 的分隔符：Linux/macOS 是 :，Windows 是 ;（docker 里永远是 Linux）
+    PATH: docker ? `${root}/.local/bin:/usr/local/bin:/usr/bin:/bin` : [path.join(root, ".local", "bin"), process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin"].join(path.delimiter),
     HOME: root,
     LANG: docker ? "C.UTF-8" : process.env.LANG || "C.UTF-8",
     TZ: process.env.TZ,
@@ -144,6 +159,44 @@ export function sandboxEnv(root: string): Record<string, string | undefined> {
   };
 }
 
+/**
+ * Windows 上程序离不开的几个系统变量：没有 SystemRoot，Python 连随机数都初始化不了；没有 TEMP，很多工具建不了临时文件。
+ * 它们只是系统路径，不含密钥，所以原样带上。其他系统返回空对象
+ */
+function windowsEnv(): Record<string, string | undefined> {
+  if (process.platform !== "win32") return {};
+  const keys = ["SystemRoot", "SystemDrive", "windir", "ComSpec", "PATHEXT", "TEMP", "TMP", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "ProgramData", "ProgramFiles", "ProgramFiles(x86)", "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE"];
+  return Object.fromEntries(keys.map((k) => [k, process.env[k]]));
+}
+
+/**
+ * Windows 没有自带 bash：run_command 用 Git for Windows 里的 bash.exe（装 Git 时默认就有）。
+ * 顺序：A_BASH 环境变量 → 常见安装位置 → 从 where git 找到的 Git 目录推出来。
+ * 注意不用 C:\\Windows\\System32\\bash.exe：那是 WSL 的入口，命令会跑进 Linux 子系统，路径全对不上。
+ * 找不到返回空字符串（unavailableTools 会把 run_command 关掉并说明原因）
+ */
+let bashCache: string | undefined;
+export function bashBin(): string {
+  if (process.platform !== "win32") return "bash";
+  if (bashCache !== undefined) return bashCache;
+  const env = process.env;
+  const candidates = [
+    env.A_BASH,
+    env.ProgramFiles && path.join(env.ProgramFiles, "Git", "bin", "bash.exe"),
+    env["ProgramFiles(x86)"] && path.join(env["ProgramFiles(x86)"]!, "Git", "bin", "bash.exe"),
+    env.LOCALAPPDATA && path.join(env.LOCALAPPDATA, "Programs", "Git", "bin", "bash.exe"),
+  ];
+  try {
+    // where git → C:\\…\\Git\\cmd\\git.exe，bash 在上一级的 bin\\bash.exe
+    const git = execFileSync("where", ["git"], { encoding: "utf8", timeout: 5000, windowsHide: true }).split(/\r?\n/)[0]?.trim();
+    if (git) candidates.push(path.join(path.dirname(path.dirname(git)), "bin", "bash.exe"));
+  } catch {
+    /* 没装 git */
+  }
+  bashCache = candidates.find((c): c is string => !!c && existsSync(/*turbopackIgnore: true*/ c)) ?? "";
+  return bashCache;
+}
+
 export interface ExecOptions {
   sessionId: string;
   /** 工作区在本机的真实路径 */
@@ -151,6 +204,11 @@ export interface ExecOptions {
   /** 沙箱里看到的工作目录（root 或其子目录，或某个授权目录） */
   cwd: string;
   script: string;
+  /**
+   * 不经过 shell、直接运行的程序和参数（run_python 用：[python, 脚本路径]）。
+   * 只在 Windows 本机模式下使用，这样电脑上没装 Git Bash 也能跑 Python；其他情况仍然执行 script
+   */
+  argv?: string[];
   env: Record<string, string | undefined>;
 }
 
@@ -166,6 +224,8 @@ export const sandboxRoot = (workspace: string) => (sandboxInfo().mode === "docke
 export async function sandboxExec(o: ExecOptions): Promise<Exec> {
   const info = sandboxInfo();
   if (info.mode === "docker") return dockerExec(o, info);
+
+  if (process.platform === "win32") return windowsExec(o);
 
   const args = ["-c", o.script];
   const [bin, argv] = info.mode === "seatbelt" ? ["/usr/bin/sandbox-exec", ["-p", seatbeltProfile(o.workspace, info), "/bin/bash", ...args]] : ["bash", args];
@@ -184,6 +244,30 @@ export async function sandboxExec(o: ExecOptions): Promise<Exec> {
   };
   return { proc, kill };
 }
+
+/**
+ * Windows 本机模式（没有隔离，只有路径检查和确认）：
+ *   - 有 argv 就直接运行（run_python），否则用 Git Bash 执行脚本
+ *   - Windows 没有“进程组”和 kill(-pid)，用 taskkill /T 把命令和它启动的子进程整棵树结束
+ *   - windowsHide：不要每跑一条命令就弹出一个黑色控制台窗口
+ */
+function windowsExec(o: ExecOptions): Exec {
+  let bin: string;
+  let argv: string[];
+  if (o.argv?.length) [bin, ...argv] = o.argv;
+  else {
+    bin = bashBin();
+    if (!bin) throw new Error(NO_BASH);
+    argv = ["-c", o.script];
+  }
+  const proc = spawn(/*turbopackIgnore: true*/ bin, argv, { cwd: o.cwd, stdio: ["ignore", "pipe", "pipe"], env: o.env as NodeJS.ProcessEnv, windowsHide: true });
+  const kill = () => {
+    if (proc.pid && proc.exitCode === null) execFile("taskkill", ["/pid", String(proc.pid), "/T", "/F"], { windowsHide: true }, () => {});
+  };
+  return { proc, kill };
+}
+
+const NO_BASH = "Windows 上 run_command 需要 bash：请安装 Git for Windows（https://git-scm.com/download/win，自带 bash），装好后重启 A.ai。装在其他位置的话，在 a-ai.env 里写 A_BASH=bash.exe 的完整路径";
 
 /* ---------- seatbelt（macOS sandbox-exec） ---------- */
 
@@ -297,11 +381,13 @@ export function dockerProblem(): Promise<string | null> {
 const NET_ERROR = /Network is unreachable|Temporary failure in name resolution|Name or service not known|nodename nor servname|Could not resolve host|getaddrinfo|EAI_AGAIN|ENOTFOUND|ENETUNREACH|NewConnectionError|Max retries exceeded|URLError|Failed to establish a new connection|Could not fetch URL|No matching distribution found/i;
 export function networkHint(output: string): string | undefined {
   if (sandboxInfo().network || !NET_ERROR.test(output)) return undefined;
-  return "沙箱是断网的，这里连不上网（不是网站的问题，重试也没用）。查网页用 web_search / web_fetch，下载文件用 download_file，装不了的包请告诉用户。";
+  return "沙箱联网已关闭，请在设置的沙箱区域开启 Docker 沙箱联网。当前请求中重试无效；也可以用 web_search / web_fetch 查网页、download_file 下载文件。";
 }
 
 /** 对话开始时用：Docker 沙箱坏了就把两个运行工具关掉（名字 → 原因），模型直接知道“这次不能跑代码”，不会一调就报错 */
 export async function unavailableTools(): Promise<Record<string, string>> {
+  // Windows 没找到 Git Bash：只关 run_command，run_python 不需要 bash（直接调用 python）
+  if (process.platform === "win32" && sandboxInfo().mode !== "docker" && !bashBin()) return { run_command: NO_BASH };
   const problem = await dockerProblem();
   if (!problem) return {};
   const why = `Docker 沙箱不可用（${problem}）`;
@@ -309,7 +395,10 @@ export async function unavailableTools(): Promise<Record<string, string>> {
 }
 
 async function dockerExec(o: ExecOptions, info: SandboxInfo): Promise<Exec> {
-  const name = "a-ai-sbx-" + o.sessionId.replace(/[^a-zA-Z0-9_.-]/g, "").slice(0, 40);
+  // 旧命令继续收尾，新命令使用新策略的容器；不通过强删正在执行的容器来应用设置。
+  const policy = networkPolicy();
+  info = { ...info, network: policy.enabled };
+  const name = "a-ai-sbx-" + o.sessionId.replace(/[^a-zA-Z0-9_.-]/g, "").slice(0, 40) + "-net" + Number(policy.enabled) + "-v" + policy.revision;
   let c = containers.get(name);
   if (!c) {
     const ready = createContainer(name, o.workspace, info).catch((e: Error) => {

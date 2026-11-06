@@ -14,7 +14,7 @@ import "./FileDrawer.css";
 
 export type FileRes =
   | { path: string; type: "dir"; items: { name: string; dir: boolean }[] }
-  | { path: string; type: "file"; size: number; mtime: number; binary: boolean; content: string; truncated: boolean; ext: string }
+  | { path: string; type: "file"; size: number; mtime: number; binary: boolean; content: string; truncated: boolean; ext: string; preview?: string }
   | { path: string; error: string };
 
 export function useFile(path: string, refreshKey: unknown) {
@@ -68,7 +68,22 @@ export function FileBody({ path, res, raw, onOpen }: { path: string; res: FileRe
     );
   }
   if (res.ext === "pdf") return <iframe className="file-pdf" src={src} title={path} />;
-  if (res.binary) return <div className="view-empty">二进制文件，无法预览</div>;
+  if (res.binary) {
+    // Word / Excel / PPT：显示取出来的文字（排版看不到），并给一个下载原文件的链接
+    const dl = `/api/files?download=1&path=${encodeURIComponent(path)}`;
+    const kind = { docx: "Word 文档", xlsx: "Excel 表格", pptx: "PPT 演示文稿" }[res.ext];
+    return (
+      <div className="office-pv">
+        <div className="office-note">
+          <span>{kind ? `${kind}，这里只显示文字内容，排版请下载后用 Office 打开` : "二进制文件，无法预览"}</span>
+          <a className="btn" href={dl} download>
+            下载
+          </a>
+        </div>
+        {res.preview && <pre className="office-text">{res.preview}</pre>}
+      </div>
+    );
+  }
   if ((res.ext === "md" || res.ext === "markdown") && !raw) {
     return (
       <div className="doc">

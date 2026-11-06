@@ -2,6 +2,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { safePath, workspaceOf } from "@/lib/agent/tools/files";
 import { currentUser, unauthorized } from "@/lib/server/auth";
+import { readDocument } from "@/lib/agent/tools/documents";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -41,7 +42,26 @@ export async function GET(req: Request) {
       if (!type) return new Response("不支持预览这种文件", { status: 415 });
       return new Response(new Uint8Array(buf), { headers: { "Content-Type": type, "Cache-Control": "private, no-cache", "X-Content-Type-Options": "nosniff" } });
     }
+    // ?download=1：原样下载（Word / Excel / PPT 这类不能直接显示的文件用）。
+    // 强制 attachment + octet-stream，浏览器只会存成文件，不会在本站打开执行
+    if (q.get("download")) {
+      const name = encodeURIComponent(path.basename(full));
+      return new Response(new Uint8Array(buf), {
+        headers: { "Content-Type": "application/octet-stream", "Content-Disposition": `attachment; filename*=UTF-8''${name}`, "X-Content-Type-Options": "nosniff", "Cache-Control": "private, no-cache" },
+      });
+    }
     const binary = buf.subarray(0, 8000).includes(0);
+    const ext = path.extname(full).slice(1).toLowerCase();
+    // Office 文件：借用 read_document 的解析，取出文字给右侧预览（以前只显示“二进制文件，无法预览”）
+    let preview: string | undefined;
+    if (["docx", "xlsx", "pptx"].includes(ext)) {
+      try {
+        const r = await readDocument.run({ path: p }, { workspace: workspaceOf(user.id) } as Parameters<typeof readDocument.run>[1]);
+        preview = String(JSON.parse(r.content).content ?? "");
+      } catch {
+        /* 解析失败就只给下载 */
+      }
+    }
     return Response.json({
       path: p,
       type: "file",
@@ -50,7 +70,8 @@ export async function GET(req: Request) {
       binary,
       content: binary ? "" : buf.toString("utf8", 0, Math.min(buf.length, MAX)),
       truncated: buf.length > MAX,
-      ext: path.extname(full).slice(1).toLowerCase(),
+      ext,
+      preview,
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);

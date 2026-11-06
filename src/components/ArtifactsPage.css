@@ -114,7 +114,7 @@
 .art-preview.code .art-page span { font: 9px/1.55 var(--mono); white-space: pre; word-break: normal; }
 .art-page img { display: block; width: 100%; height: 100%; object-fit: contain; object-position: top; }
 .art-meta { display: flex; align-items: center; gap: 12px; padding: 14px 16px; min-width: 0; box-shadow: 0 -1px 0 var(--edge); }
-.art-meta-ico { flex: none; width: 40px; height: 40px; border-radius: 11px; display: grid; place-items: center; color: var(--fg-2); background: color-mix(in srgb, var(--fg) 6%, var(--surface)); }
+.art-meta-ico { flex: none; width: 40px; height: 40px; border-radius: 11px; display: grid; place-items: center; color: var(--c, var(--fg-2)); background: color-mix(in srgb, var(--c, var(--fg)) 12%, var(--surface)); }
 .art-meta-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .art-title { font-size: 14px; font-weight: 560; color: var(--fg); }
 .art-sub { font-size: 12px; color: var(--fg-3); font-variant-numeric: tabular-nums; }
@@ -148,3 +148,141 @@
 .art-cat:hover .art-cat-label { color: var(--fg); }
 /* 手机宽度：4 张平分整行（卡片已经很小，不用改两列）。要写在 .arts-cats 规则后面才能覆盖它 */
 @media (max-width: 640px) { .arts-cats { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+
+/* ===== 四种类型的缩略图（2026-10-29）=====
+   底板带一点这一类的颜色（9%），小页面按类型换样子 */
+.art-preview[class*="p-"] { background: color-mix(in srgb, var(--c) 9%, var(--surface)); }
+/* 文档：一张白纸。标题用衬线字体，像打印出来的文章 */
+.p-markdown .art-page { padding: 14px 14px 0; }
+.p-markdown .art-page-title { font: 600 12px/1.35 Georgia, "Songti SC", "SimSun", serif; white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.p-markdown .art-page span { line-height: 1.75; }
+/* 代码：深色编辑器，两种主题下都是深色。顶部一条标签栏（三个圆点 + 语言），下面带行号的等宽代码 */
+.p-code .art-page { padding: 0; background: #1e2127; border-color: #2c313a; color: #c9d1d9; }
+.p-code .art-bar { background: #262a31; box-shadow: inset 0 -1px 0 #2c313a; }
+.p-code .art-bar span { color: #8b949e; font-family: var(--mono); }
+.art-code { padding: 8px 10px 0 0; font: 8.5px/1.6 var(--mono); }
+.art-code span { display: flex; white-space: pre; overflow: hidden; }
+.art-code em { flex: none; width: 22px; padding-right: 8px; text-align: right; font-style: normal; color: #565d68; }
+/* 网页：浏览器窗口。顶部三个彩色圆点 + 地址栏，里面是标题、一块蓝色横幅和几行字 */
+.p-html .art-page { padding: 0; }
+.art-bar { display: flex; align-items: center; gap: 4px; height: 18px; padding: 0 8px; background: color-mix(in srgb, var(--fg) 5%, var(--surface-2)); box-shadow: inset 0 -1px 0 var(--edge); }
+.art-bar i { width: 5px; height: 5px; border-radius: 50%; background: #ff5f57; }
+.art-bar i:nth-child(2) { background: #febc2e; }
+.art-bar i:nth-child(3) { background: #28c840; }
+.art-bar span { flex: 1; min-width: 0; margin-left: 6px; font-size: 8px; line-height: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.p-html .art-bar span { height: 9px; border-radius: 5px; background: var(--surface); box-shadow: inset 0 0 0 1px var(--edge); }
+.art-web { padding: 9px 10px 0; }
+.art-web b { display: block; font-size: 10.5px; color: var(--fg); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.art-web .art-hero { display: block; height: 22px; margin: 6px 0; border-radius: 5px; background: linear-gradient(120deg, color-mix(in srgb, var(--c) 35%, var(--surface)), color-mix(in srgb, var(--c) 12%, var(--surface))); }
+/* 图表：白底，图居中完整显示 */
+.p-chart .art-page { padding: 10px 10px 0; background: #fff; }
+
+/* ===== 新建卡片：翻书样式（2026-10-29）=====
+   参考 Uiverse.io eslam-hany 的 book（直角正方形、封面纯色，2026-10-29）：外层是“书”（里页），.art-book-cover 是盖在上面的封面。
+   封面的 transform-origin 在左边，悬停时 rotateY(-80deg)，像书一样向左翻开；外层的 perspective 让翻页有透视。
+   原版是灰色封面 + 黑色阴影，这里改成跟主题走：封面用卡片底色 + 一点该类颜色，阴影很淡，深色模式下也不突兀。
+   里页的小场景都是 CSS 画的（.bk-*），颜色同样用 --c。 */
+.arts-cats { grid-template-columns: repeat(4, minmax(0, 148px)); gap: 14px; }
+.art-book {
+  position: relative; width: 100%; aspect-ratio: 1 / 1; padding: 0; border-radius: 0;
+  perspective: 900px; transform-style: preserve-3d;
+  background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--edge);
+  display: block; text-align: left;
+}
+.art-book-in { position: absolute; inset: 0; }
+/* 场景区和提示文字分开定位：场景在上面一块区域里居中，提示固定在底部同一高度，四张卡片的字就对齐了 */
+.bk-scene { position: absolute; left: 14px; right: 14px; top: 14px; bottom: 38px; display: flex; align-items: center; justify-content: center; }
+.art-book-hint { position: absolute; left: 0; right: 0; bottom: 14px; justify-content: center; }
+.art-book-hint { display: flex; align-items: center; gap: 4px; font-size: 11.5px; color: var(--c); font-weight: 560; }
+.art-book-cover {
+  position: absolute; inset: 0; border-radius: 0;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
+  background: color-mix(in srgb, var(--c) 7%, var(--surface));
+  box-shadow: 0 4px 14px -8px rgba(0, 0, 0, 0.25);
+  transform-origin: left center; transition: transform 0.5s cubic-bezier(0.3, 0.7, 0.3, 1), box-shadow 0.5s;
+  backface-visibility: hidden; cursor: pointer;
+}
+.art-book-cover > svg { color: var(--c); }
+/* 2026-10-29 用户要求：封面就是一整块颜色（不要左边的书脊色条、不要边框），直角正方形 */
+.art-book:hover .art-book-cover, .art-book:focus-visible .art-book-cover {
+  transform: rotateY(-80deg);
+  box-shadow: 10px 4px 22px -10px rgba(0, 0, 0, 0.35);
+}
+@media (prefers-reduced-motion: reduce) {
+  .art-book-cover { transition: opacity 0.2s; }
+  .art-book:hover .art-book-cover, .art-book:focus-visible .art-book-cover { transform: none; opacity: 0; }
+}
+
+/* 共用：三个圆点的标题栏、灰色文字线 */
+.bk-bar { display: flex; align-items: center; gap: 3px; height: 12px; padding: 0 5px; }
+.bk-bar i { width: 4px; height: 4px; border-radius: 50%; background: #ff5f57; }
+.bk-bar i:nth-child(2) { background: #febc2e; }
+.bk-bar i:nth-child(3) { background: #28c840; }
+.bk-line { display: block; height: 3px; border-radius: 2px; background: color-mix(in srgb, var(--fg) 14%, transparent); }
+.w50 { width: 50%; } .w60 { width: 60%; } .w70 { width: 70%; } .w80 { width: 80%; } .w90 { width: 90%; }
+
+/* 网页：全白的 Mac 浏览器窗口，只有左上角三个按钮（用户要求越简单越好） */
+.bk-browser { width: 92%; aspect-ratio: 4 / 3; border-radius: 6px; background: var(--surface); box-shadow: 0 0 0 1px var(--edge), 0 3px 10px -5px rgba(0, 0, 0, 0.25); }
+.bk-browser .bk-bar { height: 14px; padding: 0 6px; gap: 4px; }
+.bk-browser .bk-bar i { width: 5px; height: 5px; }
+/* 文档：三张纸叠在一起（参考 Claude 产出物卡片），后两张稍微转一点角度 */
+.bk-stack { position: relative; height: 96%; aspect-ratio: 4 / 5; }
+.bk-sheet { position: absolute; inset: 0; border-radius: 5px; background: var(--surface); box-shadow: 0 0 0 1px var(--edge), 0 3px 10px -5px rgba(0, 0, 0, 0.25); }
+.bk-sheet.back2 { transform: rotate(-7deg) translate(-4px, 2px); }
+.bk-sheet.back1 { transform: rotate(4deg) translate(3px, 1px); }
+.bk-sheet.front { display: flex; flex-direction: column; gap: 4px; padding: 8px 7px; }
+.bk-doc-title { font: 600 10px/1.2 Georgia, "Songti SC", "SimSun", serif; color: var(--fg); }
+.bk-doc-date { font-size: 7px; color: var(--fg-3); margin-bottom: 2px; }
+
+/* 代码：深色终端（两种主题下都是深色） */
+.bk-term { width: 92%; aspect-ratio: 4 / 3; border-radius: 6px; overflow: hidden; background: #1e2127; box-shadow: 0 0 0 1px #2c313a, 0 4px 12px -6px rgba(0, 0, 0, 0.35); }
+.bk-term .bk-bar { background: #262a31; }
+.bk-term-body { display: flex; flex-direction: column; gap: 3px; padding: 6px 7px 8px; font: 8px/1.3 var(--mono); color: #c9d1d9; white-space: nowrap; }
+.bk-term-body em { font-style: normal; color: var(--c); }
+.bk-term-body .ok { color: #7ee2a8; }
+.bk-term-body u { display: inline-block; width: 5px; height: 9px; vertical-align: -2px; background: #c9d1d9; animation: bk-blink 1s steps(1) infinite; }
+@keyframes bk-blink { 50% { opacity: 0; } }
+
+/* 图表：和文档同一种画法 —— 一张白纸 + 投影，小标题 + 五根柱子（深浅交替）+ 底线 */
+.bk-chart { width: 92%; aspect-ratio: 4 / 3; display: flex; flex-direction: column; gap: 5px; padding: 8px 8px 7px; border-radius: 5px; background: var(--surface); box-shadow: 0 0 0 1px var(--edge), 0 3px 10px -5px rgba(0, 0, 0, 0.25); }
+.bk-bars { flex: 1; display: flex; align-items: flex-end; gap: 9%; padding: 0 3px; border-bottom: 1px solid color-mix(in srgb, var(--fg) 18%, transparent); }
+.bk-bars span { flex: 1; border-radius: 2px 2px 0 0; background: color-mix(in srgb, var(--c) 45%, transparent); }
+.bk-bars span:nth-child(even) { background: var(--c); }
+@media (max-width: 640px) { .arts-cats { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; } }
+.bk-browser, .bk-term, .bk-stack, .bk-term-body > span { display: block; }
+.bk-chart { display: flex; }
+.bk-term-body { display: flex; }
+
+/* ===== 新建卡片：Claude 风格封面（2026-10-29，覆盖上面的翻书卡片样式）=====
+   参考 Claude 的“创建新内容”：上面一行灰色小标题；每张卡片是一整块饱和度不高的彩色底（圆角 14px），
+   中间一个粗线条的大图标（同色系的深色），底下几笔很淡的手绘线条当底纹；名称写在卡片下面，不在卡片里。
+   翻书效果保留：鼠标移上去封面向左翻开，露出里页的小场景。 */
+.arts-new-title { font-size: 13px; color: var(--fg-3); margin: 0 0 10px; }
+.arts-cats { grid-template-columns: repeat(4, minmax(0, 156px)); gap: 14px; margin-bottom: 24px; }
+.art-new { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 0; text-align: left; background: none; }
+/* 每一类的底色和图标色（浅色模式）：Tailwind 100 / 700 档左右 */
+.art-new.c-html { --cv-bg: #d6e6fd; --cv-fg: #1d4ed8; }
+.art-new.c-markdown { --cv-bg: #fbe5cc; --cv-fg: #b45309; }
+.art-new.c-code { --cv-bg: #d3f0dd; --cv-fg: #15803d; }
+.art-new.c-chart { --cv-bg: #fbd6dc; --cv-fg: #be123c; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .art-new { --cv-bg: color-mix(in srgb, var(--c) 24%, var(--surface)); --cv-fg: color-mix(in srgb, var(--c) 75%, white); }
+}
+:root[data-theme="dark"] .art-new { --cv-bg: color-mix(in srgb, var(--c) 24%, var(--surface)); --cv-fg: color-mix(in srgb, var(--c) 75%, white); }
+
+.art-new .art-book { aspect-ratio: 16 / 11; border-radius: 14px; background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--edge); }
+.art-new .art-book-cover {
+  border-radius: 14px; background: var(--cv-bg); color: var(--cv-fg); box-shadow: none; overflow: hidden;
+}
+.art-new .art-book-cover > svg:not(.art-doodle) { color: var(--cv-fg); position: relative; transition: transform 0.2s; }
+.art-doodle { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0.1; }
+.art-new:hover .art-book-cover, .art-new:focus-visible .art-book-cover { transform: rotateY(-80deg); box-shadow: 10px 4px 22px -10px rgba(0, 0, 0, 0.3); }
+.art-new-label { font-size: 13px; color: var(--fg); padding-left: 2px; }
+/* 里页变矮了（16:11）：场景区上下留同样的边，不再留提示文字的位置 */
+.art-new .bk-scene { top: 10px; bottom: 10px; left: 12px; right: 12px; }
+.art-new .bk-browser, .art-new .bk-term, .art-new .bk-chart { width: auto; height: 100%; }
+.art-new .bk-stack { height: 100%; }
+@media (prefers-reduced-motion: reduce) {
+  .art-new:hover .art-book-cover, .art-new:focus-visible .art-book-cover { transform: none; opacity: 0; }
+}
+@media (max-width: 640px) { .arts-cats { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; } }

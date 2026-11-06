@@ -9,9 +9,10 @@ import { Trace } from "./Trace";
 import { AskCard, findAsk } from "./AskCard";
 import { ApprovalDock } from "./ApprovalDock";
 import { Loader3D } from "./Loader3D";
+import { IconPicker } from "./IconPicker";
 import { DotSpinner } from "./DotSpinner";
 import { CoreLogo } from "./CoreLogo";
-import { IArrowUp, IClip, IFolder, IFile, IImage, IPanelLeft, IPanelRight, IStop, IX } from "./Icons";
+import { IArrowUp, IClip, IFile, IImage, IPanelLeft, ILayers, IStop, IX } from "./Icons";
 import { ACCEPT, isImage, joinAttachments, splitAttachments } from "@/lib/attachments";
 import type { PendingAttachment } from "@/lib/attachments";
 import { NameInput } from "./Sidebar";
@@ -43,6 +44,11 @@ export function ChatPane(props: {
   title?: string;
   /** 当前对话所在项目的名字（不在项目里时为空） */
   projectName?: string;
+  /** 项目图标（图标库里的名字）和换图标的回调：点项目名左边的图标弹出图标面板 */
+  projectIcon?: string;
+  onProjectIcon?(name: string): void;
+  /** 项目页：新对话的空状态换成项目头（head），输入框下面接这个项目的对话列表（chats）。见 ProjectHome.tsx */
+  home?: { head: ReactNode; chats: ReactNode };
   /** 点标题改名；新对话还没保存时为空 */
   onRename?(title: string): void;
   messages: StoredMessage[];
@@ -53,7 +59,6 @@ export function ChatPane(props: {
   hasSteps: boolean;
   running: Record<string, number>;
   streaming: boolean;
-  queueing: boolean;
   error: string | null;
   draft: string;
   setDraft(v: string): void;
@@ -64,8 +69,6 @@ export function ChatPane(props: {
   sendKey: "enter" | "mod-enter";
   /** 输入框下方那一行（模型切换 + 上下文环形图），由 Workspace 传入 */
   bar: ReactNode;
-  /** 待发送草稿独立显示在输入框上方，未投递前不混入正式对话。 */
-  queue: ReactNode;
   modKey: string;
   onSend(): void;
   /** 输入框里待发送的附件（选完就开始上传） */
@@ -89,7 +92,7 @@ export function ChatPane(props: {
   userName: string;
   onDismissError(): void;
 }) {
-  const { messages, streaming, draft, inputRef, modKey } = props;
+  const { messages, streaming, draft, inputRef, modKey, home } = props;
   const scroller = useRef<HTMLDivElement>(null);
   const turns = useMemo(() => toTurns(messages), [messages]);
   // 回答里点文件名 → 右侧打开。用 ref 拿最新的消息和产出物，函数本身保持不变，Markdown 的 memo 才有效
@@ -159,7 +162,7 @@ export function ChatPane(props: {
   const canSend = !uploading && (!!draft.trim() || ready);
 
   return (
-    <main className={`chat ${empty ? "is-empty" : ""} ${props.loading ? "loading" : ""}`}>
+    <main className={`chat ${empty ? "is-empty" : ""} ${empty && home ? "is-proj" : ""} ${props.loading ? "loading" : ""}`}>
       {props.loading && <div className="chat-loading" aria-hidden />}
       <header className="chat-head">
         {!props.leftOpen && (
@@ -167,11 +170,11 @@ export function ChatPane(props: {
             <IPanelLeft />
           </button>
         )}
-        {/* 在项目里的对话：标题前面显示“项目名 /” */}
+        {/* 在项目里的对话：标题前面显示“[图标] 项目名 /”，点图标可以换（IconPicker） */}
         {props.projectName && (
-          <span className="head-proj ellipsis">
-            <IFolder width={12} height={12} />
-            {props.projectName}
+          <span className="head-proj">
+            <IconPicker value={props.projectIcon} onPick={props.onProjectIcon} />
+            <span className="ellipsis">{props.projectName}</span>
             <i>/</i>
           </span>
         )}
@@ -211,7 +214,7 @@ export function ChatPane(props: {
               }}
               aria-label={`任务与文件 ${modKey}\\`}
             >
-              <IPanelRight />
+              <ILayers />
               {props.outputs.length > 0 && <span>{props.outputs.length}</span>}
             </button>
             {peek && !props.rightOpen && (
@@ -235,7 +238,9 @@ export function ChatPane(props: {
           setAtBottom(el.scrollHeight - el.scrollTop - el.clientHeight < 80);
         }}
       >
-        {empty ? (
+        {empty && home ? (
+          home.head
+        ) : empty ? (
           // 新对话：logo + 问候语，输入框紧跟在下面，整体在页面中间（布局见 CSS .chat.is-empty）
           <div className="welcome">
             <CoreLogo size={72} morph={false} />
@@ -246,7 +251,7 @@ export function ChatPane(props: {
             {/* 在项目里新建的对话：提示这次对话会放进哪个项目 */}
             {props.projectName && (
               <div className="welcome-proj">
-                <IFolder width={13} height={13} />
+                <IconPicker value={props.projectIcon} size={13} />
                 {props.projectName}
               </div>
             )}
@@ -337,7 +342,6 @@ export function ChatPane(props: {
             </button>
           </div>
         )}
-        {props.queue}
         <ApprovalDock />
         <form
           className={`composer ${streaming ? "busy" : ""} ${dragging ? "drag" : ""}`}
@@ -378,7 +382,7 @@ export function ChatPane(props: {
             ref={inputRef}
             value={draft}
             rows={1}
-            placeholder={props.queueing ? "运行中：发送后进入队列，可编辑、排序或插入当前任务；Esc 停止" : "输入任务…"}
+            placeholder={streaming ? "运行中：可以继续补充想法，agent 下一步会看到；Esc 停止" : "输入任务…"}
             onChange={(e) => props.setDraft(e.target.value)}
             // 截图直接粘贴：剪贴板里有文件时当附件上传，文字照常粘贴
             onPaste={(e) => {
@@ -397,13 +401,13 @@ export function ChatPane(props: {
               }
             }}
           />
-          {/* 运行中输入框有字：显示发送（加入队列）；没字：显示停止 */}
+          {/* 运行中输入框有字：显示发送（补充想法）；没字：显示停止 */}
           {streaming && !draft.trim() ? (
             <button type="button" className="send stop" onClick={props.onStop} title="停止 Esc">
               <IStop />
             </button>
           ) : (
-            <button type="submit" className="send" disabled={!canSend} title={uploading ? "附件上传中…" : props.queueing ? "加入待处理队列" : "发送 Enter"}>
+            <button type="submit" className="send" disabled={!canSend} title={uploading ? "附件上传中…" : "发送 Enter"}>
               <IArrowUp />
             </button>
           )}
@@ -427,6 +431,7 @@ export function ChatPane(props: {
           />
           {props.bar}
         </div>
+        {empty && home?.chats}
       </div>
     </main>
   );

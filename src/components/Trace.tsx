@@ -10,6 +10,7 @@ import { join } from "./FileDrawer";
 import { IChevron } from "./Icons";
 import { DotSpinner } from "./DotSpinner";
 import { TraceIcon } from "./TraceIcon";
+import "./Trace.css";
 import { useApprovals, useLiveOutput, type OutputChunk } from "@/lib/live";
 
 /* =====================================================================
@@ -18,11 +19,11 @@ import { useApprovals, useLiveOutput, type OutputChunk } from "@/lib/live";
      用户想看完整的工具链路，我按顺序调用每个工具…        ← 思考：灰色句子，可展开看全文
      已获取时间  2026年10月22日 00:43:03                   ›
      已计算      10000*1.05^10 = 16288.95                  ›
-   图标 正在运行 Python  import math … ◌                    ← 每步保留类型图标，只有进行中有加载动画
+   图标 正在运行 Python  import math … ◌                   ← 类型图标常驻，加载动画位于内容后
      已写入      demo/result.txt  78 B                     ›   ← 文件名可点，右侧打开
 
-   - 运行中：盒子展开，上方一行显示当前在做什么 + 计时
-   - 全部完成：摘要显示本轮做过的操作与耗时，停止加载动画；展开/收起仍由用户控制
+   - 展开/收起由用户控制，上方一行显示当前动作或完成摘要 + 计时
+   - 全部完成：停止加载动画，保留操作类型图标
    - 每一行默认收起，点击看参数和结果
    ===================================================================== */
 
@@ -297,9 +298,10 @@ export function Trace(props: {
   const liveHeadline = waitingCall ? `等待你确认：$ ${firstLine(approvals[waitingCall.id].command)}` : phase;
   const fixes = steps.filter((x) => x.feedback?.kind === "retry").length;
   const headline = live ? liveHeadline : summarize(assistants, calls, failed) + (fixes ? `，自动修复 ${fixes} 轮` : "");
-  // 收起后也保留类型提示；运行中看当前工具/参数草稿，结束后用最后一次操作的图标。
+  // 草稿只代表尚在生成的调用，不能在工具结束、等待下一次响应时冒充当前操作。
   const activeCall = calls.find((c) => running[c.id] && !results.has(c.id));
-  const draftName = assistants.at(-1)?.drafts?.at(-1)?.name;
+  const lastAssistant = assistants.at(-1);
+  const draftName = lastAssistant?.durationMs === undefined ? lastAssistant?.drafts?.at(-1)?.name : undefined;
   const summaryIcon = live ? activeCall?.name || draftName || "thinking" : calls.at(-1)?.name || "thinking";
 
   return (
@@ -714,7 +716,7 @@ function DraftRow({ draft, onOpenFile, open, onToggle }: { draft: { name: string
   );
 }
 
-/* ---------------- 一行：[◌] 动词  目标 …  耗时  › ---------------- */
+/* ---------------- 一行：类型图标 动词  目标 … [◌] 耗时  › ---------------- */
 
 /** run 进行中 · done 成功 · err 失败（红色）· skip 没有执行（拒绝、取消、跳过：灰色，不算出错） */
 export type RowState = "run" | "done" | "err" | "skip";
@@ -726,7 +728,7 @@ export function rowState(s: ToolStatus): RowState {
 
 function Row(props: {
   state: RowState;
-  /** 操作类型与执行状态分开：失败、跳过和完成后也保留原操作图标。 */
+  /** 类型与状态分开：完成、失败、跳过后仍保留原操作图标。 */
   iconName?: string;
   verb?: string;
   target: ReactNode;
@@ -756,7 +758,7 @@ function Row(props: {
         <TraceIcon name={props.iconName} />
         {props.verb && <span className="tr-verb">{props.verb}</span>}
         <span className="tr-target">{props.target}</span>
-        {/* 类型图标始终在行首，状态动画放在内容后；结束时只移除动画，不让行首变成空白。 */}
+        {/* 动画放在内容后；结束时只移除动画，不让行首的类型提示消失。 */}
         {props.state === "run" && <DotSpinner size={12} />}
         {props.meta && <span className="tr-meta">{props.meta}</span>}
         {can && <IChevron className="tr-chev" width={11} height={11} />}

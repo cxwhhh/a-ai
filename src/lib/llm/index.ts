@@ -1,6 +1,7 @@
 import type { LLMProvider } from "./types";
 import { MockProvider } from "./providers/mock";
 import { OpenAICompatibleProvider } from "./providers/openai-compatible";
+import { AnthropicProvider } from "./providers/anthropic";
 import type { Settings } from "../settings";
 
 export * from "./types";
@@ -8,7 +9,7 @@ export * from "./types";
 /**
  * 根据设置里选中的模型，创建对应的 provider。
  *   "mock"                 → MockProvider（不联网演示）
- *   "连接id/模型名"         → OpenAICompatibleProvider（DeepSeek 等）
+ *   "连接id/模型名"         → OpenAICompatibleProvider（DeepSeek 等），Claude 连接 → AnthropicProvider
  * 新增一种协议（比如 Anthropic 原生协议）= 写一个新 provider 类，在这里加一个分支。
  */
 export function getProvider(s: Pick<Settings, "connections" | "currentModel">): LLMProvider {
@@ -20,6 +21,8 @@ export function getProvider(s: Pick<Settings, "connections" | "currentModel">): 
   if (!c) throw new Error("所选模型的连接已被删除，请在输入框下方重新选择模型");
   if (!c.apiKey) throw new Error(`连接「${c.name}」还没有填写 API Key（设置 → 模型）`);
   if (!c.baseUrl) throw new Error(`连接「${c.name}」还没有填写 Base URL（设置 → 模型）`);
+  // Claude 用 Anthropic 自己的协议（官方 SDK），不走 OpenAI 兼容
+  if (c.preset === "anthropic") return new AnthropicProvider({ baseUrl: c.baseUrl, apiKey: c.apiKey, model, label: `${c.name} · ${model}` });
   return new OpenAICompatibleProvider({
     baseUrl: c.baseUrl,
     apiKey: c.apiKey,

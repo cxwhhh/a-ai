@@ -1,12 +1,17 @@
 {
   "name": "a-ai",
+  "productName": "A.ai",
   "version": "0.1.0",
   "private": true,
   "scripts": {
     "dev": "next dev -p 3000",
     "build": "next build",
     "start": "next start -p 3000",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "electron:prepare": "node scripts/electron-prepare.mjs",
+    "electron:dev": "next build && node scripts/electron-prepare.mjs && electron .",
+    "dist:win": "next build && node scripts/electron-prepare.mjs && electron-builder --win --publish never",
+    "dist:mac": "next build && node scripts/electron-prepare.mjs && electron-builder --mac --publish never"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "1.3.0",
@@ -27,9 +32,17 @@
     "@types/node": "22.20.5",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
+    "electron": "44.7.2",
+    "electron-builder": "26.17.0",
+    "electron-updater": "6.8.10",
+    "esbuild": "0.28.2",
     "typescript": "5.9.3"
   },
   "engines": {
     "node": ">=22.13"
-  }
+  },
+  "description": "A.ai：极简高效的 AI agent",
+  "author": "A.ai",
+  "main": "dist-electron/main.cjs",
+  "macSigned": false
 }

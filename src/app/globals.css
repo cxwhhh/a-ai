@@ -24,7 +24,10 @@
   --danger: #c4372c;
   --ok: #16834f;
   --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Segoe UI", sans-serif;
-  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  /* 代码字体：--code-font 由 <html data-code-font> 决定（见文件末尾“代码字体”一段），默认 JetBrains Mono；
+     中文（注释、字符串）用苹方 / 雅黑补字，不再落到 Windows 的宋体 */
+  --code-font: var(--font-code-jetbrains);
+  --mono: var(--code-font), "JetBrains Mono", ui-monospace, Menlo, Consolas, "PingFang SC", "Microsoft YaHei", monospace;
   --side-w: 288px; /* 左栏宽度（2026-10-28 从 252 加宽到 288，和 Claude 差不多，长标题能多显示几个字） */
   --canvas-w: clamp(400px, 46vw, 940px); /* 右侧大视图默认宽度 */
   color-scheme: light;
@@ -92,6 +95,12 @@ input, textarea, select { font: inherit; color: inherit; }
 ::selection { background: var(--active); }
 kbd { font: 11px var(--mono); color: var(--fg-3); }
 .mono { font-family: var(--mono); }
+/* 浏览器默认样式给 <code> <pre> <kbd> <samp> 写死了 font-family: monospace，不会继承外层的字体。
+   代码框是 <pre class="io-code"><code class="hljs">…，外层设了 var(--mono)，里面的 <code> 却又回到 monospace
+   （Windows 上 = Consolas + 中文宋体），所以“代码字体”设置对它不起作用。这里统一改成 --mono；
+   pre 里面的 code 直接继承 pre 的字体和字号 */
+code, kbd, samp, pre { font-family: var(--mono); }
+pre code { font: inherit; }
 .ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .muted { color: var(--fg-3); }
 .spacer { flex: 1; }
@@ -423,9 +432,6 @@ kbd { font: 11px var(--mono); color: var(--fg-3); }
 .tr.can > .tr-row { cursor: pointer; }
 .tr.can > .tr-row:hover { background: var(--hover); }
 .tr-row:focus-visible { box-shadow: inset 0 0 0 2px var(--fg-3); }
-/* 类型图标不随运行结束消失，也不被长文件名挤掉；颜色沿用当前主题的文字色。 */
-.tr-type-icon { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 16px; width: 16px; height: 16px; color: inherit; }
-.s-err > .tr-row .tr-type-icon { color: var(--danger); }
 .tr-verb { flex: none; color: var(--fg-3); font-weight: 400; }
 .tr-target { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-2); font-weight: 400; }
 .tr-target code { font: 500 12.5px var(--mono); color: var(--fg); }
@@ -441,9 +447,7 @@ kbd { font: 11px var(--mono); color: var(--fg-3); }
 .tr-link { color: var(--fg-2); text-decoration: underline; text-decoration-color: var(--fg-3); text-underline-offset: 3px; font-size: inherit; }
 .tr-link.mono { font: 12px var(--mono); }
 .tr-link:hover { color: var(--fg); text-decoration-color: var(--fg); }
-.tr-say { display: flex; align-items: flex-start; gap: 8px; padding: 6px 14px; font-size: 12px; line-height: 1.6; color: var(--fg-3); }
-.tr-say > .tr-type-icon { margin-top: 2px; }
-.tr-say > .md { flex: 1; min-width: 0; }
+.tr-say { padding: 6px 14px; font-size: 12px; line-height: 1.6; color: var(--fg-3); }
 .tr-say .md p { margin: 0; }
 /* 第一步的规划：浅色底的小卡片，和后面的执行步骤区分开 */
 .tr-plan .md { background: var(--soft); border-radius: 8px; padding: 6px 10px; }
@@ -557,7 +561,9 @@ kbd { font: 11px var(--mono); color: var(--fg-3); }
 .viewer-head {
   flex: none; display: flex; align-items: center; gap: 8px;
   min-height: 52px; padding: 8px 10px 8px 14px;
-  box-shadow: 0 1px 0 var(--edge);
+  /* 分隔线用真正的 border：以前是 box-shadow，阴影画在元素外面，会被下面的网页 iframe 盖住，
+     产出物标题和网页自己的标题栏连在一起分不清（2026-10-29）。高度 48px 含边框，和左边对话标题下的横线对齐 */
+  border-bottom: 1px solid var(--edge);
 }
 .viewer-icon {
   flex: none; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 8px;
@@ -1538,3 +1544,51 @@ kbd { font: 11px var(--mono); color: var(--fg-3); }
 .ask-note:focus { border-color: var(--fg-3); }
 .ask-send { flex: none; padding: 7px 14px; border-radius: 8px; border: 0; background: var(--accent); color: var(--accent-fg); font-size: 13px; cursor: pointer; }
 .ask-send:disabled { opacity: 0.35; cursor: default; }
+
+/* ============ 代码字体（2026-10-29）============
+   设置 → 外观 → 代码字体。前 6 款的 --font-code-* 变量由 layout.tsx 里的 next/font/local 生成；
+   Cascadia / Consolas 用电脑自带的，没装的话退回 JetBrains Mono */
+[data-code-font="fira"] { --code-font: var(--font-code-fira); }
+[data-code-font="plex"] { --code-font: var(--font-code-plex); }
+[data-code-font="source"] { --code-font: var(--font-code-source); }
+[data-code-font="geist"] { --code-font: var(--font-code-geist); }
+[data-code-font="roboto"] { --code-font: var(--font-code-roboto); }
+[data-code-font="cascadia"] { --code-font: "Cascadia Mono", "Cascadia Code", var(--font-code-jetbrains); }
+[data-code-font="consolas"] { --code-font: Consolas, var(--font-code-jetbrains); }
+/* 设置里的预览：用当前选中的代码字体 */
+.set-code-preview {
+  margin: -4px 0 8px; padding: 10px 12px; border-radius: 8px; overflow-x: auto;
+  font: 12.5px/1.65 var(--mono); color: var(--fg-2); background: var(--soft); border: 1px solid var(--edge);
+  font-variant-ligatures: none; /* 和代码块一样关掉连字（-> 不会变成箭头），预览才和实际一致 */
+}
+
+/* ============ 产出物类型图标的颜色（KindIcon，2026-10-29） ============
+   和产出物页“创建新内容”卡片同一套：网页蓝、文档橙、代码绿、图表粉；普通文件 / 文件夹灰色 */
+.kind-ico { display: inline-grid; place-items: center; flex: none; color: var(--k-fg); }
+.k-web { --k-fg: #1d4ed8; --k-bg: #dbe8fd; }
+.k-doc { --k-fg: #b45309; --k-bg: #fbe8d2; }
+.k-code { --k-fg: #15803d; --k-bg: #d6f1df; }
+.k-chart { --k-fg: #be123c; --k-bg: #fbdbe0; }
+.k-file, .k-folder { --k-fg: var(--fg-3); --k-bg: var(--soft); }
+.kind-ico.kind-tile { border-radius: 8px; background: var(--k-bg); }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .k-web { --k-fg: #8fb4fb; }
+  :root:not([data-theme="light"]) .k-doc { --k-fg: #f6b46a; }
+  :root:not([data-theme="light"]) .k-code { --k-fg: #6fdb97; }
+  :root:not([data-theme="light"]) .k-chart { --k-fg: #f792ab; }
+  :root:not([data-theme="light"]) :is(.k-web, .k-doc, .k-code, .k-chart) { --k-bg: color-mix(in srgb, var(--k-fg) 16%, transparent); }
+}
+:root[data-theme="dark"] .k-web { --k-fg: #8fb4fb; }
+:root[data-theme="dark"] .k-doc { --k-fg: #f6b46a; }
+:root[data-theme="dark"] .k-code { --k-fg: #6fdb97; }
+:root[data-theme="dark"] .k-chart { --k-fg: #f792ab; }
+:root[data-theme="dark"] :is(.k-web, .k-doc, .k-code, .k-chart) { --k-bg: color-mix(in srgb, var(--k-fg) 16%, transparent); }
+/* 查看器标题前的图标：换成同色浅底，去掉灰边框 */
+.viewer-icon.kind-ico { color: var(--k-fg); background: var(--k-bg); border-color: transparent; }
+
+/* Office 文件预览（docx / xlsx / pptx）：上面一行说明 + 下载，下面是取出的文字 */
+.office-pv { display: flex; flex-direction: column; min-height: 100%; }
+.office-note { display: flex; align-items: center; gap: 12px; padding: 10px 16px; font-size: 12.5px; color: var(--fg-3); border-bottom: 1px solid var(--edge); }
+.office-note span { flex: 1; min-width: 0; }
+.office-note .btn { flex: none; text-decoration: none; }
+.office-text { margin: 0; padding: 16px 20px; white-space: pre-wrap; word-break: break-word; font: 14px/1.75 var(--font, inherit); color: var(--fg); }

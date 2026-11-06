@@ -1,5 +1,5 @@
 "use client";
-import type { AgentEvent, ArtifactMeta, Groups, Project, Session, SessionMeta, QueuedMessage, Skill, ToolInfo, UserMemory } from "./shared";
+import type { AgentEvent, ArtifactMeta, Groups, Project, ProjectChat, Session, SessionMeta, Skill, ToolInfo, UserMemory } from "./shared";
 import type { Settings, UsageStats } from "./settings";
 
 /**
@@ -30,7 +30,7 @@ export const api = {
   async remove(id: string) {
     await call(`/api/sessions/${id}`, { method: "DELETE" });
   },
-  async testConnection(c: { id?: string; baseUrl: string; apiKey: string }): Promise<{ ok: boolean; error?: string; ms?: number; models?: string[]; note?: string }> {
+  async testConnection(c: { id?: string; baseUrl: string; apiKey: string; preset?: string }): Promise<{ ok: boolean; error?: string; ms?: number; models?: string[]; note?: string }> {
     const r = await call("/api/models/test", { method: "POST", headers: json, body: JSON.stringify(c) });
     return r.json();
   },
@@ -43,14 +43,10 @@ export const api = {
     if (!r.ok) throw new Error(d.error || `上传失败（${r.status}）`);
     return d.files;
   },
-  /** 普通发送只入队；第一条由用户明确选择插队，失败不能当作已经送达。 */
-  async queue(sessionId: string, action?: "enqueue" | "edit" | "remove" | "up" | "steer", id?: string, message?: string): Promise<{ queue: QueuedMessage[]; running: boolean; idle?: boolean }> {
-    const r = action
-      ? await call("/api/chat/note", { method: "POST", headers: json, body: JSON.stringify({ sessionId, action, id, message }) })
-      : await call("/api/chat/note?sessionId=" + encodeURIComponent(sessionId));
-    const data = await r.json();
-    if (!r.ok && !data.idle) throw new Error(data.error || "读取队列失败");
-    return data;
+  /** agent 运行中补充想法；返回 false = 已经不在运行了，改成正常发送 */
+  async note(sessionId: string, message: string): Promise<boolean> {
+    const r = await call("/api/chat/note", { method: "POST", headers: json, body: JSON.stringify({ sessionId, message }) });
+    return r.ok;
   },
   async info(): Promise<{ username: string; model: string; tools: ToolInfo[]; systemTokens: number; toolsTokens: number }> {
     return (await call("/api/info")).json();
@@ -73,6 +69,11 @@ export const api = {
     return (await call("/api/artifacts")).json();
   },
   /* ---------- 项目 ---------- */
+  /** 项目页下面的对话列表 */
+  async projectChats(id: string): Promise<ProjectChat[]> {
+    const r = await call(`/api/projects/${id}/chats`);
+    return r.ok ? r.json() : [];
+  },
   async projects(): Promise<Project[]> {
     return (await call("/api/projects")).json();
   },
@@ -134,7 +135,7 @@ export const api = {
 
 /** 发送消息并逐个回调 AgentEvent；返回在 signal 中止或流结束时 resolve */
 export async function streamChat(
-  body: { sessionId?: string; message: string; truncateFrom?: string; projectId?: string; queuedMessageId?: string },
+  body: { sessionId?: string; message: string; truncateFrom?: string; projectId?: string },
   onEvent: (e: AgentEvent) => void,
   signal: AbortSignal,
 ) {

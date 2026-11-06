@@ -1,0 +1,15 @@
+/* 类型图标占固定宽度，长标题挤压时也不消失；沿用当前主题色。 */
+.trace .tr-type-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+  color: var(--fg-3);
+}
+
+/* 过程文字和规划不经过 Row，也要与工具行保持相同的图标与正文布局。 */
+.trace .tr-say { display: flex; align-items: flex-start; gap: 8px; }
+.trace .tr-say > .tr-type-icon { margin-top: 3px; }
+.trace .tr-say > .md { flex: 1; min-width: 0; }

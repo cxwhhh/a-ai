@@ -37,7 +37,7 @@ export const createArtifact: Tool<Args> = {
     // 网页：套基础样式、补手机适配，再做一遍静态检查（html-polish.ts）
     const page = kind === "html" ? polishHtml(args.content) : null;
     const a = ctx.emitArtifact({ title: args.title || "未命名", kind, language: args.language, content: page?.html ?? args.content });
-    const lines = [`已在右侧面板展示「${a.title}」(id=${a.id})。`];
+    const lines = [`已在右侧面板展示「${a.title}」(id=${a.id})${a.file ? `，并保存为文件 ${a.file}` : ""}。`];
     if (page) {
       if (page.fixed.length) lines.push(`已自动处理：${page.fixed.join("；")}。`);
       const issues = lintHtml(page.html);
