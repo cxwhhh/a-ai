@@ -1,0 +1,11 @@
+.git
+.next
+.data
+node_modules
+**/node_modules
+dist
+dist-electron
+release
+.env*
+*.log
+__MACOSX

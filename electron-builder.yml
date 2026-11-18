@@ -13,10 +13,9 @@ files:
   - package.json
   - "!node_modules/**"
 
-# Next 服务器整个放在 resources/server，不放进 asar：Next 要按真实路径读文件。
-# 不用 extraResources：它会按规则过滤掉 node_modules 等目录，standalone 就不完整了。改成打包后用脚本原样拷贝
+# 独立 HTTP 服务和 Web 静态资源放在 resources/server，由 afterPack 拷入生产依赖。
 afterPack: scripts/electron-after-pack.cjs
-# Next 服务器的依赖已经在 standalone/node_modules 里，app.asar 里没有 node_modules，不需要针对 Electron 重新编译
+# 服务的生产依赖由工作区部署单独安装，app.asar 里只包含主进程入口。
 npmRebuild: false
 
 # 更新源：你自己的服务器上一个能用浏览器访问的目录，把 release/ 里的文件传上去

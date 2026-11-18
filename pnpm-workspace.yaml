@@ -1,0 +1,10 @@
+packages:
+  - apps/*
+  - packages/*
+  - packages/application/*
+  - vendor/*
+
+allowBuilds:
+  electron: true
+  esbuild: true
+  electron-winstaller: false

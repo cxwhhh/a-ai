@@ -14,18 +14,19 @@ process.env.A_DATA_DIR = data;
 process.env.A_SANDBOX = "docker";
 process.env.A_SANDBOX_NETWORK = "0";
 const require = createRequire(import.meta.url);
-const root = path.resolve("src");
+const root = path.resolve(".");
 const cache = new Map();
 const commands = [];
 let actor = { id: "owner" };
 const overrides = {
-  "lib/server/auth.ts": { currentUser: async () => actor, unauthorized: () => Response.json({}, { status: 401 }) },
+  "packages/application/users/src/auth.ts": { currentUser: async () => actor, unauthorized: () => Response.json({}, { status: 401 }) },
   "node:child_process": { ...childProcess,
     execFile: (bin, args, opts, callback) => { commands.push(args); callback(null, "", ""); },
     spawn: () => ({}),
   },
 };
 function load(name) {
+  name = name.split(path.sep).join("/");
   if (overrides[name]) return overrides[name];
   if (cache.has(name)) return cache.get(name).exports;
   const module = { exports: {} }; cache.set(name, module);
@@ -41,8 +42,8 @@ function load(name) {
   }, module, module.exports);
   return module.exports;
 }
-const { db } = load("lib/server/db.ts");
-const policy = load("lib/server/sandbox-network.ts");
+const { db } = load("packages/storage/src/db.ts");
+const policy = load("packages/sandbox/src/sandbox-network.ts");
 db().exec("INSERT INTO users VALUES('owner','owner','x',1); INSERT INTO users VALUES('other','other','x',2)");
 after(() => {
   db().close(); delete globalThis.__aDb;
@@ -64,7 +65,7 @@ test("默认沿用部署配置；全局修改需管理账号，关闭也持久�
 });
 
 test("路由拒绝未登录、普通账号及错误参数；保存后查询返回新状态", async () => {
-  const route = load("app/api/sandbox/route.ts");
+  const route = load("apps/server/src/routes/api/sandbox/route.ts");
   const request = (network) => new Request("http://test/api/sandbox", { method: "PUT", body: JSON.stringify({ network }) });
   actor = null; assert.equal((await route.PUT(request(true))).status, 401);
   actor = { id: "other" }; assert.equal((await route.PUT(request(true))).status, 403);
@@ -76,7 +77,7 @@ test("路由拒绝未登录、普通账号及错误参数；保存后查询返�
 });
 
 test("同会话按策略版本创建 bridge/none 容器，重复执行复用，不强制终止旧容器", async () => {
-  const sandbox = load("lib/server/sandbox.ts");
+  const sandbox = load("packages/sandbox/src/sandbox.ts");
   const opts = { sessionId: "session", workspace: data, cwd: "/workspace", script: "true", env: {} };
   await sandbox.sandboxExec(opts);
   await sandbox.sandboxExec(opts);

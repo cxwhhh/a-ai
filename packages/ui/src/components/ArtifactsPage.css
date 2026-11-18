@@ -1,0 +1,393 @@
+/* “产出物”页面（ArtifactsPage.tsx）。卡片、输入框、筛选按钮都用现有的颜色变量和 seg / set-input 样式 */
+.arts-scroll { flex: 1; min-height: 0; overflow-y: auto; }
+/* 宽度按比例：占中间区域的 82%、最宽 1240px（2026-10-29 从 50% 加大，好让一行放下 4 张产出物卡片），换大显示器也跟着变宽；
+   但至少 560px（屏幕本身更窄时就占满），否则 1440 屏右栏打开时只剩 300 来 px，卡片挤不下。窄屏（<900px）时占满 */
+.arts-inner { width: 82%; max-width: 1240px; min-width: min(100%, 560px); margin: 0 auto; padding: 8px 0 48px; }
+@media (max-width: 900px) { .arts-inner { width: auto; padding: 8px 24px 40px; } }
+/* 标题（2026-10-29 重做）：28px、600 粗、字距收紧一点，像 Claude / Notion 的页面大标题；
+   后面灰色小字写总数，下面一行说明文字，让人一眼知道这页是干什么的 */
+.arts-top { display: flex; align-items: baseline; gap: 10px; margin: 12px 0 6px; }
+.arts-top h1 { margin: 0; font-size: 28px; font-weight: 600; line-height: 1.2; letter-spacing: -0.02em; color: var(--fg); }
+.arts-total { font-size: 14px; color: var(--fg-3); font-variant-numeric: tabular-nums; }
+.arts-desc { margin: 0 0 22px; font-size: 13.5px; color: var(--fg-3); }
+/* 搜索（2026-10-29）：收起时只剩 32px 的放大镜按钮；展开时宽度过渡到 220px。
+   它在工具栏右侧，右边缘不动，所以看起来是“向左展开”。输入框在按钮左边 */
+.arts-search {
+  display: flex; align-items: center; width: 32px; height: 32px; border-radius: 9px; overflow: hidden;
+  color: var(--fg-2); background: transparent; transition: width 0.22s cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 0.15s, background 0.15s;
+}
+.arts-search.open { width: 220px; background: var(--surface); box-shadow: inset 0 0 0 1px var(--edge); }
+.arts-search.open:focus-within { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fg) 25%, transparent); }
+.arts-search input { flex: 1; min-width: 0; width: 0; padding: 0 0 0 10px; border: 0; outline: none; background: transparent; font-size: 13px; color: var(--fg); opacity: 0; transition: opacity 0.15s; }
+.arts-search.open input { opacity: 1; }
+.arts-search .icon-btn { flex: none; width: 32px; height: 32px; border-radius: 9px; }
+
+/* ===== 工具栏（2026-10-29 重做）=====
+   左边三个下划线标签（全部 / 在项目中 / 不在项目中，后面是数量），右边搜索 + 排列方式。
+   整行底下一条 1px 细线；选中的标签字变深，下面一道 2px 深色线正好压在细线上 */
+.arts-bar {
+  display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  margin: 28px 0 16px; box-shadow: inset 0 -1px 0 var(--edge);
+}
+.arts-bar-right { display: flex; align-items: center; gap: 8px; padding-bottom: 6px; }
+.arts-tabs { display: flex; gap: 22px; }
+.arts-tabs button {
+  position: relative; display: inline-flex; align-items: center; gap: 6px; height: 40px; padding: 0 2px;
+  font-size: 14px; color: var(--fg-3); transition: color 0.12s;
+}
+.arts-tabs button:hover { color: var(--fg); }
+.arts-tabs button.on { color: var(--fg); font-weight: 560; }
+.arts-tabs button.on::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 2px; border-radius: 2px; background: var(--fg); }
+.arts-tab-n { font-size: 12px; font-weight: 400; color: var(--fg-3); font-variant-numeric: tabular-nums; }
+/* 选“在项目中”后出现的第二行：每个项目一个小圆角标签，选中的是深底白字 */
+.arts-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: -4px 0 16px; }
+.arts-chips button {
+  display: inline-flex; align-items: center; gap: 5px; max-width: 200px; height: 28px; padding: 0 12px;
+  border-radius: 999px; font-size: 12.5px; color: var(--fg-2); background: var(--soft);
+}
+.arts-chips button:hover { color: var(--fg); background: var(--hover); }
+.arts-chips button.on { color: var(--surface); background: var(--fg); }
+/* 排列方式：两个图标按钮连成一组，和左边的分段控件同一种样子 */
+.arts-view { display: flex; gap: 2px; padding: 2px; border-radius: 9px; background: color-mix(in srgb, var(--fg) 6%, var(--surface)); }
+.arts-view button { width: 30px; height: 28px; display: grid; place-items: center; border-radius: 7px; color: var(--fg-3); }
+.arts-view button:hover { color: var(--fg); }
+.arts-view button.on { background: var(--surface-2); color: var(--fg); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08), inset 0 0 0 1px var(--edge); }
+
+/* ===== 列表视图（像 Finder 的列表）：4 列 = 名称 / 类型 / 来源 / 创建时间；表头小字灰色，行与行之间细线，悬停整行变灰 ===== */
+/* 列表视图（2026-10-29，仿 Claude 产出物列表）：没有表头和外框，行与行之间也不画线，只靠留白分开。
+   每行：40px 的浅色圆角图标块（颜色跟随类型）+ 标题，右边灰色时间和 ⋯ 按钮。悬停整行变浅灰 */
+.arts-list { display: flex; flex-direction: column; gap: 2px; }
+.arts-row {
+  position: relative; display: flex; align-items: center; gap: 14px;
+  height: 60px; padding: 0 8px 0 10px; border-radius: 12px; cursor: pointer;
+  font-size: 14.5px; color: var(--fg);
+}
+.arts-row:hover, .arts-row.menu-open, .arts-row:focus-visible { background: var(--hover); outline: none; }
+.arts-row-ico {
+  flex: none; width: 40px; height: 40px; border-radius: 10px; display: grid; place-items: center;
+  color: var(--c); background: color-mix(in srgb, var(--c) 12%, var(--surface));
+}
+.arts-row-ico svg { width: 18px; height: 18px; }
+.arts-row-title { flex: 1; min-width: 0; }
+.arts-when { flex: none; font-size: 13px; color: var(--fg-3); font-variant-numeric: tabular-nums; }
+.arts-more-wrap { position: relative; flex: none; margin-left: 18px; }
+.arts-more { width: 32px; height: 32px; color: var(--fg-2); }
+.arts-more:hover { color: var(--fg); }
+.arts-more-wrap .row-menu { top: calc(100% + 4px); right: 0; min-width: 150px; }
+@media (max-width: 640px) { .arts-when { display: none; } .arts-row { height: 54px; } }
+.arts-empty { padding: 48px 0; text-align: center; font-size: 13px; color: var(--fg-3); line-height: 1.7; }
+
+/* 产出物卡片（2026-10-29 仿 Claude）：
+   上半部分是一块灰色底板（.art-preview），中间“立着”一张白色小页面（.art-page）：左右和上方留出灰边，
+   下边贴着底板的下沿被裁掉，看起来像一页纸从卡片里探出头。页面里是标题 + 内容开头的缩小版（字号 9~10px）。
+   下半部分：左边一个灰底圆角图标块，右边标题 + “类型 · 创建于 X 前”。 */
+.arts-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
+/* 一行固定 4 张（2026-10-29）。按内容区自己的宽度（容器查询）而不是窗口宽度来减列：
+   左栏开关、窗口大小变化都能正确响应；内容区窄于 820 / 600 / 400px 时依次变成 3 / 2 / 1 张 */
+.arts-inner { container-type: inline-size; }
+@container (max-width: 820px) { .arts-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@container (max-width: 600px) { .arts-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@container (max-width: 400px) { .arts-grid { grid-template-columns: minmax(0, 1fr); } }
+.art-card {
+  display: flex; flex-direction: column; min-width: 0; padding: 0; text-align: left; overflow: hidden; border-radius: 18px;
+  background: var(--surface); box-shadow: inset 0 0 0 1px var(--edge);
+  transition: box-shadow 0.15s, transform 0.15s;
+}
+.art-card:hover { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fg) 20%, transparent), 0 12px 28px -16px rgba(0, 0, 0, 0.3); transform: translateY(-1px); }
+.art-preview {
+  position: relative; height: 150px; overflow: hidden;
+  padding: 26px 13% 0; display: flex; align-items: stretch;
+  background: color-mix(in srgb, var(--fg) 7%, var(--surface));
+}
+.art-page {
+  flex: 1; min-width: 0; overflow: hidden; position: relative;
+  padding: 12px 12px 0; border-radius: 12px 12px 0 0;
+  background: var(--surface-2); border: 1px solid var(--edge); border-bottom: 0;
+  box-shadow: 0 6px 18px -8px rgba(0, 0, 0, 0.18);
+  font-size: 9.5px; line-height: 1.6; color: var(--fg-2);
+  transition: transform 0.2s;
+}
+/* 悬停时小页面往上探一点 */
+.art-card:hover .art-page { transform: translateY(-4px); }
+.art-page-title { display: block; margin-bottom: 6px; font-size: 11px; font-weight: 600; color: var(--fg); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.art-page span { display: block; white-space: pre-wrap; word-break: break-all; }
+.art-preview.code .art-page span { font: 9px/1.55 var(--mono); white-space: pre; word-break: normal; }
+.art-page img { display: block; width: 100%; height: 100%; object-fit: contain; object-position: top; }
+.art-meta { display: flex; align-items: center; gap: 12px; padding: 14px 16px; min-width: 0; box-shadow: 0 -1px 0 var(--edge); }
+.art-meta-ico { flex: none; width: 40px; height: 40px; border-radius: 11px; display: grid; place-items: center; color: var(--c, var(--fg-2)); background: color-mix(in srgb, var(--c, var(--fg)) 12%, var(--surface)); }
+.art-meta-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.art-title { font-size: 14px; font-weight: 560; color: var(--fg); }
+.art-sub { font-size: 12px; color: var(--fg-3); font-variant-numeric: tabular-nums; }
+@media (max-width: 640px) { .arts-inner { padding: 8px 16px 40px; } .arts-bar-right { width: 100%; } .arts-search.open { flex: 1; width: auto; } }
+
+/* ===== 分类卡片（2026-10-29 最终简化版）=====
+   前面试过色块、毛玻璃、光斑，用户觉得太复杂。最后定为最简单的形式：
+   正方形 + 不填充颜色（和页面同底色，一圈细边）+ 中间一个彩色图标 + 一行灰色名称。
+   只有图标带颜色 --c（Tailwind 500 档，偏淡但在白底上看得清）：网页蓝、文档黄、代码绿、图表粉（全部紫留给列表里用不到的情况）。
+   2026-10-29 起这 4 张是“新建”入口（点击 = 新对话 + 预填开头），不再是筛选。 */
+.c-all { --c: #8b5cf6; }
+.c-html { --c: #3b82f6; }
+.c-markdown { --c: #f59e0b; }
+.c-code { --c: #22c55e; }
+.c-chart { --c: #ec4899; }
+.art-cat {
+  width: 100%; aspect-ratio: 1 / 1; padding: 0; border-radius: 12px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
+  background: var(--surface); box-shadow: inset 0 0 0 1px var(--edge);
+  transition: transform 0.15s, box-shadow 0.15s;
+}
+.art-cat > svg { color: var(--c); }
+.art-cat:hover { transform: translateY(-2px); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fg) 20%, transparent); }
+/* 右上角一个很淡的小 +，提示“点这里是新建”，悬停时变深 */
+.art-cat { position: relative; }
+.art-cat-plus { position: absolute; top: 8px; right: 8px; color: var(--fg-3); opacity: 0.6; transition: opacity 0.15s, color 0.15s; }
+.art-cat:hover .art-cat-plus { opacity: 1; color: var(--fg); }
+.art-cat-label { display: inline-flex; align-items: baseline; gap: 5px; font-size: 12.5px; color: var(--fg-2); }
+.art-cat:hover .art-cat-label { color: var(--fg); }
+
+/* ===== 四种类型的缩略图（2026-10-29）=====
+   底板带一点这一类的颜色（9%），小页面按类型换样子 */
+.art-preview[class*="p-"] { background: color-mix(in srgb, var(--c) 9%, var(--surface)); }
+/* 文档：一张白纸。标题用衬线字体，像打印出来的文章 */
+.p-markdown .art-page { padding: 14px 14px 0; }
+.p-markdown .art-page-title { font: 600 12px/1.35 Georgia, "Songti SC", "SimSun", serif; white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.p-markdown .art-page span { line-height: 1.75; }
+/* 代码：深色编辑器，两种主题下都是深色。顶部一条标签栏（三个圆点 + 语言），下面带行号的等宽代码 */
+.p-code .art-page { padding: 0; background: #1e2127; border-color: #2c313a; color: #c9d1d9; }
+.p-code .art-bar { background: #262a31; box-shadow: inset 0 -1px 0 #2c313a; }
+.p-code .art-bar span { color: #8b949e; font-family: var(--mono); }
+.art-code { padding: 8px 10px 0 0; font: 8.5px/1.6 var(--mono); }
+.art-code span { display: flex; white-space: pre; overflow: hidden; }
+.art-code em { flex: none; width: 22px; padding-right: 8px; text-align: right; font-style: normal; color: #565d68; }
+/* 网页：浏览器窗口。顶部三个彩色圆点 + 地址栏，里面是标题、一块蓝色横幅和几行字 */
+.p-html .art-page { padding: 0; }
+.art-bar { display: flex; align-items: center; gap: 4px; height: 18px; padding: 0 8px; background: color-mix(in srgb, var(--fg) 5%, var(--surface-2)); box-shadow: inset 0 -1px 0 var(--edge); }
+.art-bar i { width: 5px; height: 5px; border-radius: 50%; background: #ff5f57; }
+.art-bar i:nth-child(2) { background: #febc2e; }
+.art-bar i:nth-child(3) { background: #28c840; }
+.art-bar span { flex: 1; min-width: 0; margin-left: 6px; font-size: 8px; line-height: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.p-html .art-bar span { height: 9px; border-radius: 5px; background: var(--surface); box-shadow: inset 0 0 0 1px var(--edge); }
+.art-web { padding: 9px 10px 0; }
+.art-web b { display: block; font-size: 10.5px; color: var(--fg); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.art-web .art-hero { display: block; height: 22px; margin: 6px 0; border-radius: 5px; background: linear-gradient(120deg, color-mix(in srgb, var(--c) 35%, var(--surface)), color-mix(in srgb, var(--c) 12%, var(--surface))); }
+/* 图表：白底，图居中完整显示 */
+.p-chart .art-page { padding: 10px 10px 0; background: #fff; }
+
+/* ===== 新建卡片：翻书样式（2026-10-29）=====
+   参考 Uiverse.io eslam-hany 的 book（直角正方形、封面纯色，2026-10-29）：外层是“书”（里页），.art-book-cover 是盖在上面的封面。
+   封面的 transform-origin 在左边，悬停时 rotateY(-80deg)，像书一样向左翻开；外层的 perspective 让翻页有透视。
+   原版是灰色封面 + 黑色阴影，这里改成跟主题走：封面用卡片底色 + 一点该类颜色，阴影很淡，深色模式下也不突兀。
+   里页的小场景都是 CSS 画的（.bk-*），颜色同样用 --c。 */
+.art-book {
+  position: relative; width: 100%; aspect-ratio: 1 / 1; padding: 0; border-radius: 0;
+  perspective: 900px; transform-style: preserve-3d;
+  background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--edge);
+  display: block; text-align: left;
+}
+.art-book-in { position: absolute; inset: 0; }
+/* 场景区和提示文字分开定位：场景在上面一块区域里居中，提示固定在底部同一高度，四张卡片的字就对齐了 */
+.bk-scene { position: absolute; left: 14px; right: 14px; top: 14px; bottom: 38px; display: flex; align-items: center; justify-content: center; }
+.art-book-hint { position: absolute; left: 0; right: 0; bottom: 14px; justify-content: center; }
+.art-book-hint { display: flex; align-items: center; gap: 4px; font-size: 11.5px; color: var(--c); font-weight: 560; }
+.art-book-cover {
+  position: absolute; inset: 0; border-radius: 0;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
+  background: color-mix(in srgb, var(--c) 7%, var(--surface));
+  box-shadow: 0 4px 14px -8px rgba(0, 0, 0, 0.25);
+  transform-origin: left center; transition: transform 0.5s cubic-bezier(0.3, 0.7, 0.3, 1), box-shadow 0.5s;
+  backface-visibility: hidden; cursor: pointer;
+}
+.art-book-cover > svg { color: var(--c); }
+/* 2026-10-29 用户要求：封面就是一整块颜色（不要左边的书脊色条、不要边框），直角正方形 */
+.art-book:hover .art-book-cover, .art-book:focus-visible .art-book-cover {
+  transform: rotateY(-80deg);
+  box-shadow: 10px 4px 22px -10px rgba(0, 0, 0, 0.35);
+}
+@media (prefers-reduced-motion: reduce) {
+  .art-book-cover { transition: opacity 0.2s; }
+  .art-book:hover .art-book-cover, .art-book:focus-visible .art-book-cover { transform: none; opacity: 0; }
+}
+
+/* 共用：三个圆点的标题栏、灰色文字线 */
+.bk-bar { display: flex; align-items: center; gap: 3px; height: 12px; padding: 0 5px; }
+.bk-bar i { width: 4px; height: 4px; border-radius: 50%; background: #ff5f57; }
+.bk-bar i:nth-child(2) { background: #febc2e; }
+.bk-bar i:nth-child(3) { background: #28c840; }
+.bk-line { display: block; height: 3px; border-radius: 2px; background: color-mix(in srgb, var(--fg) 14%, transparent); }
+.w50 { width: 50%; } .w60 { width: 60%; } .w70 { width: 70%; } .w80 { width: 80%; } .w90 { width: 90%; }
+
+/* 浏览器内页按可用高度分配空间，缩小到窄屏时仍保留工具栏和内容区的轮廓。 */
+.bk-browser { width: 92%; aspect-ratio: 4 / 3; flex-direction: column; overflow: hidden; border-radius: 6px; background: var(--surface); box-shadow: 0 0 0 1px var(--edge), 0 3px 10px -5px rgba(0, 0, 0, 0.25); }
+.bk-browser .bk-bar { flex: 0 0 18%; padding: 0 6%; gap: 3%; box-shadow: inset 0 -1px 0 var(--edge); }
+.bk-browser .bk-bar i { flex: 0 0 5%; width: auto; height: auto; aspect-ratio: 1; }
+.bk-web-address { width: 49%; height: 38%; margin-left: 3%; border-radius: 6px; background: var(--soft); box-shadow: inset 0 0 0 1px var(--edge); }
+.bk-web-body { display: grid; flex: 1; min-height: 0; grid-template-rows: minmax(0, 3fr) minmax(0, 2fr); gap: 8%; padding: 6%; }
+.bk-web-hero {
+  display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); align-items: center; gap: 8%; padding: 0 8%;
+  border-radius: 4px; background: color-mix(in srgb, var(--c) 14%, var(--surface));
+}
+.bk-web-hero::after {
+  content: ""; width: 100%; height: 66%; border-radius: 3px;
+  background: linear-gradient(135deg, color-mix(in srgb, var(--c) 30%, var(--surface)), color-mix(in srgb, var(--c) 52%, var(--surface)));
+}
+.bk-web-copy, .bk-web-tiles > span { display: grid; align-content: center; gap: 3px; }
+.bk-web-copy .bk-line:first-child { background: color-mix(in srgb, var(--c) 55%, var(--fg)); }
+.bk-web-body .bk-line { height: 2px; }
+.bk-web-tiles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6%; min-height: 0; }
+.bk-web-tiles > span { padding: 0 12%; border-radius: 3px; box-shadow: inset 0 0 0 1px var(--edge); }
+/* 文档：三张纸叠在一起（参考 Claude 产出物卡片），后两张稍微转一点角度 */
+.bk-stack { position: relative; height: 96%; aspect-ratio: 4 / 5; }
+.bk-sheet { position: absolute; inset: 0; border-radius: 5px; background: var(--surface); box-shadow: 0 0 0 1px var(--edge), 0 3px 10px -5px rgba(0, 0, 0, 0.25); }
+.bk-sheet.back2 { transform: rotate(-7deg) translate(-4px, 2px); }
+.bk-sheet.back1 { transform: rotate(4deg) translate(3px, 1px); }
+.bk-sheet.front { display: grid; grid-template-rows: auto auto minmax(0, 1fr); gap: 7%; padding: 12% 13%; overflow: hidden; }
+.bk-doc-title { font: 600 clamp(6px, 2cqw, 10px)/1.2 Georgia, "Songti SC", "SimSun", serif; color: var(--fg); }
+.bk-sheet.front .bk-doc-title { white-space: nowrap; }
+.bk-doc-rule { width: 32%; height: 2px; border-radius: 2px; background: color-mix(in srgb, var(--c) 70%, var(--fg)); }
+.bk-doc-copy { display: grid; align-content: start; gap: 4px; border-top: 1px solid var(--edge); padding-top: 5px; }
+.bk-doc-copy .bk-line { height: 2px; }
+
+/* 代码：深色终端（两种主题下都是深色） */
+.bk-term { width: 92%; aspect-ratio: 4 / 3; border-radius: 6px; overflow: hidden; background: #1e2127; box-shadow: 0 0 0 1px #2c313a, 0 4px 12px -6px rgba(0, 0, 0, 0.35); }
+.bk-term .bk-bar { background: #262a31; }
+.bk-term-body { display: flex; flex-direction: column; gap: 3px; padding: 6px 7px 8px; font: 8px/1.3 var(--mono); color: #c9d1d9; white-space: nowrap; }
+.bk-term-body em { font-style: normal; color: var(--c); }
+.bk-term-body .ok { color: #7ee2a8; }
+.bk-term-body u { display: inline-block; width: 5px; height: 9px; vertical-align: -2px; background: #c9d1d9; animation: bk-blink 1s steps(1) infinite; }
+@keyframes bk-blink { 50% { opacity: 0; } }
+
+.bk-minipage {
+  width: 100%; max-width: 132px; height: 100%; overflow: hidden; border-radius: 6px; background: var(--surface);
+  box-shadow: 0 0 0 1px var(--edge), 0 3px 10px -5px rgba(0, 0, 0, 0.25);
+}
+.bk-mini-title { font: 600 clamp(7px, 2.2cqw, 10px)/1.25 var(--font-sans, sans-serif); color: var(--fg); white-space: nowrap; }
+
+/* 月份和柱组共享同一组列宽，缩放卡片时仍对齐。 */
+.bk-chart { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: 4%; padding: 5% 7%; }
+.bk-chart-heading { display: flex; align-items: center; justify-content: space-between; gap: 4px; }
+.bk-chart-key { flex: none; display: flex; gap: 3px; }
+.bk-chart-key i { width: 6px; height: 4px; border-radius: 1px; background: var(--c); }
+.bk-chart-key i + i, .bk-bar-group i + i { background: color-mix(in srgb, var(--c) 37%, var(--surface)); }
+.bk-bars, .bk-chart-scale { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.bk-bars {
+  border-inline-start: 1px solid var(--edge); border-bottom: 1px solid var(--edge);
+  background: linear-gradient(to bottom, var(--edge) 1px, transparent 1px) 0 0 / 100% 25%;
+}
+.bk-bar-group { display: flex; align-items: flex-end; justify-content: center; gap: 8%; min-width: 0; }
+.bk-bar-group i {
+  width: 26%; border-radius: 2px 2px 0 0;
+  background: linear-gradient(to top, var(--c), color-mix(in srgb, var(--c) 72%, var(--surface)));
+}
+.bk-chart-scale { padding-inline-start: 1px; text-align: center; color: var(--fg-2); font: 7px/1 var(--mono); }
+.bk-chart-scale i { font-style: normal; }
+
+.bk-spreadsheet { padding: 6px; }
+.bk-cell-grid {
+  display: grid; height: 100%; grid-template-columns: 0.5fr repeat(3, 1fr); grid-template-rows: repeat(4, 1fr);
+  gap: 1px; padding: 1px; background: var(--edge); border-radius: 3px; overflow: hidden;
+}
+.bk-cell-grid i { background: var(--surface); }
+.bk-cell-grid i:nth-child(-n+4), .bk-cell-grid i:nth-child(4n+1) { background: color-mix(in srgb, var(--c) 18%, var(--surface)); }
+.bk-cell-grid i:nth-child(11) { background: color-mix(in srgb, var(--c) 22%, var(--surface)); box-shadow: inset 0 0 0 1px var(--c); }
+
+.bk-slides { display: grid; grid-template-columns: 24% minmax(0, 1fr); }
+.bk-slide-rail { display: grid; grid-template-rows: repeat(3, 1fr); gap: 7%; padding: 5px; background: var(--surface-2); border-inline-end: 1px solid var(--edge); }
+.bk-slide-rail i { border: 1px solid var(--edge); border-radius: 2px; background: var(--surface); }
+.bk-slide-rail i:first-child { border-color: var(--c); background: color-mix(in srgb, var(--c) 13%, var(--surface)); }
+.bk-slide { display: grid; grid-template-rows: auto 2px minmax(0, 1fr); gap: 7%; margin: 5px; padding: 5px; border: 1px solid var(--edge); border-radius: 3px; }
+.bk-slide .bk-line { height: 2px; }
+.bk-slide-figure { border-radius: 2px; background: linear-gradient(145deg, color-mix(in srgb, var(--c) 15%, var(--surface)) 48%, color-mix(in srgb, var(--c) 42%, var(--surface)) 49%); }
+
+/* 分支线随网格缩放，左侧节点在中间分为上下两路。 */
+.bk-flow { padding: 6px; }
+.bk-flow-steps { position: relative; isolation: isolate; display: grid; height: 100%; grid-template-columns: repeat(3, 1fr); grid-template-rows: 1fr 1fr; align-items: center; }
+.bk-flow-steps::before, .bk-flow-steps::after { content: ""; position: absolute; z-index: -1; border-color: color-mix(in srgb, var(--c) 65%, var(--edge)); border-style: solid; }
+.bk-flow-steps::before { top: 50%; left: 16%; right: 50%; border-width: 1px 0 0; }
+.bk-flow-steps::after { top: 25%; bottom: 25%; left: 50%; right: 16%; border-width: 1px 0 1px 1px; }
+.bk-flow-steps i { display: block; justify-self: center; width: 65%; border: 1px solid var(--c); background: color-mix(in srgb, var(--c) 16%, var(--surface)); }
+.bk-flow-start { grid-area: 1 / 1 / 3 / 2; height: 24%; border-radius: 8px; }
+.bk-flow-steps .bk-flow-branch { grid-area: 1 / 2 / 3 / 3; width: auto; height: 24%; aspect-ratio: 1; transform: rotate(45deg); border-radius: 2px; }
+.bk-flow-end { grid-column: 3; height: 47%; border-radius: 3px; }
+
+.bk-term, .bk-stack, .bk-term-body > span { display: block; }
+.bk-browser { display: flex; }
+.bk-term-body { display: flex; }
+
+/* ===== 新建卡片：Claude 风格封面（2026-10-29，覆盖上面的翻书卡片样式）=====
+   参考 Claude 的“创建新内容”：上面一行灰色小标题；每张卡片是一整块饱和度不高的彩色底（圆角 14px），
+   中间一个粗线条的大图标（同色系的深色），底下几笔很淡的手绘线条当底纹；名称写在卡片下面，不在卡片里。
+   翻书效果保留：鼠标移上去封面向左翻开，露出里页的小场景。 */
+.arts-new-title { font-size: 13px; color: var(--fg-3); margin: 0 0 10px; }
+.arts-cats { display: grid; grid-template-columns: repeat(4, minmax(0, 156px)); gap: 14px; margin-bottom: 24px; }
+.art-new { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 0; text-align: left; background: none; }
+/* 每一类的底色和图标色（浅色模式）：Tailwind 100 / 700 档左右 */
+.art-new.c-html { --cv-bg: #d6e6fd; --cv-fg: #1d4ed8; }
+.art-new.c-markdown { --cv-bg: #fbe5cc; --cv-fg: #b45309; }
+.art-new.c-code { --cv-bg: #d3f0dd; --cv-fg: #15803d; }
+.art-new.art-office-create { --c: #6366f1; --cv-bg: #e1e4f8; --cv-fg: #4338ca; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .art-new { --cv-bg: color-mix(in srgb, var(--c) 24%, var(--surface)); --cv-fg: color-mix(in srgb, var(--c) 75%, white); }
+}
+:root[data-theme="dark"] .art-new { --cv-bg: color-mix(in srgb, var(--c) 24%, var(--surface)); --cv-fg: color-mix(in srgb, var(--c) 75%, white); }
+
+.art-new .art-book { aspect-ratio: 16 / 11; border-radius: 14px; background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--edge); }
+.art-new .art-book-cover {
+  border-radius: 14px; background: var(--cv-bg); color: var(--cv-fg); box-shadow: none; overflow: hidden;
+}
+.art-new .art-book-cover::before {
+  content: ""; position: absolute; width: 36%; max-width: 52px; aspect-ratio: 1; border-radius: 12px;
+  background: color-mix(in srgb, var(--surface) 34%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cv-fg) 10%, transparent);
+}
+.art-new .art-book-cover > svg:not(.art-doodle) { color: var(--cv-fg); position: relative; width: 27%; max-width: 34px; height: auto; }
+.art-doodle { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0.1; }
+.art-new:hover .art-book-cover,
+.art-new:focus-visible .art-book-cover,
+.art-office:is(:hover, :focus-within, [data-touch-open="true"]) .art-book-cover {
+  transform: rotateY(-80deg); box-shadow: 10px 4px 22px -10px rgba(0, 0, 0, 0.3);
+}
+.art-new-label { font-size: 13px; color: var(--fg); padding-left: 2px; }
+/* 里页变矮了（16:11）：场景区上下留同样的边，不再留提示文字的位置 */
+.art-new .bk-scene { top: 10px; bottom: 10px; left: 12px; right: 12px; }
+.art-new .bk-browser, .art-new .bk-term { width: auto; height: 100%; max-width: 100%; }
+.art-new .bk-stack { height: 100%; }
+
+/* 办公卡把四套预览叠在同一张卡片上，切换只过渡透明度。 */
+.art-office { display: grid; min-width: 0; container-type: inline-size; }
+.art-office-create, .art-office-picks { grid-area: 1 / 1; }
+.art-office-create { width: 100%; min-width: 0; }
+.art-office-window { border-radius: inherit; overflow: hidden; }
+.art-office-slide {
+  position: absolute; inset: 0; opacity: 0; transition: opacity 480ms ease-in-out;
+  background: linear-gradient(145deg, color-mix(in srgb, var(--c) 20%, var(--surface)), color-mix(in srgb, var(--c) 9%, var(--surface)));
+}
+.art-office-slide[data-active="true"] { opacity: 1; }
+.art-office-slide.c-spreadsheet { --c: #0891b2; }
+.art-office-slide.c-slides { --c: #8b5cf6; }
+.art-office-slide.c-flow { --c: #6366f1; }
+.art-office-type {
+  position: absolute; top: 6px; left: 20px; display: flex; align-items: center; gap: 4px;
+  color: var(--fg); font-size: 10px; font-weight: 600; line-height: 14px;
+}
+.art-office-type svg { color: color-mix(in srgb, var(--c) 70%, var(--fg)); }
+/* 左侧为翻起的书脊留出空间，首列内容完整露出。 */
+.art-office .bk-scene { inset: 24px 12px 20px 20px; }
+.art-office .bk-chart { padding: 4px 8px; }
+/* 预览高为宽的 11/16，圆点贴预览底部，位置不受卡片下方字号影响。 */
+.art-office-picks {
+  z-index: 1; display: flex; align-self: start; justify-self: center; margin-top: calc(68.75cqi - 20px);
+  visibility: hidden;
+}
+.art-office:is(:hover, :focus-within, [data-touch-open="true"]) .art-office-picks { visibility: visible; }
+.art-office-picks button { display: grid; place-items: center; width: 22px; height: 20px; padding: 0; border-radius: 4px; }
+.art-office-picks button::after { content: ""; width: 5px; height: 5px; border-radius: 8px; background: var(--fg-3); }
+.art-office-picks button[aria-pressed="true"]::after { width: 12px; background: var(--fg); }
+
+@media (prefers-reduced-motion: reduce) {
+  .art-new:hover .art-book-cover,
+  .art-new:focus-visible .art-book-cover,
+  .art-office:is(:hover, :focus-within, [data-touch-open="true"]) .art-book-cover { transform: none; opacity: 0; }
+  .art-office-slide { transition: none; }
+}
+/* 按内容宽度切换为两列，让窄窗口的四张卡片对齐。 */
+@container (max-width: 480px) { .arts-cats { grid-template-columns: repeat(2, minmax(0, 156px)); gap: 10px; } }

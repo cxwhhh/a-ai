@@ -1,0 +1,20 @@
+/* 原字体文件、字重、度量与回退。由 Vite 入口加载，不依赖页面框架生成的字体类。 */
+@font-face { font-family: brandFont; src: url("./Manrope-latin.woff2") format("woff2"); font-display: swap; font-weight: 600 800; }
+@font-face { font-family: "brandFont Fallback"; src: local(Arial); ascent-override: 106.45%; descent-override: 29.96%; line-gap-override: 0%; size-adjust: 100.14%; }
+@font-face { font-family: codeJetbrains; src: url("./JetBrainsMono-latin.woff2") format("woff2"); font-display: swap; font-weight: 100 800; }
+@font-face { font-family: codeFira; src: url("./FiraCode-latin.woff2") format("woff2"); font-display: swap; font-weight: 300 700; }
+@font-face { font-family: codePlex; src: url("./IBMPlexMono-latin-400.woff2") format("woff2"); font-display: swap; font-weight: 400; }
+@font-face { font-family: codePlex; src: url("./IBMPlexMono-latin-500.woff2") format("woff2"); font-display: swap; font-weight: 500; }
+@font-face { font-family: codeSource; src: url("./SourceCodePro-latin.woff2") format("woff2"); font-display: swap; font-weight: 200 900; }
+@font-face { font-family: codeGeist; src: url("./GeistMono-latin.woff2") format("woff2"); font-display: swap; font-weight: 100 900; }
+@font-face { font-family: codeRoboto; src: url("./RobotoMono-latin.woff2") format("woff2"); font-display: swap; font-weight: 100 700; }
+
+:root {
+  --font-brand: "brandFont", "brandFont Fallback";
+  --font-code-jetbrains: "codeJetbrains";
+  --font-code-fira: "codeFira";
+  --font-code-plex: "codePlex";
+  --font-code-source: "codeSource";
+  --font-code-geist: "codeGeist";
+  --font-code-roboto: "codeRoboto";
+}

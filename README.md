@@ -5,12 +5,12 @@
 ## 运行
 
 ```bash
-cd ~/cxw/python/A/a-ai
-npm install
-npm run dev          # 打开 http://localhost:3000
+corepack enable
+pnpm install --frozen-lockfile
+pnpm dev            # 打开 http://127.0.0.1:3000
 ```
 
-需要 Node.js 20+（推荐 22）。默认使用 **Mock 模型**，不需要 API 就能跑通全部流程。
+需要 Node.js 22.13+ 和项目锁定的 pnpm。默认使用 **Mock 模型**，不需要 API 就能跑通全部流程。
 输入 `演示全部工具` 可以看到 6 个工具依次调用的完整链路。
 
 ## 接入模型（DeepSeek 等）
@@ -20,39 +20,25 @@ npm run dev          # 打开 http://localhost:3000
 3. 输入框左下角切换模型；右下角环形图看上下文占用
 
 任何 OpenAI 兼容接口（OpenAI、Kimi、通义、Ollama、vLLM…）都可以用“添加 OpenAI 兼容接口”接入。
-Key 保存在本机 `.data/settings.json`（已在 .gitignore 中），浏览器里只显示打码后的值。
+连接配置保存在当前用户的 SQLite 数据中，界面继续按原方式显示连接设置。
 
 ## 目录
 
-```
-src/
-├── app/
-│   ├── page.tsx                  入口页面
-│   ├── globals.css               全部样式（主题、三栏、3D 动画、时间线）
-│   └── api/
-│       ├── chat/route.ts         POST：运行 agent，SSE 流式返回事件
-│       ├── sessions/…            会话增删查
-│       └── info/route.ts         当前模型 + 工具列表
-├── lib/
-│   ├── llm/                      ★ 模型层：接口定义 + 各家实现
-│   │   ├── types.ts              LLMProvider 接口（唯一契约）
-│   │   ├── index.ts              provider 注册表
-│   │   └── providers/            mock.ts / custom.ts
-│   ├── agent/                    ★ agent 层
-│   │   ├── run.ts                ReAct 主循环
-│   │   ├── prompt.ts             系统提示词
-│   │   └── tools/                工具：一个文件一个工具 + index.ts 注册表
-│   ├── server/store.ts           会话持久化（.data/sessions/*.json）
-│   ├── shared.ts                 前后端共用类型、SSE 事件定义
-│   └── client.ts                 前端调用 API、解析 SSE
-└── components/                   ★ 界面层
-    ├── Workspace.tsx             总状态 + 事件处理 + 快捷键
-    ├── Sidebar.tsx               左栏
-    ├── ChatPane.tsx              中栏
-    ├── Trace.tsx                 思维链 / 工具链时间线
-    ├── Loader3D.tsx              3D 立方体加载动画
-    └── Canvas.tsx                右栏产出
-```
+| 目录 | 职责 |
+|---|---|
+| `apps/web`、`apps/server` | Vite 浏览器入口和 Node.js HTTP/SSE 服务 |
+| `apps/desktop`、`apps/cli` | Electron 启动本地服务，CLI 调用同一接口 |
+| `packages/ui`、`packages/protocol` | 界面样式与浏览器可共享的协议 |
+| `packages/application` | 登录、对话、项目和其他产品用例 |
+| `packages/agent`、`packages/agent-registry`、`packages/agent-loop` | Agent 工厂、实例登记与执行循环 |
+| `packages/session`、`packages/scheduler` | 历史恢复、任务执行权和实时事件订阅 |
+| `packages/runtime`、`vendor/cordis` | Cordis 服务装配与本地维护的插件核心 |
+
+## 构建与测试
+
+`pnpm typecheck` 检查类型，`pnpm test` 构建并运行行为测试。生产环境执行 `pnpm build` 后用 `pnpm start` 启动，默认只监听本机。Docker 仍使用 `docker compose up -d --build`，账号和工作区继续使用 `a-ai-data` 数据卷。桌面开发用 `pnpm electron:dev`，安装包用 `pnpm dist:win` 或 `pnpm dist:mac`。
+
+CLI 构建后可用 `pnpm cli help` 查看命令。登录已有服务可通过环境变量 `A_AI_USERNAME` 和 `A_AI_PASSWORD`，或通过 `A_AI_SESSION` 传入已有会话凭据。
 
 ## 环境变量
 

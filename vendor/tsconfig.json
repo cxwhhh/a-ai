@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022", "DOM"],
+    "strict": true,
+    "noImplicitAny": false,
+    "noImplicitThis": false,
+    "strictFunctionTypes": false,
+    "skipLibCheck": true,
+    "allowImportingTsExtensions": true,
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "outDir": "../dist/vendor",
+    "rootDir": ".",
+    "paths": { "@a-ai/cosmokit": ["./cosmokit/src/index.ts"] }
+  },
+  "include": ["cordis/src/**/*.ts", "cosmokit/src/**/*.ts"]
+}

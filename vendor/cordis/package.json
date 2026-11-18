@@ -1,0 +1,12 @@
+{
+  "name": "@A-ai/cordis",
+  "version": "4.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "exports": "./src/index.ts",
+  "dependencies": {
+    "@a-ai/cosmokit": "workspace:*",
+    "@standard-schema/spec": "1.1.0"
+  }
+}

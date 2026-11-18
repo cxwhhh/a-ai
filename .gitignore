@@ -17,6 +17,7 @@ __pycache__/
 .venv/
 /release/
 /dist-electron/
+/dist/
 /evals/results/
 *.log
 .dsh-selftest.txt

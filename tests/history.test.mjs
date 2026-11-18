@@ -13,16 +13,16 @@ import { spawnSync } from "node:child_process";
  * 所有数据库、迁移备份和编译文件都放在临时目录，结束后清理。
  *
  * 项目还没有独立的 TS 测试运行器，这里复用已有 TypeScript 编译器，把实际存储源码编成 CJS。
- * 只移除 Next 的 server-only 环境标记、调整测试目录中的 db 模块引用，不替换业务逻辑。
+ * 调整临时编译目录中的模块引用，执行实际存储逻辑。
  * 除了正确结果，还通过故障注入验证：写入和迁移中途失败时，数据库与内存都不留下半份状态。
  */
 const dir = mkdtempSync(path.join(tmpdir(), "aai-history-test-"));
 process.env.A_DATA_DIR = dir;
-for (const name of ["db", "store", "projects", "memory", "../attachments", "../agentIcons"]) {
-  const source = readFileSync(new URL("../src/lib/server/" + name + ".ts", import.meta.url), "utf8")
-    .replace('import "server-only";', "");
+for (const name of ["storage/src/db", "storage/src/store", "application/projects/src/projects", "memory/src/memory",
+  "protocol/src/lib/attachments", "protocol/src/lib/agentIcons", "protocol/src/lib/shared", "session/src/log", "storage/src/log-schema"]) {
+  const source = readFileSync(new URL("../packages/" + name + ".ts", import.meta.url), "utf8");
   writeFileSync(path.join(dir, path.basename(name) + ".cjs"), ts.transpileModule(
-    source.replace(/from "(?:\.\/|\.\.\/)(db|memory|attachments|agentIcons)"/g, 'from "./$1.cjs"'),
+    source.replace(/from "(?:(?:\.\.?\/)+(?:[^"\/]+\/)*)(db|memory|attachments|agentIcons|shared|log|log-schema)"/g, 'from "./$1.cjs"'),
     { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } },
   ).outputText);
 }
@@ -45,6 +45,38 @@ let serial = 0;
 const msg = (role = "user", extra = {}) => ({ id: "msg" + ++serial, role, content: "text", createdAt: 100, ...extra });
 const art = (extra = {}) => ({ id: "art" + ++serial, title: "output", kind: "markdown", content: "old", createdAt: 100, ...extra });
 const session = () => store.createSession("u");
+
+test("收紧事件表时保留有效记录与游标，约束失败则回滚旧表", () => {
+  const { migrateAgentLogTable } = require(path.join(dir, "log-schema.cjs"));
+  const d = new DatabaseSync(":memory:");
+  try {
+    d.exec(`PRAGMA foreign_keys=ON;
+      CREATE TABLE sessions(id TEXT PRIMARY KEY);
+      INSERT INTO sessions VALUES('s');
+      CREATE TABLE agent_events(
+        id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        at INTEGER NOT NULL, kind TEXT NOT NULL, run_id TEXT, input_id TEXT, detail TEXT NOT NULL
+      );
+      CREATE INDEX agent_events_session ON agent_events(session_id, id DESC);
+      INSERT INTO agent_events VALUES(2,'s',0,'turn-start','r','i','{}');
+      INSERT INTO agent_events VALUES(9,'s',0,'tool-result',NULL,NULL,'{}');
+      BEGIN IMMEDIATE;`);
+    assert.throws(() => migrateAgentLogTable(d), /agent_event_contract_v1/);
+    d.exec("ROLLBACK");
+    assert.equal(d.prepare("SELECT COUNT(*) AS n FROM agent_events").get().n, 2);
+    d.exec("BEGIN IMMEDIATE; DELETE FROM agent_events WHERE id=9;");
+    migrateAgentLogTable(d);
+    migrateAgentLogTable(d);
+    d.exec("COMMIT");
+    assert.equal(d.prepare("SELECT id FROM agent_events").get().id, 2);
+    const insert = d.prepare("INSERT INTO agent_events(session_id,at,kind,run_id,input_id,detail) VALUES('s',1,'turn-start','r','j','{}')");
+    assert.equal(insert.run().lastInsertRowid, 10);
+    d.exec("DELETE FROM sessions WHERE id='s'");
+    assert.equal(d.prepare("SELECT COUNT(*) AS n FROM agent_events").get().n, 0);
+  } finally {
+    d.close();
+  }
+});
 
 test("项目列表隔离用户，编辑后只统计当前回答、产出和去重路径", () => {
   const p = projects.createProject("u", { name: "test", description: "", memory: "off", share: false });
@@ -160,6 +192,77 @@ test("追加写入失败不提前污染内存", () => {
   assert.equal(s.artifacts.length, 1);
 });
 
+test("截断与新问题写入作为一次事务失败时，数据库与内存均保持原版本", () => {
+  const s = session(), first = msg(); store.addMessage(s, first);
+  const before = structuredClone(s);
+  assert.throws(() => store.beginTurn(s, first, first.id)); // 新问题 ID 冲突，发生于截断之后。
+  assert.deepEqual(s, before);
+  assert.deepEqual(store.getSession(s.id, "u"), before);
+  assert.equal(database.db().prepare("SELECT COUNT(*) AS n FROM session_revisions WHERE session_id=?").get(s.id).n, 0);
+  const replacement = msg("user", { content: "修改后的问题" });
+  store.beginTurn(s, replacement, first.id);
+  assert.deepEqual(s.messages.map(m => m.id), [replacement.id]);
+  assert.equal(database.db().prepare("SELECT COUNT(*) AS n FROM messages WHERE session_id=?").get(s.id).n, 2);
+  assert.equal(database.db().prepare("SELECT reason FROM session_revisions WHERE session_id=?").get(s.id).reason, "edit");
+});
+
+test("产出修正追加正文版本，失败不覆盖正文，修订快照指向当时版本", () => {
+  const s = session(), cut = msg(); store.addMessage(s, cut);
+  const a = art({ sourceToolCallId: "make" }); store.addArtifact(s, a);
+  const before = structuredClone(s);
+  database.db().exec("CREATE TEMP TRIGGER fail_version BEFORE INSERT ON artifact_versions BEGIN SELECT RAISE(ABORT, 'version failure'); END");
+  try {
+    assert.throws(() => store.replaceArtifact(s, { ...a, content: "failed" }), /version failure/);
+    assert.deepEqual(s, before);
+    assert.deepEqual(store.getSession(s.id, "u"), before);
+  } finally { database.db().exec("DROP TRIGGER fail_version"); }
+  store.replaceArtifact(s, { ...a, content: "new" });
+  const versions = database.db().prepare("SELECT id,data FROM artifact_versions WHERE artifact_id=? ORDER BY version").all(a.id);
+  assert.deepEqual(versions.map(v => JSON.parse(v.data).content), ["old", "new"]);
+  store.addMessage(s, msg("assistant", { toolCalls: [{ id: "make", name: "create_artifact", arguments: "{}" }] }));
+  store.truncateFrom(s, cut.id);
+  const r = database.db().prepare("SELECT artifact_version_ids FROM session_revisions WHERE session_id=?").get(s.id);
+  assert.deepEqual(JSON.parse(r.artifact_version_ids), [versions[1].id]);
+  assert.equal(store.getSession(s.id, "u").artifacts.length, 0);
+});
+
+test("产出正文变动也让旧快照失效，反馈消息不能作为编辑锚点", () => {
+  const s = session(), first = msg(); store.addMessage(s, first);
+  const a = art(); store.addArtifact(s, a);
+  const stale = store.getSession(s.id, "u");
+  store.replaceArtifact(s, { ...a, content: "new" });
+  assert.throws(() => store.addMessage(stale, msg()), /刷新/);
+  assert.throws(() => store.truncateFrom(stale, first.id), /刷新/);
+  const note = msg("user", { feedback: { kind: "note", summary: "补充" } }); store.addMessage(s, note);
+  assert.equal(store.truncateFrom(s, note.id), false);
+});
+
+test("曾升级再回溯的库补齐新结构时，保留旧版本标记和产出正文", () => {
+  const partial = mkdtempSync(path.join(dir, "partial-"));
+  const code = `
+    const assert = require('node:assert/strict');
+    const {DatabaseSync}=require('node:sqlite');
+    const path=require('node:path');
+    const d=new DatabaseSync(path.join(process.env.A_DATA_DIR,'a.db'));
+    d.exec(\`CREATE TABLE users(id TEXT PRIMARY KEY,username TEXT,password_hash TEXT,created_at INTEGER);
+      INSERT INTO users VALUES('u','u','x',0);
+      CREATE TABLE sessions(id TEXT PRIMARY KEY,user_id TEXT,title TEXT,group_id TEXT,created_at INTEGER,updated_at INTEGER);
+      INSERT INTO sessions VALUES('s','u','old',NULL,0,0);
+      CREATE TABLE messages(id TEXT PRIMARY KEY,session_id TEXT,seq INTEGER,role TEXT,created_at INTEGER,data TEXT,superseded_by TEXT);
+      INSERT INTO messages VALUES('m','s',0,'user',0,'{}','old-rev');
+      CREATE TABLE artifacts(id TEXT PRIMARY KEY,session_id TEXT,created_at INTEGER,data TEXT,superseded_by TEXT);
+      INSERT INTO artifacts VALUES('a','s',0,'{"id":"a","content":"legacy"}','old-rev');\`);
+    d.close();
+    const {db}=require(${JSON.stringify(path.join(dir, "db.cjs"))});
+    assert.equal(db().prepare('SELECT superseded_by FROM messages').get().superseded_by,'old-rev');
+    assert.equal(JSON.parse(db().prepare('SELECT data FROM artifact_versions').get().data).content,'legacy');
+    assert.equal(db().prepare('SELECT history_revision FROM sessions').get().history_revision,0);
+    db().close();
+  `;
+  const r = spawnSync(process.execPath, ["-e", code], {env:{...process.env,A_DATA_DIR:partial},encoding:"utf8"});
+  assert.equal(r.status, 0, r.stderr);
+});
+
 test("彻底删除语义不变，新库外键级联清理修订记录", () => {
   const s = session(), m = msg(); store.addMessage(s, m); store.truncateFrom(s, m.id);
   assert.equal(store.deleteSession(s.id, "other"), false);
@@ -179,7 +282,7 @@ test("全新数据库可使用，彻底删除级联清理所有版本与产出",
     store.addArtifact(s, {id:'a',title:'x',kind:'markdown',content:'x',createdAt:0});
     store.truncateFrom(s,'m');
     store.deleteSession(s.id,'u');
-    for (const t of ['messages','artifacts','session_revisions'])
+    for (const t of ['messages','artifacts','session_revisions','artifact_versions'])
       assert.equal(db().prepare('SELECT COUNT(*) AS n FROM '+t).get().n,0);
     db().close();
   `;

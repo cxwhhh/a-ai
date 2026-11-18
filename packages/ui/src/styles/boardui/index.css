@@ -1,0 +1,22 @@
+/* 单独接入 BoardUI，省略 Preflight 和全局重置，保留 A.ai 的正文样式。 */
+@layer theme, base, components, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities) source(none);
+@import "./theme.css";
+@import "./typography.css";
+
+/* 扫描 BoardUI 基础组件目录，新增组件时沿用该目录即可生成样式。 */
+@source "../../components/base";
+
+/* 手动主题优先，未指定时跟随系统，与 A.ai 的全局主题规则一致。 */
+@custom-variant dark {
+  &:where([data-theme="dark"], [data-theme="dark"] *) {
+    @slot;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    &:where(:root:not([data-theme="light"]), :root:not([data-theme="light"]) *) {
+      @slot;
+    }
+  }
+}
