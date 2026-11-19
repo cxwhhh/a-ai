@@ -94,6 +94,36 @@ test("桌面更新文件名只解码一次，支持带空格的文件名和断�
   assert.equal((await fetch(`${origin}/updates/A.ai%2520Setup.exe`)).status, 404);
 });
 
+test("生产 Host 按会话读取和设置插件，拒绝越权和未知 ID", async () => {
+  const a = await (await request("/api/sessions", owner, { method: "POST" })).json();
+  const b = await (await request("/api/sessions", owner, { method: "POST" })).json();
+  const endpoint = (id) => `/api/sessions/${id}/agent/plugins`;
+  const configure = (id, enabled, user = owner) => request(endpoint(id), user, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled })
+  });
+  const initial = await (await request(endpoint(a.id))).json();
+  assert.deepEqual(initial.enabled, []);
+  assert.ok(initial.available.some(({ id }) => id === "concise-replies"));
+  assert.equal((await request(endpoint(a.id), visitor)).status, 404);
+  assert.equal((await configure(a.id, [], visitor)).status, 404);
+  assert.equal((await configure(a.id, ["unknown"])).status, 400);
+  assert.equal((await configure(a.id, ["concise-replies"])).status, 200);
+  assert.equal((await configure(b.id, ["structured-replies"])).status, 200);
+  assert.deepEqual((await (await request(endpoint(a.id))).json()).enabled, ["concise-replies"]);
+  assert.deepEqual((await (await request(endpoint(b.id))).json()).enabled, ["structured-replies"]);
+  const chat = await request("/api/chat", owner, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sessionId: a.id, message: "验证插件会话" })
+  });
+  assert.equal(chat.status, 200);
+  const stream = await chat.text();
+  assert.match(stream, /"type":"done"/);
+  assert.doesNotMatch(stream, /"type":"error"/);
+});
+
 test("SSE 断开后按原运行和游标继续，停止另一会话不影响本任务", { timeout: 15_000 }, async () => {
   const a = await start("核对运行 A");
   const b = await start("核对运行 B");

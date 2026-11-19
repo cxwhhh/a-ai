@@ -6,7 +6,7 @@ import { parseToolArgs } from "../../agent-loop/src/args";
 import { RESEARCH_SPEC } from "../../subagent/src/subagent";
 import { toolSpecs } from "../../tool-runtime/src/index";
 import { foldConsumedWork } from "../../session-projection/src/consumed-work";
-import type { Agent } from "../../agent/src/runtime-types";
+import type { Agent } from "../../agent-core/agent/src/runtime-types";
 import { readAgentEvents } from "../../session/src/log";
 import { fileRecoveryLabel, fileRecoveryMessage, readFileRecoveries } from "../../session/session-recovery/src/file-recovery";
 import { getCurrentPosition, projectSession } from "../../session-projection/src/projection";
@@ -38,13 +38,14 @@ const stepKey = (event: Extract<AgentLogEntry, { kind: "model-request" | "model-
 export function readSessionTrace(sessionId: string, userId: string, includeStats = false, active?: Agent): SessionTrace | null {
   const session = getSession(sessionId, userId);
   if (!session) return null;
+  const agent = active?.id === sessionId && active.userId === userId ? active : undefined;
   const events = readAgentEvents(userId, sessionId);
   const recoveries = new Map(readFileRecoveries(sessionId, userId)
     .map((recovery) => [JSON.stringify([recovery.assistantId, recovery.callId]), recovery]));
-  const activeRunId = active?.activeRunId ?? null;
+  const activeRunId = agent?.activeRunId ?? null;
   const projection = projectSession(session, events);
   const { turn: currentTurn, step: currentStep } = getCurrentPosition(projection);
-  const work = foldConsumedWork(projection, events, { activeRunId, queue: active?.queueSnapshot() ?? null });
+  const work = foldConsumedWork(projection, events, { activeRunId, queue: agent?.queueSnapshot() ?? null });
   const byInput = new Map(work.map((item) => [item.inputId, item]));
   const byEventId = new Map(events.map((event) => [event.id, event]));
   const modelByMessage = new Map(events.flatMap((event) =>
@@ -185,7 +186,9 @@ export function readSessionTrace(sessionId: string, userId: string, includeStats
     }
   }
   const used = new Set(rows.map((row) => row.tool));
-  const schemas = Object.fromEntries([...toolSpecs(), RESEARCH_SPEC].filter((spec) => used.has(spec.name)).map((spec) => [spec.name, spec]));
+  // 当前工具定义只从本会话的运行实例取。历史请求里的工具定义仍以请求快照为准。
+  const availableSpecs = agent?.runtime.tools.toolSpecs() ?? toolSpecs();
+  const schemas = Object.fromEntries([...availableSpecs, RESEARCH_SPEC].filter((spec) => used.has(spec.name)).map((spec) => [spec.name, spec]));
   // 同一毫秒内按输入、请求、响应、工具、事件排列；同类记录保留原有顺序。
   const position = (row: TraceRow) => {
     if (row.kind === "input") return 0;

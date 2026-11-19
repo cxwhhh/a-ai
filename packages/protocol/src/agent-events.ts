@@ -14,7 +14,7 @@ export interface AgentQueueItem {
 
 export interface AgentQueueSnapshot {
   sessionId: string;
-  /** 每个进程内注册表有自己的 epoch。版本号只能在同会话、同 epoch 内比较。 */
+  /** 每个 Host 的 Inbox 共用一个 epoch。版本号只能在同会话、同 epoch 内比较。 */
   epoch: string;
   /** 快照更新时递增，供客户端丢弃同一来源的较旧推送。 */
   version: number;

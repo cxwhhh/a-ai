@@ -30,7 +30,7 @@ pnpm dev            # 打开 http://127.0.0.1:3000
 | `apps/desktop`、`apps/cli` | Electron 启动本地服务，CLI 调用同一接口 |
 | `packages/ui`、`packages/protocol` | 界面样式与浏览器可共享的协议 |
 | `packages/application` | 登录、对话、项目和其他产品用例 |
-| `packages/agent`、`packages/agent-registry`、`packages/agent-loop` | Agent 工厂、实例登记与执行循环 |
+| `packages/agent-core`、`packages/agent-registry`、`packages/agent-loop` | Agent 工厂、生命周期与收件箱、实例登记和执行循环 |
 | `packages/session`、`packages/scheduler` | 历史恢复、任务执行权和实时事件订阅 |
 | `packages/runtime`、`vendor/cordis` | Cordis 服务装配与本地维护的插件核心 |
 

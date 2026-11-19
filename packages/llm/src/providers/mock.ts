@@ -1,7 +1,7 @@
 import type { ChatRequest, LLMProvider, StreamChunk, ToolCall } from "../types";
 import { estimateTokens } from "../../../protocol/src/lib/tokens";
 import { FEEDBACK_TAG } from "../../../verifier/src/verify";
-import { NOTE_TAG } from "../../../agent-registry/src/index";
+import { NOTE_TAG } from "../../../protocol/src/lib/message-tags";
 import { ENV_RE, PLAN_MARK } from "../../../agent-loop/src/steer";
 
 /**

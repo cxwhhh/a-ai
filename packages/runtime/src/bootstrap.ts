@@ -1,15 +1,17 @@
 import { Context } from "@A-ai/cordis";
+import { createAgentInstance } from "../../agent-core/agent/src/factory";
+import { createQueueClock } from "../../agent-core/inbox/src/clock";
 import { AgentRegistry } from "../../agent-registry/src/index";
 import { getProvider } from "../../llm/src/index";
 import { deferredCatalog, findTool, toolSpecs, toolsFor } from "../../tool-runtime/src/index";
 import { Scheduler } from "../../scheduler/src/index";
+import { agentSessions } from "../../session/src/agent-session";
+import { builtinAgentPlugins } from "./agent-plugins";
 
 declare module "@A-ai/cordis" {
   interface Context {
     agents: AgentRegistry;
     scheduler: Scheduler;
-    models: typeof getProvider;
-    tools: typeof builtinTools;
   }
 }
 
@@ -19,16 +21,22 @@ const builtinTools = { deferredCatalog, findTool, toolSpecs, toolsFor };
 export async function bootstrap() {
   const root = new Context();
   await root.plugin(function models(ctx) { ctx.provide("models", getProvider); });
-  await root.plugin(function tools(ctx) { ctx.provide("tools", builtinTools); });
-  await root.plugin(function registry(ctx) {
-    const agents = new AgentRegistry();
-    ctx.provide("agents", agents);
-    ctx.effect(() => () => agents.disposeAll());
+  await root.plugin(function tools(ctx) { ctx.provide("hostTools", builtinTools); });
+  await root.plugin(function agentServices(ctx) {
+    ctx.provide("queueClock", createQueueClock());
+    ctx.provide("agentPlugins", builtinAgentPlugins);
+    ctx.provide("agentSessions", agentSessions);
   });
   await root.plugin(function scheduler(ctx) {
     const scheduler = new Scheduler();
     ctx.provide("scheduler", scheduler);
     ctx.effect(() => () => scheduler.stopAccepting());
+  });
+  await root.inject(["models", "hostTools", "queueClock", "agentPlugins", "agentSessions"], function registry(owner) {
+    // 共享依赖来自 Host，实例的 Scope 由 Registry 所在的 Cordis fiber 持有。
+    const agents = new AgentRegistry((sessionId, userId, plugins) => createAgentInstance(root, owner, sessionId, userId, plugins));
+    owner.provide("agents", agents);
+    owner.effect(() => () => agents.disposeAll());
   });
   return { root, close: () => root.fiber.dispose() };
 }

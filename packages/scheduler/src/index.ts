@@ -1,4 +1,4 @@
-import type { Agent, AgentRun } from "../../agent/src/runtime-types";
+import type { Agent, AgentRun } from "../../agent-core/agent/src/runtime-types";
 import type { AgentEvent } from "../../protocol/src/lib/shared";
 
 const MAX_EVENTS = 20_000;

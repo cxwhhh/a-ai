@@ -1,5 +1,6 @@
-import type { AgentQueueItem, AgentQueueSnapshot, Session, StoredMessage } from "../../protocol/src/lib/shared";
-import type { AgentTurnOutcome } from "../../protocol/src/agent-events";
+import type { AgentQueueItem, AgentQueueSnapshot, Session, StoredMessage } from "../../../protocol/src/lib/shared";
+import type { AgentTurnOutcome } from "../../../protocol/src/agent-events";
+import type { AgentRuntime } from "./scope";
 
 /** 在线实例暴露的当前状态。关闭期间可能仍在等待本轮收尾，最终结果从日志读取。 */
 export type AgentStatus = "idle" | "running" | "closing" | "disposed";
@@ -43,6 +44,7 @@ export interface Agent {
   /** 使用持久会话 ID 标识实例，进程重启后可以用同一 ID 重建。 */
   readonly id: string;
   readonly userId: string;
+  readonly runtime: AgentRuntime;
   readonly status: AgentStatus;
   /** 无占用时为 null。一条流结束后，下次取得占用会生成新的 ID。 */
   readonly activeRunId: string | null;
@@ -59,17 +61,7 @@ export interface Agent {
 /** 实例所有者持有句柄。释放会等待当前执行收尾，然后撤销登记。 */
 export interface AgentHandle {
   readonly agent: Agent;
+  /** 运行收尾、Scope 卸载均已完成，Registry 可以撤销该实例的登记。 */
+  readonly closed: Promise<void>;
   dispose(): Promise<void>;
-}
-
-export interface CreateAgentOptions {
-  userId: string;
-  title?: string;
-  projectId?: string;
-}
-
-export interface OpenedAgent {
-  readonly handle: AgentHandle;
-  /** 本次从 SQLite 读取的会话快照，写入仍受 revision 校验。 */
-  readonly session: Session;
 }

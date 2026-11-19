@@ -1,6 +1,7 @@
 packages:
   - apps/*
   - packages/*
+  - packages/agent-core/*
   - packages/application/*
   - vendor/*
 

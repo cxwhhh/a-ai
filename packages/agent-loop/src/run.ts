@@ -6,9 +6,10 @@ import { allowSession, isSessionAllowed, waitApproval } from "../../permissions/
 import type { Settings } from "../../protocol/src/lib/settings";
 import { SYSTEM_PROMPT } from "../../system-prompt/src/prompt";
 import { deferredCatalog, findTool, toolSpecs, toolsFor } from "../../tool-runtime/src/index";
-import type { ApprovalRequest } from "../../tool-runtime/src/types";
+import type { ApprovalRequest, ToolRegistry } from "../../tool-runtime/src/types";
 import { FEEDBACK_TAG, limitFeedback, Verifier } from "../../verifier/src/verify";
-import { NOTE_TAG, type AgentRun } from "../../agent-registry/src/index";
+import type { AgentRun } from "../../agent-core/agent/src/runtime-types";
+import { NOTE_TAG } from "../../protocol/src/lib/message-tags";
 import type { AgentModelSelection, AgentStepLogEvent } from "../../protocol/src/agent-events";
 import { recordFileWrite, type FileRecovery } from "../../session/session-recovery/src/file-recovery";
 import { normalizeArgs, parseToolArgs } from "./args";
@@ -692,13 +693,6 @@ function toBatches(calls: ToolCall[], registry: ToolRegistry): ToolCall[][] {
     else batches.push([call]);
   }
   return batches;
-}
-
-export interface ToolRegistry {
-  findTool: typeof findTool;
-  toolsFor: typeof toolsFor;
-  toolSpecs: typeof toolSpecs;
-  deferredCatalog: typeof deferredCatalog;
 }
 
 interface ExecCtx {

@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { load, db, store, data, agents, AgentRegistry, runAgent, signal, tool, overrides,
+import { load, db, store, data, agents, AgentRegistry, createRegistry, openChatAgent, inspectWork, queueSnapshot, runAgent, signal, tool, overrides,
   routeState, fixtureSettings, routeFixture, readRun, jsonRequest } from "../../../tests/fixtures/agent-runtime.mjs";
 
 test("SQLite 按事件类型拒绝缺失或错误的作用域和字段", () => {
@@ -36,8 +36,8 @@ test("SQLite 按事件类型拒绝缺失或错误的作用域和字段", () => {
   assert.equal(rows[0].inputId, event.inputId);
 });
 
-test("投影读取完整日志并校验用户，旧会话查看不会创建实例", async () => {
-  const { inspect } = routeFixture();
+test("投影和队列读取校验用户，旧会话查看不会创建实例", async () => {
+  const { inspect, getQueue } = routeFixture();
   const { recordAgentLog } = load("packages/session/src/log.ts");
   const s = store.createSession("u");
   store.addMessage(s, { id: "projection-legacy", role: "user", content: "无执行日志的旧问题", createdAt: 1 });
@@ -56,28 +56,30 @@ test("投影读取完整日志并校验用户，旧会话查看不会创建实�
   assert.equal(state.counts.completed, 1);
   assert.equal(state.counts.unknown, 1);
   assert.equal(state.lifecycle, "offline");
+  assert.deepEqual(await (await getQueue(s.id)).json(), queueSnapshot(s.id, "u"));
   assert.equal(agents.get(s.id, "u"), undefined);
   assert.equal(state.projection.turns[0].steps[0].explicitBoundary, true);
   assert.ok(state.projection.turns[0].steps[0].endEventId !== null);
   routeState.caller = "other";
   try {
     assert.equal((await inspect(s.id)).status, 404);
+    assert.deepEqual(await (await getQueue(s.id)).json(), queueSnapshot(s.id, "u"));
     routeState.caller = null;
     assert.equal((await inspect(s.id)).status, 401);
   } finally { routeState.caller = "u"; }
 });
 
-test("领取输入后首步前取消有轮次结果，重复收尾只记录一次", () => {
-  const { session, handle } = agents.create({ userId: "u" });
+test("领取输入后首步前取消有轮次结果，重复收尾只记录一次", async () => {
+  const { session, handle } = await openChatAgent(agents, "u", null);
   const abort = new AbortController();
   const run = handle.agent.openRun(abort.signal);
   run.begin(session, { id: "before-step", role: "user", content: "任务", createdAt: 1 });
-  assert.equal(agents.inspect(session.id, "u").inputs[0].status, "accepted");
+  assert.equal(inspectWork(session.id, "u").inputs[0].status, "accepted");
   abort.abort();
   run.finish();
   run.finish();
   run.endTurn("completed");
-  const state = agents.inspect(session.id, "u");
+  const state = inspectWork(session.id, "u");
   assert.equal(state.inputs[0].status, "cancelled");
   assert.equal(state.inputs[0].consumed, false);
   assert.equal(state.inputs[0].droppedUnrun, false);
@@ -113,12 +115,12 @@ test("模型返回后工具仍运行时步骤不关闭，停止不抹去已成�
     assert.equal(position.step.tools[0].status, "unknown");
     assert.equal(readSessionTrace(stream.sessionId, "u", false, agents.get(stream.sessionId, "u")).rows.find((row) => row.callId === "projection-read")?.toolState, "running");
     await queue({ sessionId: stream.sessionId, runId: stream.runId, action: "enqueue", message: "未执行任务" });
-    const item = agents.queueSnapshot(stream.sessionId, "u").items[0];
+    const item = queueSnapshot(stream.sessionId, "u").items[0];
     await queue({ sessionId: stream.sessionId, runId: stream.runId, action: "remove", id: item.id });
     abort.abort();
     release.resolve();
     await stream.rest();
-    const stopped = agents.inspect(stream.sessionId, "u");
+    const stopped = inspectWork(stream.sessionId, "u");
     assert.equal(stopped.projection.turns[0].steps[0].tools[0].status, "ok");
     assert.ok(stopped.projection.turns[0].steps[0].endEventId);
     assert.deepEqual(getCurrentPosition(stopped.projection), { turn: null, step: null });
@@ -127,7 +129,7 @@ test("模型返回后工具仍运行时步骤不关闭，停止不抹去已成�
   } finally { release.resolve(); tool.run = original; }
 });
 
-test("重启只重建实例：无收尾轮次是中断，遗失排队项未知，不自动补跑", () => {
+test("重启只重建实例：无收尾轮次是中断，遗失排队项未知，不自动补跑", async () => {
   const { recordAgentLog } = load("packages/session/src/log.ts");
   const { getCurrentPosition } = load("packages/session-projection/src/projection.ts");
   const { readSessionTrace } = load("packages/conversation-trace/src/projection.ts");
@@ -139,10 +141,10 @@ test("重启只重建实例：无收尾轮次是中断，遗失排队项未知�
     step: 1, model: "mock", effort: "default", guidanceIds: "", messageCount: 1, toolCount: 0,
   } });
   recordAgentLog(s.id, { kind: "queued", runId: scope.runId, inputId: "lost-queue", detail: { target: "next-turn", preview: "未领取" } });
-  const registry = new AgentRegistry();
-  const before = registry.inspect(s.id, "u");
-  registry.resume(s.id, "u");
-  const after = registry.inspect(s.id, "u");
+  const registry = createRegistry();
+  const before = inspectWork(s.id, "u", registry);
+  await openChatAgent(registry, "u", s);
+  const after = inspectWork(s.id, "u", registry);
   assert.equal(before.lifecycle, "offline");
   assert.equal(after.lifecycle, "idle");
   assert.deepEqual(after.inputs.map((input) => input.status), ["interrupted", "unknown"]);
@@ -162,7 +164,7 @@ test("编辑重发只标记旧视图，已完成的工作不变成取消", async
   await first.rest();
   const original = store.getSession(first.sessionId, "u").messages[0];
   await (await request({ sessionId: first.sessionId, message: "新任务", truncateFrom: original.id })).text();
-  const state = agents.inspect(first.sessionId, "u");
+  const state = inspectWork(first.sessionId, "u");
   assert.equal(state.counts.completed, 2);
   assert.deepEqual(state.projection.turns.map((turn) => turn.inCurrentHistory), [false, true]);
   const previous = state.inputs.find((input) => input.inputId === original.id);
@@ -214,7 +216,7 @@ test("当前轮和步骤从末尾实时推导，结束后不回退到更早的�
 });
 
 test("运行占用不能重复取得，旧运行的收尾不能释放新运行", async () => {
-  const { handle } = agents.create({ userId: "u" });
+  const { handle } = await openChatAgent(agents, "u", null);
   const { agent } = handle;
   const first = agent.openRun(signal);
   assert.ok(first);
@@ -229,8 +231,8 @@ test("运行占用不能重复取得，旧运行的收尾不能释放新运行",
   await handle.dispose();
 });
 
-test("引导只接纳当前运行所有者的输入，按序提交一次", () => {
-  const { session, handle } = agents.create({ userId: "u" });
+test("引导只接纳当前运行所有者的输入，按序提交一次", async () => {
+  const { session, handle } = await openChatAgent(agents, "u", null);
   const run = handle.agent.openRun(signal);
   const add = (user, runId, text) => agents.get(session.id, user)?.enqueueInput(runId, text, "next-step") ?? false;
   try {
@@ -249,7 +251,7 @@ test("引导只接纳当前运行所有者的输入，按序提交一次", () =>
 });
 
 test("下一次模型请求包含原始任务、工具结果和运行中补充的消息", async () => {
-  const { session, handle } = agents.create({ userId: "u" });
+  const { session, handle } = await openChatAgent(agents, "u", null);
   const { agent } = handle;
   store.addMessage(session, { id: "original", role: "user", content: "分析销售", createdAt: 1 });
   const requests = [];
@@ -284,27 +286,30 @@ test("下一次模型请求包含原始任务、工具结果和运行中补充�
 });
 
 test("在线实例跨运行复用，释放等待收尾，重建后旧句柄不能撤销新实例", async () => {
-  const registry = new AgentRegistry();
-  const { session, handle } = registry.create({ userId: "u", title: "注册测试" });
+  const { createQueueClock } = load("packages/agent-core/inbox/src/clock.ts");
+  const { emptyQueueSnapshot } = load("packages/agent-core/inbox/src/index.ts");
+  const clock = createQueueClock();
+  const registry = createRegistry(clock);
+  const { session, handle } = await openChatAgent(registry, "u", null, "注册测试");
   const { agent } = handle;
   assert.equal(agent.status, "idle");
   assert.equal(registry.get(session.id, "u"), agent);
   assert.deepEqual(registry.list("u"), [agent]);
   assert.deepEqual(registry.list("other"), []);
   assert.equal(registry.get(session.id, "other"), undefined);
-  assert.equal(registry.resume(session.id, "other"), null);
-  assert.equal(registry.resume("missing-session", "u"), null);
+  await assert.rejects(registry.getOrCreate(session.id, "other"), /已归属其他用户/);
 
   const first = agent.openRun(signal);
   first.begin(session, { id: "registered-agent-message", role: "user", content: "保持会话", createdAt: Date.now() });
   first.finish();
-  const reopened = registry.resume(session.id, "u");
+  const reopened = await openChatAgent(registry, "u", store.getSession(session.id, "u"));
   assert.equal(reopened.handle.agent, agent);
   assert.equal(reopened.session.messages[0].content, "保持会话");
   const run = reopened.handle.agent.openRun(signal);
   assert.notEqual(run.id, first.id);
   assert.equal(agent.status, "running");
   assert.equal(agent.enqueueInput(run.id, "待清理", "next-turn"), true);
+  const queued = agent.queueSnapshot();
 
   const disposal = handle.dispose();
   assert.equal(run.signal.aborted, true);
@@ -315,21 +320,25 @@ test("在线实例跨运行复用，释放等待收尾，重建后旧句柄不�
   run.finish();
   await disposal;
   assert.equal(agent.status, "disposed");
-  assert.deepEqual(registry.queueSnapshot(session.id, "u").items, []);
+  const empty = emptyQueueSnapshot(session.id, clock);
+  assert.deepEqual(empty.items, []);
+  assert.equal(empty.epoch, queued.epoch);
+  assert.ok(empty.version > queued.version);
   assert.equal(registry.get(session.id, "u"), undefined);
 
-  const resumed = registry.resume(session.id, "u");
+  const resumed = await openChatAgent(registry, "u", store.getSession(session.id, "u"));
   assert.notEqual(resumed.handle.agent, agent);
+  assert.deepEqual(resumed.handle.agent.queueSnapshot(), empty);
   assert.equal(resumed.session.messages[0].content, "保持会话");
   await handle.dispose();
   assert.equal(registry.get(session.id, "u"), resumed.handle.agent);
   await resumed.handle.dispose();
 });
 
-test("创建工厂失败时回收刚创建的空会话，不发布实例", () => {
+test("创建工厂失败时回收刚创建的空会话，不发布实例", async () => {
   const registry = new AgentRegistry(() => { throw new Error("受控创建失败"); });
   const before = store.listSessions("u").map(({ id }) => id);
-  assert.throws(() => registry.create({ userId: "u" }), /受控创建失败/);
+  await assert.rejects(openChatAgent(registry, "u", null), /受控创建失败/);
   assert.deepEqual(registry.list("u"), []);
   assert.deepEqual(store.listSessions("u").map(({ id }) => id), before);
 });
@@ -342,7 +351,7 @@ test("聊天 HTTP 入口拒绝非法锚点、旧版本和他人会话，成功�
   store.addMessage(s, original);
   const body = { sessionId: s.id, revision: s.revision, message: "新问题" };
   assert.equal((await request({ ...body, truncateFrom: "missing" })).status, 409);
-  assert.equal(await agents.waitIdle(s.id, "u", { waitMs: 0 }), true);
+  assert.equal(await agents.get(s.id, "u")?.waitIdle({ waitMs: 0 }), true);
   assert.deepEqual(store.getSession(s.id, "u").messages, [original]);
   assert.equal((await request({ ...body, revision: s.revision - 1 })).status, 409);
   db().prepare("INSERT INTO users(id, username, password_hash, created_at) VALUES(?, ?, ?, ?)").run("other", "other", "x", 0);
@@ -377,7 +386,7 @@ test("聊天 HTTP 入口拒绝非法锚点、旧版本和他人会话，成功�
   const trace = await (await logs({ sessionId: s.id, inputId: saved.messages[0].id })).json();
   assert.equal(trace.find((event) => event.kind === "truncated").detail.revision, oldTags[0]);
   assert.equal(trace.find((event) => event.kind === "turn-end").detail.outcome, "completed");
-  assert.equal(await agents.waitIdle(s.id, "u", { waitMs: 0 }), true);
+  assert.equal(await agents.get(s.id, "u")?.waitIdle({ waitMs: 0 }), true);
 });
 
 test("真实聊天流中引导移入下一步，其余排队消息依次开启独立轮次", async () => {
@@ -400,7 +409,7 @@ test("真实聊天流中引导移入下一步，其余排队消息依次开启�
   const command = (input) => queue({ sessionId, runId: stream.runId, ...input });
   try {
     for (const message of ["写清单", "只查今天", "列风险"]) assert.equal((await command({ action: "enqueue", message })).status, 200);
-    const before = agents.queueSnapshot(sessionId, "u").items;
+    const before = queueSnapshot(sessionId, "u").items;
     assert.deepEqual(before.map((item) => item.target), ["next-turn", "next-turn", "next-turn"]);
     const id = guidanceId = before[1].id;
     routeState.caller = "other";
@@ -428,12 +437,12 @@ test("真实聊天流中引导移入下一步，其余排队消息依次开启�
   assert.ok(contains(3, "列风险"));
   const userMessages = store.getSession(sessionId, "u").messages.filter((m) => m.role === "user");
   assert.deepEqual(userMessages.map((m) => m.content), ["查日志", "【用户补充】只查今天", "写清单", "列风险"]);
-  assert.deepEqual(agents.queueSnapshot(sessionId, "u").items, []);
+  assert.deepEqual(queueSnapshot(sessionId, "u").items, []);
   assert.equal(agents.get(sessionId, "u"), online);
   assert.equal(online.status, "idle");
   const trace = await (await logs({ sessionId, inputId: guidanceId })).json();
   assert.deepEqual(trace.map((event) => event.kind), ["model-result", "model-request", "guidance", "steered", "queued"]);
-  const state = agents.inspect(sessionId, "u");
+  const state = inspectWork(sessionId, "u");
   assert.equal(state.projection.turns.length, 3);
   assert.deepEqual(state.projection.turns.map((turn) => turn.steps.length), [2, 1, 1]);
   assert.ok(state.projection.turns.every((turn) => turn.endEventId && turn.steps.every((step) => step.explicitBoundary && step.endEventId)));
@@ -454,16 +463,16 @@ test("停止后保留未执行和未消费的引导，继续队列只领取当�
   try {
     assert.equal((await command({ action: "enqueue", message: "保留排队" })).status, 200);
     assert.equal((await command({ action: "enqueue", message: "保留引导" })).status, 200);
-    pending = agents.queueSnapshot(s.id, "u").items;
+    pending = queueSnapshot(s.id, "u").items;
     assert.equal((await command({ action: "steer", id: pending[1].id })).status, 200);
   } finally {
     abort.abort();
     gate.resolve();
   }
   await stream.rest();
-  assert.deepEqual(agents.queueSnapshot(s.id, "u").items, pending);
+  assert.deepEqual(queueSnapshot(s.id, "u").items, pending);
   assert.equal((await request({ sessionId: s.id, queuedId: pending[1].id })).status, 409);
-  assert.equal(await agents.waitIdle(s.id, "u", { waitMs: 0 }), true);
+  assert.equal(await agents.get(s.id, "u")?.waitIdle({ waitMs: 0 }), true);
   routeState.provider = { async *stream() { yield { type: "text", delta: "完成" }; yield { type: "done" }; } };
   const resumed = await request({ sessionId: s.id, queuedId: pending[0].id });
   assert.equal(resumed.status, 200);
@@ -496,9 +505,10 @@ for (const reason of ["等待用户回答", "模型失败"]) {
     const events = await stream.rest();
     assert.ok(events.some((event) => reason === "模型失败" ? event.type === "error" : event.type === "done" && event.awaitingUser));
     assert.deepEqual(store.getSession(s.id, "u").messages.filter((m) => m.role === "user").map((m) => m.content), ["开始任务"]);
-    assert.deepEqual(agents.queueSnapshot(s.id, "u").items.map((item) => item.message), ["另一个任务"]);
-    assert.equal(await agents.waitIdle(s.id, "u", { waitMs: 0 }), true);
-    const state = agents.inspect(s.id, "u");
+    const queuedMessages = queueSnapshot(s.id, "u").items.map((item) => item.message);
+    assert.deepEqual(queuedMessages, ["另一个任务"]);
+    assert.equal(await agents.get(s.id, "u")?.waitIdle({ waitMs: 0 }), true);
+    const state = inspectWork(s.id, "u");
     assert.equal(state.inputs.find((input) => input.kind === "turn").status, reason === "模型失败" ? "failed" : "waiting-for-answer");
     assert.equal(state.counts.queued, 1);
     assert.ok(state.projection.turns[0].steps[0].endEventId);
@@ -509,7 +519,7 @@ test("归档项目先检查运行状态，恢复项目不会恢复独立归档�
   const { request, patch, logs } = routeFixture();
   const { createProject, projectPrompt } = load("packages/application/projects/src/projects.ts");
   const project = createProject("u", { name: "项目归档", description: "", share: true, memory: "off" });
-  const { session, handle } = agents.create({ userId: "u", projectId: project.id });
+  const { session, handle } = await openChatAgent(agents, "u", null, undefined, project.id);
   const archived = store.createSession("u", "独立归档", project.id);
   const active = handle.agent.openRun(signal);
   try {
@@ -613,8 +623,8 @@ test("并行对话复用工具调用 ID 时，审批和停止只影响对应运�
     abortB.abort();
     while (!(await second.reader.read()).done) { /* 等待 B 收尾 */ }
     assert.equal(completed.get(b.id), false);
-    assert.equal(agents.inspect(a.id, "u").counts.completed, 1);
-    assert.equal(agents.inspect(b.id, "u").counts.cancelled, 1);
+    assert.equal(inspectWork(a.id, "u").counts.completed, 1);
+    assert.equal(inspectWork(b.id, "u").counts.cancelled, 1);
   } finally {
     abortA.abort();
     abortB.abort();
@@ -652,7 +662,7 @@ test("并行对话的同名产出、SSE、日志各归原会话，投错作用�
     const sb = await readRun(await request({ sessionId: b.id, message: "会话B" }));
     assert.equal((await queue({ sessionId: b.id, runId: sa.runId, action: "enqueue", message: "错误归属" })).status, 409);
     assert.equal((await queue({ sessionId: a.id, runId: sa.runId, action: "enqueue", message: "待取消" })).status, 200);
-    const pending = agents.queueSnapshot(a.id, "u").items[0];
+    const pending = queueSnapshot(a.id, "u").items[0];
     assert.equal((await queue({ sessionId: a.id, runId: sa.runId, action: "remove", id: pending.id })).status, 200);
     gate.resolve();
     const [ea, eb] = await Promise.all([sa.rest(), sb.rest()]);
@@ -666,14 +676,14 @@ test("并行对话的同名产出、SSE、日志各归原会话，投错作用�
       const trace = await (await logs({ sessionId: scope.sessionId })).json();
       assert.ok(trace.every((e) => e.sessionId === scope.sessionId));
       assert.ok(trace.some((e) => e.kind === "model-result" && e.detail.outcome === "output-truncated"));
-      const state = agents.inspect(scope.sessionId, "u");
+      const state = inspectWork(scope.sessionId, "u");
       assert.equal(state.inputs.find((input) => input.kind === "turn").status, "output-truncated");
       assert.equal(state.projection.turns[0].steps[0].tools[0].status, "ok");
     }
     const sent = [];
     const dispatch = bindAgentDispatch(scopeA, (event) => sent.push(event));
     dispatch(eb.find((e) => e.type === "artifact"));
-    dispatch({ type: "queue", queue: agents.queueSnapshot(b.id, "u") });
+    dispatch({ type: "queue", queue: queueSnapshot(b.id, "u") });
     dispatch({ type: "done", scope: { ...scopeA, runId: scopeB.runId } });
     dispatch({ type: "done" });
     assert.deepEqual(sent, [{ type: "done", scope: scopeA }]);

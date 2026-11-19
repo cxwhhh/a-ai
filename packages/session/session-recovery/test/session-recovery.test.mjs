@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { agents, data, db, load, overrides, readRun, routeFixture, routeState, signal, store } from "../../../../tests/fixtures/agent-runtime.mjs";
+import { inspectWork, data, db, load, overrides, readRun, routeFixture, routeState, signal, store } from "../../../../tests/fixtures/agent-runtime.mjs";
 
 const { editFile, writeFile } = load("packages/tools/src/files.ts");
 const { hashFileBytes } = load("packages/workspace/src/file-fingerprint.ts");
@@ -111,7 +111,8 @@ test("续聊自动核验已写入文件，恢复结论进入原调用的上下�
   const row = trace.rows.find((item) => item.callId === scope.callId);
   assert.equal(row.detail.verification, "matches-expected");
   assert.match(row.status, /目标状态已满足/);
-  assert.equal(agents.inspect(session.id, "u").inputs.find((item) => item.inputId === scope.inputId).status, "interrupted");
+  const work = inspectWork(session.id, "u");
+  assert.equal(work.inputs.find((item) => item.inputId === scope.inputId).status, "interrupted");
   assert.equal(readFileRecoveries(session.id, "other").length, 0);
 });
 
@@ -149,7 +150,8 @@ test("普通对话中断后继续会带上已保存的半截回复", async () =>
   await (await request({ sessionId: session.id, message: "继续" })).text();
   assert.match(history[0].content, /上一轮运行已中断/);
   assert.ok(history.some((message) => message.role === "assistant" && message.content === "未说完的答复"));
-  assert.deepEqual(agents.inspect(session.id, "u").inputs.map((item) => item.status), ["interrupted", "completed"]);
+  const statuses = inspectWork(session.id, "u").inputs.map((item) => item.status);
+  assert.deepEqual(statuses, ["interrupted", "completed"]);
 });
 
 test("续聊发现同一文件冲突时，内置写入工具要求先核对", async () => {

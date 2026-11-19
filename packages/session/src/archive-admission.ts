@@ -1,5 +1,5 @@
 import { db, tx } from "../../storage/src/db";
-import type { Agent } from "../../agent/src/runtime-types";
+import type { Agent } from "../../agent-core/agent/src/runtime-types";
 import { recordAgentLog } from "./log";
 
 export type ArchiveTarget = "session" | "project";

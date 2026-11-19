@@ -115,7 +115,9 @@ importers:
 
   apps/web: {}
 
-  packages/agent: {}
+  packages/agent-core/agent: {}
+
+  packages/agent-core/inbox: {}
 
   packages/agent-loop: {}
 

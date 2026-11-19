@@ -30,9 +30,14 @@ function load(name) {
   const js=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,esModuleInterop:true}}).outputText;
   const localRequire = id => {
     if (id==="server-only") return {};
+    if (id === "@A-ai/cordis") return load("vendor/cordis/src/index.ts");
+    if (id === "@a-ai/cosmokit") return load("vendor/cosmokit/src/index.ts");
 
     if (id.startsWith("@/lib/")) return load(id.slice(6)+".ts");
-    if (id.startsWith(".")) return load(path.relative(root,path.resolve(root,path.dirname(name),id))+".ts");
+    if (id.startsWith(".")) {
+      const file = path.relative(root, path.resolve(root, path.dirname(name), id));
+      return load(id.endsWith(".ts") ? file : file + ".ts");
+    }
     return require(id);
   };
   new Function("require","module","exports",js)(localRequire,module,module.exports);
@@ -41,8 +46,40 @@ function load(name) {
 const {db}=load("packages/storage/src/db.ts");
 const store=load("packages/storage/src/store.ts");
 const { AgentRegistry } = load("packages/agent-registry/src/index.ts");
-const agents = new AgentRegistry();
-const runtime = { agents };
+const { createAgentInstance } = load("packages/agent-core/agent/src/factory.ts");
+const { createQueueClock } = load("packages/agent-core/inbox/src/clock.ts");
+const { emptyQueueSnapshot } = load("packages/agent-core/inbox/src/index.ts");
+const { inspectAgentWork } = load("packages/session-projection/src/inspect.ts");
+const { Context } = load("vendor/cordis/src/index.ts");
+const { builtinAgentPlugins } = load("packages/runtime/src/agent-plugins.ts");
+const { agentSessions } = load("packages/session/src/agent-session.ts");
+const { openChatAgent: openSession } = load("packages/application/chat/src/agent-session.ts");
+const openChatAgent = (...args) => openSession(agentSessions, ...args);
+function createRegistry(clock = createQueueClock(), catalog = builtinAgentPlugins) {
+  const ctx = new Context();
+  ctx.provide("queueClock", clock);
+  ctx.provide("agentPlugins", catalog);
+  ctx.provide("agentSessions", agentSessions);
+  ctx.provide("models", (settings) => {
+    routeState.selectedProvider = { model: settings.currentModel, effort: settings.reasoningEffort };
+    return routeState.provider;
+  });
+  ctx.provide("hostTools", overrides["packages/tool-runtime/src/index.ts"]);
+  return new AgentRegistry((sessionId, userId, plugins) => createAgentInstance(ctx, ctx, sessionId, userId, plugins));
+}
+const queueClock = createQueueClock();
+const agents = createRegistry(queueClock);
+const defaultRuntime = {
+  agents,
+  agentSessions,
+  queueClock
+};
+function inspectWork(sessionId, userId, registry = agents) {
+  const agent = registry.get(sessionId, userId);
+  return inspectAgentWork(sessionId, userId, agent);
+}
+const queueSnapshot = (sessionId, userId) =>
+  agents.get(sessionId, userId)?.queueSnapshot() ?? emptyQueueSnapshot(sessionId, queueClock);
 const { runAgent } = load("packages/agent-loop/src/run.ts");
 const signal = new AbortController().signal;
 
@@ -65,7 +102,7 @@ const routeState = {
   selectedProvider: undefined,
 };
 const fixtureSettings = { ...load("packages/protocol/src/lib/settings.ts").DEFAULT_SETTINGS, skills: false, memory: false, maxSteps: 3, maxFixRounds: 0 };
-function routeFixture() {
+function routeFixture(runtime = defaultRuntime) {
   // 路由、Agent、存储和事务使用实际源码；仅登录、设置、环境和模型使用受控值。
   Object.assign(overrides, {
     "packages/llm/src/index.ts": { getProvider: (settings) => { routeState.selectedProvider = { model: settings.currentModel, effort: settings.reasoningEffort }; return routeState.provider; } },
@@ -81,6 +118,11 @@ function routeFixture() {
   return {
     request: (body, signal) => load("apps/server/src/routes/api/chat/route.ts").POST(jsonRequest("chat", body, signal), { runtime }),
     queue: (body) => load("apps/server/src/routes/api/chat/queue/route.ts").POST(jsonRequest("chat/queue", body), { runtime }),
+    getQueue(sessionId) {
+      const query = new URLSearchParams({ sessionId });
+      const route = load("apps/server/src/routes/api/chat/queue/route.ts");
+      return route.GET(new Request(`http://localhost/api/chat/queue?${query}`), { runtime });
+    },
     patch: (resource, id, body) => load(`apps/server/src/routes/api/${resource}/[id]/route.ts`).PATCH(jsonRequest(resource, body, undefined, "PATCH"), { params: Promise.resolve({ id }), runtime }),
     logs: (query) => load("apps/server/src/routes/api/chat/log/route.ts").GET(new Request(`http://localhost/api/chat/log?${new URLSearchParams(query)}`)),
     inspect: (id) => load("apps/server/src/routes/api/sessions/[id]/agent/route.ts").GET(new Request(`http://localhost/api/sessions/${id}/agent`), { params: Promise.resolve({ id }), runtime }),
@@ -111,5 +153,5 @@ async function readRun(response) {
   };
 }
 
-export { load, db, store, data, agents, AgentRegistry, runAgent, signal, tool, overrides,
+export { load, db, store, data, agents, AgentRegistry, createRegistry, openChatAgent, inspectWork, queueSnapshot, runAgent, signal, tool, overrides,
   routeState, fixtureSettings, routeFixture, readRun, jsonRequest };

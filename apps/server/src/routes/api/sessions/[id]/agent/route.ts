@@ -1,4 +1,5 @@
 import { currentUser, notFound, unauthorized } from "../../../../../../../../packages/application/users/src/auth";
+import { inspectAgentWork } from "../../../../../../../../packages/session-projection/src/inspect";
 import type { RouteContext } from "../../../../../router";
 
 
@@ -6,6 +7,8 @@ import type { RouteContext } from "../../../../../router";
 export async function GET(req: Request, { params, runtime }: { runtime: RouteContext["runtime"]; params: Promise<{ id: string }> }) {
   const user = await currentUser(req);
   if (!user) return unauthorized();
-  const snapshot = runtime.agents.inspect((await params).id, user.id);
+  const { id } = await params;
+  const agent = runtime.agents.get(id, user.id);
+  const snapshot = inspectAgentWork(id, user.id, agent);
   return snapshot ? Response.json(snapshot) : notFound();
 }

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { load, store, agents, routeState, routeFixture, readRun } from "../../../tests/fixtures/agent-runtime.mjs";
+import { load, store, inspectWork, routeState, routeFixture, readRun } from "../../../tests/fixtures/agent-runtime.mjs";
 
 const sse = (data) => `data: ${JSON.stringify(data)}\n\n`;
 const textFrame = (content, finish_reason) => sse({ choices: [{ delta: { content }, finish_reason }] });
@@ -46,7 +46,7 @@ test("兼容接口无结束信号即关闭时保留半截文字，拒绝派发�
   const saved = store.getSession(flow.sessionId, "u");
   assert.deepEqual(saved.messages.map(m => [m.role, m.content]), [["user", "先检查文件"], ["assistant", "已收到的文字"]]);
   assert.equal(saved.messages[1].toolCalls, undefined);
-  const work = agents.inspect(flow.sessionId, "u");
+  const work = inspectWork(flow.sessionId, "u");
   assert.equal(work.counts.interrupted, 1);
   assert.equal(work.counts.completed, 0);
   assert.equal(work.counts.queued, 1);
@@ -69,7 +69,7 @@ test("兼容接口仅提供 finish_reason 或仅提供 DONE 时仍能正常结�
     const events = await flow.rest();
     assert.equal(events.some(e => e.type === "error"), false);
     assert.equal(store.getSession(flow.sessionId, "u").messages.at(-1).content, text);
-    assert.equal(agents.inspect(flow.sessionId, "u").counts.completed, 1);
+    assert.equal(inspectWork(flow.sessionId, "u").counts.completed, 1);
   }
 });
 
@@ -79,11 +79,11 @@ test("正常完成的工具请求可以执行，长度截断的工具请求停�
   mockSse(t, async () => new Response(responses.shift()));
   const successful = await readRun(await request({ message: "调用工具" }));
   assert.ok((await successful.rest()).some(e => e.type === "tool_start" && e.callId === "test-call"));
-  assert.equal(agents.inspect(successful.sessionId, "u").counts.completed, 1);
+  assert.equal(inspectWork(successful.sessionId, "u").counts.completed, 1);
 
   const truncated = await readRun(await request({ message: "触发输出上限" }));
   assert.equal((await truncated.rest()).some(e => e.type === "tool_start"), false);
-  assert.equal(agents.inspect(truncated.sessionId, "u").counts["output-truncated"], 1);
+  assert.equal(inspectWork(truncated.sessionId, "u").counts["output-truncated"], 1);
   assert.equal(responses.length, 0);
 });
 
@@ -97,5 +97,5 @@ test("适配器交出工具调用后直接结束迭代，主循环仍要求 done
   const flow = await readRun(await request({ message: "检查适配器契约" }));
   const events = await flow.rest();
   assert.equal(events.some(e => e.type === "tool_start"), false);
-  assert.equal(agents.inspect(flow.sessionId, "u").counts.interrupted, 1);
+  assert.equal(inspectWork(flow.sessionId, "u").counts.interrupted, 1);
 });

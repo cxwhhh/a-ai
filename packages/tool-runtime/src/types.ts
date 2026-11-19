@@ -1,5 +1,13 @@
 import type { ToolSpec } from "../../llm/src/types";
-import type { Artifact } from "../../protocol/src/lib/shared";
+import type { Artifact, StoredMessage } from "../../protocol/src/lib/shared";
+
+export interface ToolRegistry {
+  // 单个注册表可包含参数类型不同的工具，统一在执行入口校验参数。
+  findTool(name: string): Tool<any> | undefined;
+  toolsFor(history: Pick<StoredMessage, "toolCalls">[], disabled?: Record<string, string>): ToolSpec[];
+  toolSpecs(): ToolSpec[];
+  deferredCatalog(disabled?: Record<string, string>): string;
+}
 
 /** 工具运行时能拿到的上下文 */
 export interface ToolContext {

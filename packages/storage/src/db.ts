@@ -68,6 +68,13 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 CREATE INDEX IF NOT EXISTS sessions_user ON sessions(user_id, updated_at DESC);
 
+-- 一个会话可以启用多个由 Host 注册的 Agent 插件。
+CREATE TABLE IF NOT EXISTS agent_plugin_selection (
+  session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  plugin_id  TEXT NOT NULL,
+  PRIMARY KEY (session_id, plugin_id)
+);
+
 -- 一条消息一行：新增消息只 INSERT，不再整段重写
 CREATE TABLE IF NOT EXISTS messages (
   id         TEXT PRIMARY KEY,
