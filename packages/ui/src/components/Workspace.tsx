@@ -1,12 +1,16 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AgentEvent, AgentQueueSnapshot, Groups, Project, ProjectChat, Session, SessionMeta, StoredMessage, ToolInfo } from "../../../protocol/src/lib/shared";
+import type { WorkspaceAppSummary } from "../../../protocol/src/workspace-app";
 import { api, mod, streamChat, subscribeRun } from "../lib/client";
 import { createLiveStore, emptyLiveStore, LiveStoreContext } from "../lib/live";
 import { Sidebar } from "./Sidebar";
 import { ChatPane, type ConversationView } from "./ChatPane";
 import { Canvas } from "./Canvas";
+import { WorkspaceAppCanvas } from "./WorkspaceAppCanvas";
 import { OutputsCard } from "./OutputsCard";
+import { SubagentConversation } from "./SubagentConversation";
+import { SubagentThreadOverview, SubagentThreadTrigger, type SubagentSelection, type ThreadLayout } from "./SubagentThreads";
 import { collectOutputs, type View } from "../../../protocol/src/lib/outputs";
 import { DEFAULT_SETTINGS, currentOption, reasoningOptions, type Settings } from "../../../protocol/src/lib/settings";
 import type { AgentEventScope, AgentModelSelection, ReasoningEffort } from "../../../protocol/src/agent-events";
@@ -16,7 +20,7 @@ import { SettingsModal } from "./SettingsModal";
 import { ProjectModal } from "./ProjectModal";
 import { AgentLogModal } from "./AgentLogModal";
 import { ArtifactsPage } from "./ArtifactsPage";
-import { ProjectChats, ProjectHead } from "./ProjectHome";
+import { ProjectApps, ProjectChats, ProjectHead } from "./ProjectHome";
 import { SkillToast } from "./SkillToast";
 import type { SettingsTab } from "./UserMenu";
 
@@ -119,15 +123,40 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
   const [groups, setGroups] = useState<Groups>({ groups: [], assign: {} });
   /** 项目列表；projectModal：正在新建（"new"）或修改哪个项目的弹窗 */
   const [projects, setProjects] = useState<Project[]>([]);
-  const [projectModal, setProjectModal] = useState<"new" | Project | null>(null);
+  const [projectModal, setProjectModal] = useState<"new" | Project | null>(() =>
+    window.aaiWorkspace && new URLSearchParams(location.search).get("newLocalProject") === "1" ? "new" : null);
   /** 中间显示什么：对话，或“产出物”页面 */
   const [page, setPage] = useState<"chat" | "artifacts">("chat");
   const [conversationView, setConversationView] = useState<ConversationView>("chat");
+  const [traceScopeVersion, setTraceScopeVersion] = useState(0);
   /** 项目页：点左栏项目名打开的那个项目（新对话输入框上面是项目头，下面是这个项目的全部对话）；projectChats：那些对话，null = 读取中 */
   const [projectHome, setProjectHome] = useState<string | null>(null);
   const [projectChats, setProjectChats] = useState<ProjectChat[] | null>(null);
   /** 右侧大视图正在显示什么（null = 关闭）：产出物或工作区文件 */
   const [view, setView] = useState<View | null>(null);
+  const [libraryApp, setLibraryApp] = useState<WorkspaceAppSummary | null>(null);
+  const [childView, setChildView] = useState<{ sessionId: string; task: SubagentSelection } | null>(null);
+  const [threadsSessionId, setThreadsSessionId] = useState<string>();
+  const [threadLayout, setThreadLayout] = useState<ThreadLayout>("cards");
+  const threadsOpen = !!cur.id && threadsSessionId === cur.id;
+  const child = childView && childView.sessionId === cur.id ? childView.task : null;
+  function openSubagent(task: SubagentSelection) {
+    if (viewKey.current !== cur.id) return;
+    setView(null);
+    setThreadsSessionId(undefined);
+    setChildView({ sessionId: cur.id, task });
+    setListOpen(false);
+  }
+  function toggleThreads() {
+    if (threadsOpen) { setThreadsSessionId(undefined); return; }
+    setView(null);
+    setChildView(null);
+    setLibraryApp(null);
+    setListOpen(false);
+    setThreadsSessionId(cur.id);
+  }
+  const openedApp = libraryApp;
+  const rightView = !openedApp && page === "chat" && !!(view || child || threadsOpen);
   /** 任务面板（点右上角文件按钮弹出的悬浮卡片：进度 / 输出 / 已使用）是否打开 */
   const [listOpen, setListOpen] = useState(false);
   /** 右侧大视图的宽度（px，用户拖动分隔条调整，保存在浏览器里）；null = 默认宽度 */
@@ -136,24 +165,24 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
   /** 窗口宽度：面板和文件都打开时，用它判断屏幕够不够宽 */
   const [winW, setWinW] = useState(1920);
   const defaultViewWidth = Math.max(400, Math.min(940, winW * 0.46));
-  const rightWidth = page === "chat" ? (view ? viewW ?? defaultViewWidth : listOpen ? 320 : 0) : 0;
+  const rightWidth = rightView || openedApp ? viewW ?? defaultViewWidth : page === "chat" && listOpen ? 320 : 0;
   // 限制自定义宽度，右侧面板打开时给对话留出空间，窗口变宽后可恢复用户选的宽度。
   const sidebarLimit = Math.max(SIDEBAR_DEFAULT, Math.min(SIDEBAR_MAX, Math.floor(winW - rightWidth - 380)));
   const displayedSidebarWidth = winW > 900 ? Math.min(sidebarWidth, sidebarLimit) : SIDEBAR_DEFAULT;
   /** 屏幕挤的时候左栏会自动收起；用户在这时又手动展开了，就记一下，不再自动收 */
   const [keepLeft, setKeepLeft] = useState(false);
   // 面板 + 文件并排至少要 左栏 288 + 对话 420 + 面板 282 + 文件 480 ≈ 1540px，不够就先把左栏让出来
-  // 窄屏轨迹和统计复用侧栏让位。收起只影响当前布局，侧栏仍可手动打开。
+  // 窄屏的详情页和产出物页为内容让位，仍可手动展开左栏。
   const crowded = (!!view && listOpen && winW < 1540)
-    || (winW <= 900 && page === "chat" && !!cur.id && conversationView !== "chat");
+    || (winW <= 900 && (page === "artifacts" || threadsOpen || (!!cur.id && conversationView !== "chat")));
   // 左栏实际是否显示：用户的设置（leftOpen，存在浏览器里）不变，只是挤的时候临时让位；面板或文件一关就自动回来
   const showLeft = leftOpen && (!crowded || keepLeft);
   const expandLeft = () => {
     setLeftOpen(true);
     setKeepLeft(true);
   };
-  const uiRef = useRef({ view, listOpen, showLeft });
-  uiRef.current = { view, listOpen, showLeft };
+  const uiRef = useRef({ view, child, threadsOpen, openedApp, listOpen, showLeft });
+  uiRef.current = { view, child, threadsOpen, openedApp, listOpen, showLeft };
   /** 系统提示词、工具定义大约占多少 token（上下文环形图用） */
   const [fixedTokens, setFixedTokens] = useState({ system: 0, tools: 0 });
   const [tools, setTools] = useState<ToolInfo[]>([]);
@@ -163,6 +192,7 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
   const [settingsTab, setSettingsTab] = useState<SettingsTab | null>(null);
   /** 上一次运行结束的时间：变了就去看看后台有没有学会新技能（SkillToast） */
   const [runEnd, setRunEnd] = useState(0);
+  const [libraryVersion, setLibraryVersion] = useState(0);
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
 
@@ -309,9 +339,13 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
     setLoadingId(null);
     setDraftModel(undefined);
     setPage("chat");
+    setConversationView("chat");
     setProjectHome(null);
+    setLibraryApp(null);
     setCur({ ...emptySession(), ...(projectId ? { projectId } : {}) });
     setView(null);
+    setChildView(null);
+    setThreadsSessionId(undefined);
     setListOpen(false);
     setError(null);
     setDraft("");
@@ -434,14 +468,18 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
   const [loadingId, setLoadingId] = useState<string | null>(null);
   const openSeq = useRef(0);
 
-  /** 打开一个对话。artifactId：打开后右侧直接显示这个产出物（从“产出物”页面点进来时用） */
-  async function open(id: string, artifactId?: string, file?: string) {
+  /** 默认打开正文。侧栏菜单可在同一次切换里指定目标对话和详情视图。 */
+  async function open(id: string, artifactId?: string, file?: string, nextView: ConversationView = "chat") {
     setPage("chat");
+    setLibraryApp(null);
     // 从产出物页点进来要打开的东西：面板里的产出物，或生成的文件（Word / Excel / PPT）
     const target: View | null = file ? { type: "file", path: file } : artifactId ? { type: "artifact", id: artifactId } : null;
     const seq = ++openSeq.current; // 连点几个对话时，只认最后一次点击，前面慢返回的结果丢掉
     if (id === viewKey.current) {
       setLoadingId(null);
+      // 轨迹和统计能在详情里追踪别的会话。重新从侧栏打开时，要回到菜单所属的会话。
+      if (nextView === "trace" || nextView === "stats") setTraceScopeVersion((version) => version + 1);
+      setConversationView(nextView);
       // 从产出物页打开“当前这个对话”里的产出物：和对话里点开一样，右侧只留文件视图，把任务面板收起
       // （以前这里只设了 view，面板如果开着就会和产出物并排出现）
       if (target) openView(target);
@@ -455,7 +493,10 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
     const s = run?.session ?? saved;
     if (!s) return;
     viewKey.current = id;
+    setConversationView(nextView);
     setDraftModel(undefined);
+    setChildView(null);
+    setThreadsSessionId(undefined);
     if (run) showRun(run);
     else {
       setCur(s);
@@ -469,7 +510,7 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
     setView(target ?? (v && (v.type === "file" || s.artifacts.some((a) => a.id === v.id)) ? v : null));
     // 右侧同一时间只放一样东西：上次两个都开着的话，只恢复文件视图
     setListOpen(!!p?.list && !(target || v));
-    setTimeout(() => inputRef.current?.focus());
+    if (nextView === "chat") setTimeout(() => inputRef.current?.focus());
     if (!run) void reconnect(s);
   }
 
@@ -630,7 +671,8 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
     };
     await track(run, original, (onEvent) => streamChat(
       { sessionId: requestSessionId || undefined, revision: requestSessionId && !queuedId ? original.revision : undefined, message: queuedId ? undefined : text, queuedId, truncateFrom: truncate,
-        projectId: requestSessionId ? undefined : original.projectId, modelSelection: requestSessionId ? undefined : draftModel },
+        projectId: requestSessionId ? undefined : original.projectId, modelSelection: requestSessionId ? undefined : draftModel,
+        multiAgent: requestSessionId || original.projectId ? undefined : original.multiAgent },
       onEvent, run.controller.signal,
     ));
   }
@@ -703,6 +745,7 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
         if (run.error) setError(run.error);
         setRunView(null);
       }
+      if (savedId) setLibraryVersion((version) => version + 1);
       if (settingsRef.current.skills && !run.controller.signal.aborted) setRunEnd(Date.now());
     }
   }
@@ -724,6 +767,16 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
       } else if (m && e.key === "\\") {
         e.preventDefault();
         toggleList();
+      } else if (e.key === "Escape" && uiRef.current.openedApp) {
+        e.preventDefault();
+        setLibraryApp(null);
+      } else if (e.key === "Escape" && uiRef.current.threadsOpen) {
+        e.preventDefault();
+        setThreadsSessionId(undefined);
+      } else if (e.key === "Escape" && uiRef.current.child) {
+        e.preventDefault();
+        setChildView(null);
+        setListOpen(true);
       } else if (e.key === "Escape" && uiRef.current.view && !runs.current.has(viewKey.current)) {
         e.preventDefault();
         setView(null);
@@ -740,6 +793,7 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
   }, [newChat, stop]);
 
   const isArchived = !!(cur.archivedAt || projects.some((p) => p.id === cur.projectId && p.archivedAt));
+  const multiAgent = !!(cur.projectId || cur.multiAgent);
   const selection = cur.modelSelection ?? (!cur.id ? draftModel : undefined) ?? { model: settings.currentModel, effort: settings.reasoningEffort };
   const chatSettings = { ...settings, currentModel: selection.model, reasoningEffort: selection.effort };
   const modelOption = currentOption(chatSettings);
@@ -766,17 +820,42 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
     }
   };
 
-  const { outputs, used } = useMemo(() => collectOutputs(cur.messages, cur.artifacts), [cur.messages, cur.artifacts]);
+  const changeMultiAgent = async (enabled: boolean) => {
+    const { id, projectId } = curRef.current;
+    const key = viewKey.current;
+    if (projectId || modelAction.current.has(key) || runs.current.has(key) || isArchived) return;
+    if (!id) { setCur((s) => ({ ...s, multiAgent: enabled })); return; }
+    modelAction.current.add(id);
+    setModelBusyIds([...modelAction.current]);
+    try {
+      await api.setMultiAgent(id, enabled);
+      setCur((s) => s.id === id ? { ...s, multiAgent: enabled } : s);
+      setSessions((items) => items.map((s) => s.id === id ? { ...s, multiAgent: enabled } : s));
+    } catch (err) {
+      if (viewKey.current === id) setError(err instanceof Error ? err.message : "无法保存多agent智能体模式");
+    } finally {
+      modelAction.current.delete(id);
+      setModelBusyIds([...modelAction.current]);
+    }
+  };
+
+  const { outputs, used } = useMemo(() => {
+    const collected = collectOutputs(cur.messages, cur.artifacts);
+    const unavailable = new Set(cur.unavailableOutputKeys);
+    return { ...collected, outputs: collected.outputs.filter(({ key }) => !unavailable.has(key)) };
+  }, [cur.messages, cur.artifacts, cur.unavailableOutputKeys]);
   // 打开文件时任务面板不收起：面板是“钉住”的，只有点它的 × 才关
   // 打开一个文件 / 产出物时顺手收起任务面板（2026-10-29）：右侧只留文件视图，不再和面板并排挤在一起。
   // 想再看面板就点对话标题栏右边的按钮
   const openView = (v: View) => {
+    setChildView(null);
+    setThreadsSessionId(undefined);
     setView(v);
     setListOpen(false);
   };
   // 开关任务面板（标题栏按钮和 ⌘\ 共用）：打开面板时把文件视图收起，右侧同一时间只显示一个（2026-10-29）
   const toggleList = () => {
-    if (!uiRef.current.listOpen) setView(null);
+    if (!uiRef.current.listOpen) { setView(null); setChildView(null); setThreadsSessionId(undefined); }
     setListOpen((o) => !o);
   };
   // 右侧状态变化时记下来（按对话分开存）。切换对话时 open() 会把新对话的状态一次性设好，这里存的就是新对话自己的
@@ -872,8 +951,6 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
     window.addEventListener("pointerup", up);
     setResizing(true);
   };
-  const hasSteps = cur.messages.some((m) => m.toolCalls?.length || m.drafts?.length);
-
   // 项目页只在“还没发消息的项目新对话”时显示；打开别的对话、发了消息、进产出物页，它自然就不满足了
   const homeProject =
     page === "chat" && projectHome && !cur.id && cur.messages.length === 0 && cur.projectId === projectHome
@@ -896,6 +973,7 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
     // 当前对话有没有文件，直接用前端算好的 outputs（生成过程中就能实时出现图标）
     sessions: sessions.map((s) => (s.id === cur.id ? { ...s, hasFiles: outputs.length > 0 } : s)),
     currentId: page === "artifacts" ? undefined : loadingId ?? cur.id,
+    viewingDetails: conversationView !== "chat",
     model,
     userName: settings.name,
     modKey,
@@ -903,9 +981,13 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
     onGroupsChange: changeGroups,
     onOpenSettings: setSettingsTab,
     onNew: () => newChat(),
-    onOpen: (id: string) => void open(id),
+    onOpen: (id: string, view?: ConversationView) => void open(id, undefined, undefined, view),
     artifactsActive: page === "artifacts",
-    onOpenArtifacts: () => setPage("artifacts"),
+    onOpenArtifacts: () => {
+      setKeepLeft(false);
+      setPeek(false);
+      setPage("artifacts");
+    },
     projects,
     onNewProject: () => setProjectModal("new"),
     onEditProject: (p: Project) => setProjectModal(p),
@@ -922,7 +1004,7 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
 
   const content = (
     <div
-      className={`app ${showLeft ? "left-open" : ""} ${view ? "right-open" : ""} ${resizing ? "resizing" : ""}`}
+      className={`app ${showLeft ? "left-open" : ""} ${rightView ? "right-open" : ""} ${resizing ? "resizing" : ""}`}
       style={{ "--side-w": `${displayedSidebarWidth}px`, ...(viewW ? { "--canvas-w": `${viewW}px` } : {}) } as React.CSSProperties}
     >
       {showLeft ? (
@@ -937,10 +1019,12 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
       {page === "artifacts" ? (
         <ArtifactsPage
           projects={projects}
+          libraryVersion={libraryVersion}
           leftOpen={showLeft}
           modKey={modKey}
           onToggleLeft={expandLeft}
           onOpen={(sid, aid, file) => void open(sid, aid, file)}
+          onOpenApp={setLibraryApp}
           onCreate={(text) => {
             // 产出物页顶部的“新建”卡片：开一个新对话，输入框预填开头，光标放到末尾（newChat 先清空草稿，这里再填）
             newChat();
@@ -954,14 +1038,24 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
       ) : (
         <ChatPane
           conversationView={conversationView}
+          traceScopeVersion={traceScopeVersion}
           onConversationView={setConversationView}
           home={
             homeProject && {
               head: <ProjectHead project={homeProject} onIcon={(i) => setProjectIcon(homeProject.id, i)} onSettings={() => setProjectModal(homeProject)} />,
-              chats: <ProjectChats chats={projectChats} onOpen={(id) => void open(id)} />,
+              chats: <>
+                <ProjectApps key={homeProject.id} projectId={homeProject.id} version={libraryVersion}
+                  onOpenArtifact={(artifact) => void open(artifact.sessionId, artifact.id)} onOpen={(app) => {
+                  setView(null);
+                  setListOpen(false);
+                  setLibraryApp(app);
+                }} />
+                <ProjectChats chats={projectChats} onOpen={(id) => void open(id)} />
+              </>,
             }
           }
           title={cur.title}
+          multiAgent={multiAgent}
           projectName={projects.find((p) => p.id === cur.projectId)?.name}
           projectIcon={projects.find((p) => p.id === cur.projectId)?.icon}
           onProjectIcon={cur.projectId ? (icon: string) => setProjectIcon(cur.projectId!, icon) : undefined}
@@ -970,7 +1064,6 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
           artifacts={cur.artifacts}
           outputs={outputs}
           onOpenView={openView}
-          hasSteps={hasSteps}
           running={running}
           streaming={streaming}
           archived={isArchived}
@@ -980,7 +1073,7 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
           inputRef={inputRef}
           leftOpen={showLeft}
           rightOpen={listOpen}
-          viewOpen={!!view}
+          viewOpen={rightView}
           sendKey={settings.sendKey}
           bar={
             <ComposerBar
@@ -991,6 +1084,7 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
               onPickModel={(value) => void pickModel(value)}
               onPickEffort={(effort) => void pickModel(selection.model, effort)}
               modelDisabled={isArchived || modelBusyIds.includes(cur.id) || streaming}
+              multiAgent={cur.projectId ? undefined : { enabled: multiAgent, onChange: (enabled) => void changeMultiAgent(enabled) }}
               onManage={() => setSettingsTab("model")}
               onUsage={() => setSettingsTab("usage")}
             />
@@ -1017,16 +1111,18 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
           onOpenFile={(path) => openView({ type: "file", path })}
           onToggleLeft={expandLeft}
           onToggleRight={toggleList}
+          threadControl={cur.id && !loadingId && <SubagentThreadTrigger key={cur.id} sessionId={cur.id}
+            expanded={threadsOpen} onToggle={toggleThreads} />}
           userName={settings.name !== DEFAULT_SETTINGS.name ? settings.name : user}
           onDismissError={() => setError(null)}
         />
       )}
       {/* 右侧一列：任务面板（钉住时）和文件大视图并排放在同一列里，不再悬浮盖住对话。
           面板在左、文件在右：从面板点文件，文件就在它旁边打开 */}
-      {page === "chat" && (view || listOpen) && (
-        <div className={`right ${listOpen ? "with-panel" : ""} ${view ? "" : "panel-only"}`}>
+      {page === "chat" && (rightView || listOpen) && (
+        <div className={`right ${listOpen ? "with-panel" : ""} ${rightView ? "" : "panel-only"}`}>
           {/* 分隔条：按住左右拖动调整宽度，双击恢复默认 */}
-          {view && <div className="resize-handle" onPointerDown={startResize} onDoubleClick={() => saveViewW(null)} title="拖动调整宽度，双击恢复" />}
+          {rightView && <div className="resize-handle" onPointerDown={startResize} onDoubleClick={() => saveViewW(null)} title="拖动调整宽度，双击恢复" />}
           {listOpen && (
             <OutputsCard
               messages={cur.messages}
@@ -1036,11 +1132,17 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
               outputs={outputs}
               used={used}
               active={view}
+              subagents={multiAgent ? { sessionId: cur.id, runId, open: openSubagent } : undefined}
               onOpen={openView}
               onClose={() => setListOpen(false)}
             />
           )}
-          {view && (
+          {threadsOpen ? <SubagentThreadOverview key={cur.id} sessionId={cur.id}
+            layout={threadLayout} onLayout={setThreadLayout} onSelect={openSubagent} onClose={() => setThreadsSessionId(undefined)} />
+          : child ? <SubagentConversation key={`${cur.id}:${child.id}`} sessionId={cur.id} selected={child}
+            archived={isArchived} canResume={multiAgent && !isArchived} onResume={openSubagent}
+            sendKey={settings.sendKey} modKey={modKey} onOpenFile={(path) => openView({ type: "file", path })}
+            onClose={() => setChildView(null)} /> : view && (
             <Canvas
               view={view}
               artifacts={cur.artifacts}
@@ -1050,6 +1152,12 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
               onClose={() => setView(null)}
             />
           )}
+        </div>
+      )}
+      {openedApp && (
+        <div className="right">
+          <div className="resize-handle" onPointerDown={startResize} onDoubleClick={() => saveViewW(null)} title="拖动调整宽度，双击恢复" />
+          <WorkspaceAppCanvas key={openedApp.id} id={openedApp.id} revision={openedApp.revision} title={openedApp.title} onClose={() => setLibraryApp(null)} />
         </div>
       )}
       {logView && <AgentLogModal key={logView.sessionId ?? "all"} sessionId={logView.sessionId} onClose={() => setLogView(null)} />}

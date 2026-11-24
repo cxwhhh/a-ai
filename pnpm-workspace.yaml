@@ -5,7 +5,14 @@ packages:
   - packages/application/*
   - vendor/*
 
+# 26.17 的安装器工具下载已使用 v5 的缓存 API，其包声明仍是 v3。
+overrides:
+  "app-builder-lib@26.17.0>@electron/get": "5.1.0"
+
 allowBuilds:
   electron: true
   esbuild: true
   electron-winstaller: false
+
+patchedDependencies:
+  app-builder-lib@26.17.0: patches/app-builder-lib@26.17.0.patch

@@ -36,7 +36,14 @@ export async function servePage(request: Request, webRoot: string): Promise<Resp
   const description = page === "intro" ? "说出任务，直接拿结果。A.ai 会自己规划、调用工具、写代码并运行，把成果直接交给你。" : "极简、高效的 AI agent";
   return new Response(html.replace("<!-- a-ai-bootstrap -->", () => `<script type="application/json" id="bootstrap">${state}</script>`)
     .replace("<title>A.ai</title>", () => `<title>${title}</title>`)
-    .replace('name="description" content="极简、高效的 AI agent"', () => `name="description" content="${description}"`), { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" } });
+    .replace('name="description" content="极简、高效的 AI agent"', () => `name="description" content="${description}"`), {
+    headers: {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "no-store",
+      // 内嵌的应用可以在自己的文档里执行脚本，子窗口只能加载本站资源或隔离的 srcdoc。
+      ...(page === "chat" ? { "Content-Security-Policy": "frame-src 'self' blob: data:" } : {}),
+    },
+  });
 }
 
 function redirect(location: string) {

@@ -3,6 +3,8 @@ import { useEffect, useRef, useState } from "react";
 import { IChart, IGear, IInfo, IKeyboard, ILogout, IUpDown } from "./Icons";
 import { api } from "../lib/client";
 import { Avatar as BoardUIAvatar } from "./base/avatar/avatar";
+import { DesktopUpdateButton } from "./DesktopUpdateButton";
+import "./UserMenu.css";
 
 export type SettingsTab = "general" | "model" | "agent" | "memory" | "skills" | "usage" | "keys" | "about";
 
@@ -74,12 +76,15 @@ export function UserMenu(props: { name: string; model: string; modKey: string; o
         </div>
       )}
 
-      <button className={`user-btn ${open ? "on" : ""}`} onClick={() => setOpen((v) => !v)} aria-haspopup="menu" aria-expanded={open}>
-        {/* BoardUI 的 md 默认是 32px，这里保留侧栏按钮原有的 28px 占位。 */}
-        <BoardUIAvatar size="md" initials={avatarInitial(props.name)} style={{ width: 28, height: 28 }} />
-        <span className="user-id ellipsis">{props.name}</span>
-        <IUpDown className="user-caret" width={14} height={14} />
-      </button>
+      <div className="account-row">
+        <button className={`user-btn ${open ? "on" : ""}`} onClick={() => setOpen((v) => !v)} aria-haspopup="menu" aria-expanded={open}>
+          {/* BoardUI 的 md 默认是 32px，这里保留侧栏按钮原有的 28px 占位。 */}
+          <BoardUIAvatar size="md" initials={avatarInitial(props.name)} style={{ width: 28, height: 28 }} />
+          <span className="user-id ellipsis">{props.name}</span>
+          <IUpDown className="user-caret" width={14} height={14} />
+        </button>
+        <DesktopUpdateButton onAction={() => setOpen(false)} />
+      </div>
     </div>
   );
 }

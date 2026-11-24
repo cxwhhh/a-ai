@@ -29,15 +29,20 @@ services:
       TAVILY_API_KEY: ${TAVILY_API_KEY:-}
       BRAVE_SEARCH_API_KEY: ${BRAVE_SEARCH_API_KEY:-}
       # ---- 终端沙箱（学习笔记 §7.25）----
-      # docker = run_command / run_python 每个会话开一个隔离容器（断网、限内存、只挂工作区和授权目录）
+      # 每个账号工作区复用一个隔离容器，执行脚本和处理已部署应用的数据。
       A_SANDBOX: docker
       A_SANDBOX_IMAGE: a-ai-sandbox:latest
       # 沙箱容器从这个数据卷里挂载用户的工作区（要和下面 volumes 的名字一致）
       A_SANDBOX_DATA_VOLUME: a-ai-data
-      # 允许 agent 查的宿主机目录，分号分隔，:ro 只读（默认）/ :rw 读写。写宿主机上的真实路径，例：/Users/me/Documents:ro
-      A_SANDBOX_DIRS: ${A_SANDBOX_DIRS:-}
+      # 云端沙箱只挂载当前账号工作区。全局授权目录会同时出现在所有账号容器里。
+      A_SANDBOX_DIRS: ""
       # 1 = 沙箱容器可以联网（pip install 要用），默认断网
       A_SANDBOX_NETWORK: ${A_SANDBOX_NETWORK:-0}
+      # 同一台机器承载聊天和代码执行，限制每个沙箱的资源以及同时运行的命令数。
+      A_SANDBOX_MEMORY: ${A_SANDBOX_MEMORY:-1g}
+      A_SANDBOX_CPUS: ${A_SANDBOX_CPUS:-1}
+      A_SANDBOX_MAX_CONCURRENT: ${A_SANDBOX_MAX_CONCURRENT:-2}
+      A_UPDATES_DIR: /app/updates
     # 访问 docker.sock 需要宿主机 docker 组的 GID：Linux 上用 `getent group docker | cut -d: -f3` 查，写进 .env 的 DOCKER_GID；
     # Docker Desktop（Mac）用默认的 0 就行
     group_add:
@@ -45,6 +50,8 @@ services:
     volumes:
       # 数据库 a.db、每个用户的工作区都在这里，删容器、重建镜像都不会丢
       - a-ai-data:/app/.data
+      # 安装包和版本清单独立于用户数据卷，发布新版无需重建服务。
+      - ./updates:/app/updates:ro
       # 让 A.ai 能开沙箱容器。注意：能访问 docker.sock 约等于宿主机 root，所以 A.ai 本身别暴露在公网上不加防护
       - /var/run/docker.sock:/var/run/docker.sock
     logging:

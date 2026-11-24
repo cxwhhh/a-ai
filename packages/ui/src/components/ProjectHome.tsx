@@ -1,6 +1,8 @@
 "use client";
-import { useState } from "react";
-import type { Project, ProjectChat } from "../../../protocol/src/lib/shared";
+import { useEffect, useState } from "react";
+import type { ArtifactMeta, Project, ProjectChat } from "../../../protocol/src/lib/shared";
+import type { WorkspaceAppSummary } from "../../../protocol/src/workspace-app";
+import { api } from "../lib/client";
 import { IconPicker } from "./IconPicker";
 import { IFile, IGear, ISearch } from "./Icons";
 import "./ProjectHome.css";
@@ -74,6 +76,46 @@ export function ProjectChats(props: { chats: ProjectChat[] | null; onOpen(id: st
           ))}
         </div>
       )}
+    </section>
+  );
+}
+
+/** 项目应用列表和对话列表使用相同的项目行样式。 */
+export function ProjectApps({ projectId, version, onOpen, onOpenArtifact }: {
+  projectId: string; version: number; onOpen(app: WorkspaceAppSummary): void; onOpenArtifact(artifact: ArtifactMeta): void;
+}) {
+  const [items, setItems] = useState<{ apps: WorkspaceAppSummary[]; pages: ArtifactMeta[] } | null>(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    const controller = new AbortController();
+    const { signal } = controller;
+    Promise.all([api.workspaceApps(signal, projectId), api.artifacts(signal, projectId)]).then(([apps, artifacts]) => {
+      if (!signal.aborted) { setItems({ apps, pages: artifacts.filter((item) => item.kind === "html") }); setError(""); }
+    }, (failure) => {
+      if (!controller.signal.aborted) setError(failure instanceof Error ? failure.message : "无法读取项目网页");
+    });
+    return () => controller.abort();
+  }, [projectId, version]);
+  const count = items ? items.apps.length + items.pages.length : 0;
+  return (
+    <section className="pc" aria-label="项目网页">
+      <div className="pc-head"><h2>网页</h2>{items && <span className="pc-n">{count} 个</span>}</div>
+      {error ? <div className="pc-empty" role="status">{error}</div> : items && count ? (
+        <div className="pc-list">
+          {items.apps.map((app) => (
+            <button key={app.id} className="pc-row" onClick={() => onOpen(app)}>
+              <span className="pc-title ellipsis">{app.title}</span>
+              <span className="pc-meta">{ago(app.updatedAt)}</span>
+            </button>
+          ))}
+          {items.pages.map((artifact) => (
+            <button key={artifact.id} className="pc-row" onClick={() => onOpenArtifact(artifact)}>
+              <span className="pc-title ellipsis">{artifact.title}</span>
+              <span className="pc-meta">{ago(artifact.createdAt)}</span>
+            </button>
+          ))}
+        </div>
+      ) : <div className="pc-empty">{items ? "还没有网页。可以在上面通过对话创建。" : "读取中…"}</div>}
     </section>
   );
 }

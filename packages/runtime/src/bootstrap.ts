@@ -5,6 +5,7 @@ import { AgentRegistry } from "../../agent-registry/src/index";
 import { getProvider } from "../../llm/src/index";
 import { deferredCatalog, findTool, toolSpecs, toolsFor } from "../../tool-runtime/src/index";
 import { Scheduler } from "../../scheduler/src/index";
+import { SubagentOrchestrator } from "../../subagent/src/subagent";
 import { agentSessions } from "../../session/src/agent-session";
 import { builtinAgentPlugins } from "./agent-plugins";
 
@@ -12,6 +13,7 @@ declare module "@A-ai/cordis" {
   interface Context {
     agents: AgentRegistry;
     scheduler: Scheduler;
+    subagents: SubagentOrchestrator;
   }
 }
 
@@ -31,6 +33,11 @@ export async function bootstrap() {
     const scheduler = new Scheduler();
     ctx.provide("scheduler", scheduler);
     ctx.effect(() => () => scheduler.stopAccepting());
+  });
+  await root.plugin(function subagents(ctx) {
+    const service = new SubagentOrchestrator();
+    ctx.provide("subagents", service);
+    ctx.effect(() => () => service.close());
   });
   await root.inject(["models", "hostTools", "queueClock", "agentPlugins", "agentSessions"], function registry(owner) {
     // 共享依赖来自 Host，实例的 Scope 由 Registry 所在的 Cordis fiber 持有。

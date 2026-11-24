@@ -3,7 +3,7 @@ import { toolStatus, STATUS_LABEL, type StoredMessage } from "../../protocol/src
 import { db } from "../../storage/src/db";
 import { getSession } from "../../storage/src/store";
 import { parseToolArgs } from "../../agent-loop/src/args";
-import { RESEARCH_SPEC } from "../../subagent/src/subagent";
+import { DELEGATE_SPEC, RESEARCH_SPEC } from "../../subagent/src/task-contract";
 import { toolSpecs } from "../../tool-runtime/src/index";
 import { foldConsumedWork } from "../../session-projection/src/consumed-work";
 import type { Agent } from "../../agent-core/agent/src/runtime-types";
@@ -154,7 +154,7 @@ export function readSessionTrace(sessionId: string, userId: string, includeStats
     } else if (event.kind === "model-request" && !returned.has(stepKey(event)) && !tracedMainSteps.has(stepKey(event))) {
       const running = event.runId === activeRunId && event.inputId === currentTurn?.inputId && step === currentStep?.step;
       const status = running ? "执行中" : workItem?.status === "cancelled" ? "已取消" : "未记录结果";
-      rows.push({ ...base, kind: "model", title: "模型请求", status });
+      rows.push({ ...base, kind: "model", title: "模型请求", requestPhase: "chat", status });
     } else if (eventTitles[event.kind]) {
       const title = eventTitles[event.kind]!;
       const summary = ["preview" in detail && detail.preview, "title" in detail && detail.title, "reason" in detail && detail.reason].find(Boolean);
@@ -181,14 +181,14 @@ export function readSessionTrace(sessionId: string, userId: string, includeStats
     } else {
       const phase = meta.phase === "compact" ? "历史压缩请求" : meta.phase === "research" ? "子 Agent 请求" : "模型请求";
       rows.push({ ...base, kind: "model", title: `${phase} · ${meta.model}`, status: outcomes[state],
-        requestState: state, durationMs: meta.metrics?.streamMs ?? base.durationMs, detail: { model: meta.model, effort: meta.effort },
+        requestPhase: meta.phase, requestState: state, durationMs: meta.metrics?.streamMs ?? base.durationMs, detail: { model: meta.model, effort: meta.effort },
         preview: meta.preview, requestMetrics: meta.metrics });
     }
   }
   const used = new Set(rows.map((row) => row.tool));
   // 当前工具定义只从本会话的运行实例取。历史请求里的工具定义仍以请求快照为准。
   const availableSpecs = agent?.runtime.tools.toolSpecs() ?? toolSpecs();
-  const schemas = Object.fromEntries([...availableSpecs, RESEARCH_SPEC].filter((spec) => used.has(spec.name)).map((spec) => [spec.name, spec]));
+  const schemas = Object.fromEntries([...availableSpecs, RESEARCH_SPEC, DELEGATE_SPEC].filter((spec) => used.has(spec.name)).map((spec) => [spec.name, spec]));
   // 同一毫秒内按输入、请求、响应、工具、事件排列；同类记录保留原有顺序。
   const position = (row: TraceRow) => {
     if (row.kind === "input") return 0;

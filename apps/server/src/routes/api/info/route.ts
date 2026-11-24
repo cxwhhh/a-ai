@@ -22,6 +22,7 @@ export async function GET(req: Request) {
   const s = getSettings(user.id);
   const specs = toolSpecs();
   return Response.json({
+    userId: user.id,
     username: user.username,
     model: currentOption(s).label,
     tools: specs.map((t) => ({ name: t.name, description: t.description, deferred: isDeferred(t.name) })),

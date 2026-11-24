@@ -15,6 +15,8 @@ export interface TraceLocation {
   /** 父节点使用轨迹行 ID，避免不同步骤和并行子 Agent 复用 callId 时串记录。 */
   parentId?: string;
   childStep?: number;
+  /** 同一个父委派调用可启动多个子任务。比较请求时这一标识区分它们。 */
+  taskId?: string;
 }
 
 export type TracePhase = "chat" | "compact" | "research";
@@ -44,6 +46,10 @@ export interface TraceEntry {
 /** 保存 A.ai 交给适配器的消息顺序和工具定义。适配器内部结构与连接凭据不属于展示数据。 */
 export interface RequestSnapshot {
   messages: Omit<ChatMessage, "raw">[];
+  /** 主请求中本轮输入的位置。null 表示无法定位，未定义表示旧快照。 */
+  turnStart?: number | null;
+  /** 子 Agent 实际接收的继承资料位置。null 表示本次没有继承资料。 */
+  referenceIndex?: number | null;
   tools: ToolSpec[];
   temperature?: number;
   provider?: { label: string; options?: ModelRequestOptions };
@@ -102,7 +108,7 @@ export interface RequestContextAnalysis {
 }
 
 export type TraceRecordDetail = TraceEntry & (
-  | { kind: "request"; request: RequestSnapshot; response?: RequestResponse; context?: RequestContextAnalysis }
+  | { kind: "request"; request: RequestSnapshot; response?: RequestResponse; context?: RequestContextAnalysis; prompts?: string[] }
   | { kind: "tool"; call: ToolCall; result?: TraceToolResult }
 );
 
@@ -134,6 +140,7 @@ export interface TraceRow {
   input?: AgentConsumedInput;
   callId?: string;
   requestState?: TraceRequestState;
+  requestPhase?: TracePhase;
   toolState?: TraceToolState;
   toolStarted?: boolean;
   preview?: TracePreview;

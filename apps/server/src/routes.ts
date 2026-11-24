@@ -33,7 +33,9 @@ import * as route30 from "./routes/auth/login/route";
 import * as route31 from "./routes/auth/logout/route";
 import * as route32 from "./routes/auth/register/route";
 import * as route33 from "./routes/updates/[file]/route";
+import * as workspaceApps from "./routes/api/workspace-apps/route";
 import * as agentPlugins from "./routes/api/sessions/[id]/agent/plugins/route";
+import * as subagents from "./routes/api/sessions/[id]/agent/subagents/route";
 
 /** 现有 HTTP 入口使用显式注册表。新增路由在这里声明 URL 和实现。 */
 export const routes = new Router();
@@ -61,6 +63,7 @@ routes.register("/api/sessions", route20);
 routes.register("/api/sessions/:id", route21);
 routes.register("/api/sessions/:id/agent", route22);
 routes.register("/api/sessions/:id/agent/plugins", agentPlugins);
+routes.register("/api/sessions/:id/agent/subagents", subagents);
 routes.register("/api/sessions/:id/agent/trace", route23);
 routes.register("/api/sessions/:id/agent/trace/:recordId", route24);
 routes.register("/api/settings", route25);
@@ -68,6 +71,7 @@ routes.register("/api/skills", route26);
 routes.register("/api/skills/:id", route27);
 routes.register("/api/upload", route28);
 routes.register("/api/usage", route29);
+routes.register("/api/workspace-apps", workspaceApps);
 routes.register("/auth/login", route30);
 routes.register("/auth/logout", route31);
 routes.register("/auth/register", route32);

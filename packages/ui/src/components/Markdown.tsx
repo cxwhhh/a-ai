@@ -6,12 +6,41 @@ import { SvgFrame } from "./SvgFrame";
 import { MdCodeBlock } from "./Code";
 import { isSvg } from "../lib/svg";
 import { isFileName, rehypeFileChips } from "../lib/file-chips";
+import { markdownTaskMarker } from "../../../protocol/src/markdown-task";
+
+export interface MarkdownTaskActions {
+  disabled: boolean;
+  toggle(itemStart: number, checked: boolean): void;
+}
+
+type TaskNode = {
+  tagName?: string;
+  properties?: Record<string, unknown>;
+  position?: { start: { offset?: number; line: number } };
+  children?: TaskNode[];
+};
+
+/** 复用 GFM 已解析的复选框，给它附上所属列表项在 Markdown 里的位置。 */
+function rehypeTaskPositions() {
+  return function annotate(node: TaskNode) {
+    const start = node.position?.start;
+    if (node.tagName === "li" && start?.offset !== undefined) {
+      const first = node.children?.find((child) => child.tagName);
+      const input = first?.tagName === "p" ? first.children?.find((child) => child.tagName) : first;
+      if (input?.tagName === "input" && input.properties?.type === "checkbox") {
+        input.properties.dataTaskStart = start.offset;
+        input.properties.dataTaskLine = start.line;
+      }
+    }
+    node.children?.forEach(annotate);
+  };
+}
 
 /**
  * onOpenFile：传了就让文件名可以点（鼠标移上去出现下划线，点击后在右侧打开）。
  * 要传一个“稳定”的函数（每次渲染都是同一个），否则 memo 失效，长回答会反复重新解析
  */
-export const Markdown = memo(function Markdown({ text, onOpenFile }: { text: string; onOpenFile?: (name: string) => void }) {
+export const Markdown = memo(function Markdown({ text, onOpenFile, tasks }: { text: string; onOpenFile?: (name: string) => void; tasks?: MarkdownTaskActions }) {
   // 文件名：可点时渲染成带 role=button 的 span（保持行内排版），回车 / 空格也能打开
   const chip = (name: string, Tag: "span" | "code") =>
     onOpenFile ? (
@@ -33,8 +62,16 @@ export const Markdown = memo(function Markdown({ text, onOpenFile }: { text: str
     <div className="md">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
-        rehypePlugins={[rehypeFileChips]}
+        rehypePlugins={tasks ? [rehypeTaskPositions, rehypeFileChips] : [rehypeFileChips]}
         components={{
+          input: ({ node, ...p }) => {
+            const offset = node?.properties.dataTaskStart;
+            const start = typeof offset === "number" && text.startsWith("\uFEFF") ? offset + 1 : offset;
+            if (!tasks || typeof start !== "number" || markdownTaskMarker(text, start) === undefined) return <input {...p} />;
+            return <input {...p} aria-label={`切换第 ${node?.properties.dataTaskLine} 行的任务`}
+              checked={Boolean(p.checked)} disabled={tasks.disabled}
+              onChange={(e) => tasks.toggle(start, e.target.checked)} />;
+          },
           a: ({ node: _n, ...p }) => <a {...p} target="_blank" rel="noreferrer" />,
           // ```svg 代码块：直接显示成图（动画会动），而不是一段代码
           pre: ({ node, ...p }) => {

@@ -7,12 +7,14 @@ directories:
   output: release
   buildResources: build
 
-# 安装包里的 app.asar 只放主进程（esbuild 打好的一个文件），不带 node_modules
+# 安装包里的 app.asar 放打包后的主进程、preload 和本地窗口页，不带 node_modules。
 files:
   - dist-electron/**
   - package.json
   - "!node_modules/**"
 
+# Windows 更新下载和 NSIS 安装基线使用同一个集中缓存目录。
+beforePack: scripts/electron-before-pack.cjs
 # 独立 HTTP 服务和 Web 静态资源放在 resources/server，由 afterPack 拷入生产依赖。
 afterPack: scripts/electron-after-pack.cjs
 # 服务的生产依赖由工作区部署单独安装，app.asar 里只包含主进程入口。
@@ -23,6 +25,7 @@ npmRebuild: false
 publish:
   provider: generic
   url: ${env.A_UPDATE_URL}
+  useMultipleRangeRequest: false # A.ai 更新接口支持单段 Range
 
 win:
   target:

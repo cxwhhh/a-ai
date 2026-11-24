@@ -1,7 +1,7 @@
 {
   "name": "a-ai",
   "productName": "A.ai",
-  "version": "0.1.0",
+  "version": "0.1.9",
   "private": true,
   "scripts": {
     "dev": "pnpm build && pnpm start",

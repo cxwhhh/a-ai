@@ -35,9 +35,9 @@ export class AnthropicProvider implements LLMProvider {
     this.client = new Anthropic({ apiKey: o.apiKey, baseURL: o.baseUrl?.replace(/\/+$/, "").replace(/\/v1$/, "") || undefined });
   }
 
-  requestOptions() {
+  requestOptions(req?: ChatRequest) {
     return {
-      protocol: "anthropic" as const, model: this.o.model, maxOutputTokens: 64_000,
+      protocol: "anthropic" as const, model: this.o.model, maxOutputTokens: req?.maxOutputTokens ?? 64_000,
       thinking: "adaptive" as const, reasoningEffort: this.o.effort ?? ("high" as const),
       serverFallback: FALLBACK_MODELS.test(this.o.model),
     };
@@ -45,7 +45,7 @@ export class AnthropicProvider implements LLMProvider {
 
   async *stream(req: ChatRequest): AsyncIterable<StreamChunk> {
     const { system, messages } = toAnthropic(req.messages);
-    const options = this.requestOptions();
+    const options = this.requestOptions(req);
     const betas: Anthropic.Beta.AnthropicBeta[] = ["thinking-binding-controls-2026-08-01"];
     if (options.serverFallback) betas.push("server-side-fallback-2026-07-01");
 

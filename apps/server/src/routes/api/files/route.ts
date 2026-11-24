@@ -1,11 +1,18 @@
-import { promises as fs } from "node:fs";
+import { isUtf8 } from "node:buffer";
+import { promises as fs, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { safePath, workspaceOf } from "../../../../../../packages/tools/src/files";
 import { currentUser, unauthorized } from "../../../../../../packages/application/users/src/auth";
 import { readDocument } from "../../../../../../packages/tools/src/documents";
+import { resolvePath } from "../../../../../../packages/workspace/src/access";
+import { hashFileBytes } from "../../../../../../packages/workspace/src/file-fingerprint";
+import { replaceWorkspaceFile } from "../../../../../../packages/workspace/src/file-write";
+import { registerWorkspaceFile, workspaceFilePath } from "../../../../../../packages/storage/src/workspace-files";
+import { markdownTaskMarker } from "../../../../../../packages/protocol/src/markdown-task";
 
 
 const MAX = 200_000;
+const isMarkdown = (name: string) => /\.(md|markdown)$/i.test(name);
 /** raw 预览只放行这几种：图片和 PDF。svg/html 这类能带脚本的不在这里，避免上传的文件在本站域名下执行代码 */
 const MIME: Record<string, string> = {
   png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", bmp: "image/bmp", avif: "image/avif",
@@ -15,15 +22,17 @@ const MIME: Record<string, string> = {
 /**
  * GET /api/files?path=demo/result.txt
  * 给右侧文件弹窗用：读取工作区内的文件或目录。
- * 和工具共用 safePath()，而且根目录是当前用户自己的工作区，所以读不到别人的文件。
+ * 兼容原相对路径，也支持按文件 ID 查询。解析后的真实路径必须在当前用户工作区内。
  */
 export async function GET(req: Request) {
   const user = await currentUser(req);
   if (!user) return unauthorized();
   const q = new URL(req.url).searchParams;
-  const p = q.get("path") || ".";
+  const id = q.get("id");
+  const p = id ? workspaceFilePath(user.id, id) : q.get("path") || ".";
+  if (!p) return Response.json({ error: "文件不存在" }, { status: 404 });
   try {
-    const full = safePath(workspaceOf(user.id), p);
+    const { full, shown } = ownedPath(user.id, p);
     const st = await fs.stat(/*turbopackIgnore: true*/ full);
     if (st.isDirectory()) {
       const entries = await fs.readdir(/*turbopackIgnore: true*/ full, { withFileTypes: true });
@@ -33,6 +42,7 @@ export async function GET(req: Request) {
         .sort((a, b) => Number(b.dir) - Number(a.dir) || a.name.localeCompare(b.name));
       return Response.json({ path: p, type: "dir", items });
     }
+    if (!st.isFile()) return Response.json({ path: p, error: "只能读取普通文件" }, { status: 404 });
     const buf = await fs.readFile(/*turbopackIgnore: true*/ full);
     // ?raw=1：直接返回文件本身，给图片 <img> 和 PDF <iframe> 预览用（上传的附件点开能看到原样）
     if (q.get("raw")) {
@@ -62,6 +72,8 @@ export async function GET(req: Request) {
     }
     return Response.json({
       path: p,
+      id: registerWorkspaceFile(user.id, shown),
+      ...(isMarkdown(full) && !binary && buf.length <= MAX && isUtf8(buf) ? { revision: hashFileBytes(buf) } : {}),
       type: "file",
       size: st.size,
       mtime: st.mtimeMs,
@@ -75,4 +87,49 @@ export async function GET(req: Request) {
     const msg = e instanceof Error ? e.message : String(e);
     return Response.json({ path: p, error: msg.includes("ENOENT") ? "文件不存在" : msg }, { status: 404 });
   }
+}
+
+/** 保存看板上的一次勾选。用户与 Agent 都以当前工作区文件为准。 */
+export async function PATCH(req: Request) {
+  const user = await currentUser(req);
+  if (!user) return unauthorized();
+  if (!/^application\/json(?:;|$)/i.test(req.headers.get("content-type") ?? "")) {
+    return Response.json({ error: "需要 JSON 请求" }, { status: 415 });
+  }
+  const body = await req.json().catch(() => null);
+  if (!body || typeof body.id !== "string" || !/^[a-f\d]{64}$/.test(body.revision ?? "") ||
+      !Number.isSafeInteger(body.itemStart) || typeof body.checked !== "boolean") {
+    return Response.json({ error: "无效的任务修改" }, { status: 400 });
+  }
+  const p = workspaceFilePath(user.id, body.id);
+  if (!p) return Response.json({ error: "文件不存在" }, { status: 404 });
+  const conflict = () => Response.json({ error: "文件已更新，已重新载入，请核对后再勾选" }, { status: 409 });
+  try {
+    const { full } = ownedPath(user.id, p);
+    const st = statSync(full);
+    if (!isMarkdown(full) || !st.isFile() || st.size > MAX) {
+      return Response.json({ error: "只能修改完整的 Markdown 文件" }, { status: 400 });
+    }
+    const before = readFileSync(full);
+    if (hashFileBytes(before) !== body.revision) return conflict();
+    const text = before.toString("utf8");
+    const marker = markdownTaskMarker(text, body.itemStart);
+    if (!isUtf8(before) || before.includes(0) || marker === undefined) {
+      return Response.json({ error: "找不到对应的任务项" }, { status: 400 });
+    }
+    const content = text.slice(0, marker) + (body.checked ? "x" : " ") + text.slice(marker + 1);
+    const next = Buffer.from(content, "utf8");
+    if (!replaceWorkspaceFile(full, before, next)) return conflict();
+    return Response.json({ content, revision: hashFileBytes(next), mtime: statSync(full).mtimeMs, size: next.length });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return Response.json({ error: "文件不存在" }, { status: 404 });
+    return Response.json({ error: "工作区文件保存失败" }, { status: 500 });
+  }
+}
+
+function ownedPath(userId: string, name: string) {
+  const workspace = workspaceOf(userId);
+  const target = resolvePath(workspace, safePath(workspace, name), "read");
+  if (!target.inWorkspace) throw new Error("路径超出工作区");
+  return target;
 }

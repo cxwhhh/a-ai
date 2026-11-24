@@ -7,6 +7,10 @@ import { countDiff, diffLines, fileChanges } from "../lib/diff";
 import "./OutputsCard.css";
 import { ICheck, IChevron, IX } from "./Icons";
 import { KindIcon } from "./KindIcon";
+import { IconPicker } from "./IconPicker";
+import { subagentIcon } from "../../../protocol/src/lib/agentIcons";
+import type { RunningDelegation } from "../../../subagent/src/ownership-claim";
+import { api } from "../lib/client";
 
 /** 类型图标带颜色（KindIcon）：代码绿、网页蓝、文档橙、图表粉 */
 const ICON = {
@@ -37,6 +41,7 @@ export function OutputsCard(props: {
   outputs: OutputItem[];
   used: UsedItem[];
   active?: View | null;
+  subagents?: { sessionId: string; runId: string | null; open(task: RunningDelegation): void };
   onOpen(v: View): void;
   onClose(): void;
 }) {
@@ -45,11 +50,11 @@ export function OutputsCard(props: {
   const steps = lastTaskSteps(messages, props.running, streaming);
   const real = steps.filter((s) => s.id !== "thinking");
   const done = real.filter((s) => s.state === "done").length;
-  const [open, setOpen] = useState<Record<string, boolean>>({ steps: true, out: true });
+  const [open, setOpen] = useState<Record<string, boolean>>({ steps: true, out: true, subagents: true });
   useEffect(() => {
     try {
       const saved = localStorage.getItem("a.panelOpen");
-      if (saved) setOpen(JSON.parse(saved));
+      if (saved) setOpen((initial) => ({ ...initial, ...JSON.parse(saved) }));
     } catch {}
   }, []);
   const toggle = (k: string) =>
@@ -178,6 +183,10 @@ export function OutputsCard(props: {
         )}
       </Sec>
 
+      {props.subagents && <Sec k="subagents" open={open} onToggle={toggle} label="子 Agent">
+        <RunningSubagents key={`${props.subagents.sessionId}:${props.subagents.runId}`} {...props.subagents} />
+      </Sec>}
+
       <Sec k="used" open={open} onToggle={toggle} label="本次会话中已使用" meta={used.length ? String(used.length) : undefined}>
         {used.length === 0 && <div className="panel-empty">读过的文件、看过的网页会出现在这里。</div>}
         {used.map((u) =>
@@ -198,6 +207,34 @@ export function OutputsCard(props: {
       </Sec>
     </aside>
   );
+}
+
+/** 每次挂载只查询当前父运行，关闭或切换会话时撤销旧请求。 */
+function RunningSubagents({ sessionId, runId, open }: NonNullable<Parameters<typeof OutputsCard>[0]["subagents"]>) {
+  const [tasks, setTasks] = useState<RunningDelegation[]>([]);
+  useEffect(() => {
+    if (!sessionId || !runId) return;
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout>;
+    async function refresh() {
+      try {
+        const data = await api.runningSubagents(sessionId, runId!, controller.signal);
+        if (!controller.signal.aborted) setTasks(data.tasks);
+      } catch { /* 连接恢复后按当前运行重新读。 */ }
+      if (!controller.signal.aborted) timer = setTimeout(refresh, 700);
+    }
+    void refresh();
+    return () => { controller.abort(); clearTimeout(timer); };
+  }, [sessionId, runId]);
+
+  if (!tasks.length) return <div className="panel-empty">暂无运行中的子 Agent</div>;
+  return <>{tasks.map((task) => <button type="button" key={task.id} className="out-row" onClick={() => open(task)} title={task.name}>
+    <span className="out-ico"><IconPicker value={subagentIcon(task.id)} size={15} /></span>
+    <span className="out-name ellipsis">{task.name}</span>
+    <span className="chain-ms" title={task.estimated ? "含估算 token 用量" : "累计输入和输出 token"}>
+      {fmtMs(Math.max(0, Date.now() - task.createdAt))} · {task.estimated ? "约 " : ""}{task.tokens.toLocaleString()} token
+    </span>
+  </button>)}</>;
 }
 
 /** 缩略图用的纯文字：网页去掉 <style>/<script> 和标签，Markdown 去掉 # * ` 这些符号，代码保留换行 */

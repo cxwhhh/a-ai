@@ -1,9 +1,10 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
-import type { DragEvent } from "react";
+import type { CSSProperties, DragEvent } from "react";
 import type { Groups, Project, SessionMeta } from "../../../protocol/src/lib/shared";
+import type { ConversationView } from "./ChatPane";
 import { CoreLogo } from "./CoreLogo";
-import { AgentIcon, IArchive, IChevron, IClock, ICode, IDoc, IFile, IFolder, IGlobe, IMore, IPanelLeft, IPencil, IPlus, IGear, IFolderPlusLine, ILayersLine, IRetry, ISearchLine, ITable, IX } from "./Icons";
+import { AgentIcon, IArchive, IChart, IChevron, IClock, ICode, IDoc, IFile, IFolder, IGlobe, IMore, IPanelLeft, IPencil, IPlus, IGear, IFolderPlusLine, ILayersLine, IRetry, ISearchLine, ITable, IX } from "./Icons";
 import "./Sidebar.css";
 import { UserMenu, type SettingsTab } from "./UserMenu";
 
@@ -38,6 +39,7 @@ let foldedCache: Set<string> | null = null;
 export function Sidebar(props: {
   sessions: SessionMeta[];
   currentId?: string;
+  viewingDetails: boolean;
   model: string;
   userName: string;
   modKey: string;
@@ -48,7 +50,7 @@ export function Sidebar(props: {
   onGroupsChange(g: Groups): void;
   onOpenSettings(tab: SettingsTab): void;
   onNew(): void;
-  onOpen(id: string): void;
+  onOpen(id: string, view?: ConversationView): void;
   onDelete(id: string): void;
   onRename(id: string, title: string): void;
   onArchive(target: "session" | "project", id: string, archived: boolean): void;
@@ -115,8 +117,24 @@ export function Sidebar(props: {
   const [dragging, setDragging] = useState<string | null>(null);
   /** 拖到某一行上时，插入线画在这一行的上面还是下面 */
   const [rowDrop, setRowDrop] = useState<{ id: string; after: boolean } | null>(null);
-  /** 打开了“…”菜单的对话 */
-  const [menu, setMenu] = useState<string | null>(null);
+  /** 右键和“…”共用一个菜单，定位到窗口以避开项目与分组列表的滚动裁切。 */
+  const [menu, setMenu] = useState<{ id: string; position: CSSProperties } | null>(null);
+  function showSessionMenu(id: string, row: HTMLElement) {
+    const rect = row.getBoundingClientRect();
+    const below = window.innerHeight - rect.bottom;
+    const above = below < 216 && rect.top > below;
+    setProjMenu(null);
+    setMenu({
+      id,
+      position: {
+        right: window.innerWidth - rect.right + 4,
+        top: above ? "auto" : rect.bottom + 2,
+        bottom: above ? window.innerHeight - rect.top + 2 : undefined,
+        maxHeight: (above ? rect.top : below) - 8,
+      },
+    });
+  }
+
   useEffect(() => {
     if (!menu && !projMenu) return;
     const close = (e: MouseEvent) => {
@@ -124,8 +142,32 @@ export function Sidebar(props: {
       setMenu(null);
       setProjMenu(null);
     };
+    const closeOnEscape = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopPropagation();
+      setMenu(null);
+      setProjMenu(null);
+    };
+    const closeOnMove = (e: Event) => {
+      if (e.type === "scroll") {
+        const target = e.target as HTMLElement | null;
+        if (!target?.closest?.(".side") || target.closest(".session-view-menu")) return;
+      }
+      setMenu(null);
+    };
     document.addEventListener("mousedown", close);
-    return () => document.removeEventListener("mousedown", close);
+    document.addEventListener("keydown", closeOnEscape);
+    if (menu) {
+      window.addEventListener("scroll", closeOnMove, true);
+      window.addEventListener("resize", closeOnMove);
+    }
+    return () => {
+      document.removeEventListener("mousedown", close);
+      document.removeEventListener("keydown", closeOnEscape);
+      window.removeEventListener("scroll", closeOnMove, true);
+      window.removeEventListener("resize", closeOnMove);
+    };
   }, [menu, projMenu]);
 
   // 每个分组里的对话，组内按最近更新排序（sessions 本身已排好）
@@ -238,7 +280,7 @@ export function Sidebar(props: {
   const renderRow = (s: SessionMeta, gid?: string, archived = false) => (
     <div
       key={s.id}
-      className={`side-item session ${s.id === currentId ? "active" : ""} ${dragging === s.id ? "dragging" : ""} ${menu === s.id ? "menu-open" : ""} ${
+      className={`side-item session ${s.id === currentId ? "active" : ""} ${dragging === s.id ? "dragging" : ""} ${menu?.id === s.id ? "menu-open" : ""} ${
         rowDrop?.id === s.id ? (rowDrop.after ? "drop-after" : "drop-before") : ""
       }`}
       draggable={!archived && renaming !== s.id}
@@ -275,6 +317,12 @@ export function Sidebar(props: {
         },
       })}
       onClick={() => renaming !== s.id && props.onOpen(s.id)}
+      onContextMenu={(e) => {
+        if (renaming === s.id) return;
+        e.preventDefault();
+        e.stopPropagation();
+        showSessionMenu(s.id, e.currentTarget);
+      }}
       title={s.title}
     >
       {archived ? (
@@ -288,10 +336,10 @@ export function Sidebar(props: {
           }}
         />
       ) : (
-        // 点当前对话的名字（或双击任意对话）就能改名
+        // 在详情页单击当前对话可返回正文，正文里的标题单击仍用于改名。
         <span
           className="ellipsis"
-          onClick={(e) => s.id === currentId && (e.stopPropagation(), setRenaming(s.id))}
+          onClick={(e) => s.id === currentId && !props.viewingDetails && (e.stopPropagation(), setRenaming(s.id))}
           onDoubleClick={(e) => (e.stopPropagation(), setRenaming(s.id))}
         >
           {s.title}
@@ -315,40 +363,59 @@ export function Sidebar(props: {
         // 活跃对话有产出时平时显示文件图标，鼠标移上来换成“…”菜单。
         <span className="row-end">
           {s.hasFiles && <IFile className="has-file" width={13} height={13} />}
-          <button className="more" title="更多" onClick={(e) => (e.stopPropagation(), setMenu(menu === s.id ? null : s.id))}>
+          <button type="button" className="more" title="更多" aria-expanded={menu?.id === s.id} onClick={(e) => {
+            e.stopPropagation();
+            if (menu?.id === s.id) setMenu(null);
+            else {
+              const row = e.currentTarget.closest<HTMLElement>(".side-item.session");
+              if (row) showSessionMenu(s.id, row);
+            }
+          }}>
             <IMore width={14} height={14} />
           </button>
         </span>
       )}
-      {!archived && menu === s.id && (
-        <div className="row-menu" onClick={(e) => e.stopPropagation()}>
-          <button className="pop-item" onClick={() => (setMenu(null), setRenaming(s.id))}>
-            <IPencil width={13} height={13} />
-            重命名
-          </button>
-          {/* 移到项目：列出全部项目；已经在项目里的对话多一个“移出项目” */}
-          {projects
-            .filter((p) => p.id !== s.projectId)
-            .map((p) => (
-              <button key={p.id} className="pop-item" onClick={() => (setMenu(null), props.onMoveToProject(s.id, p.id))}>
-                <IFolder width={13} height={13} />
-                <span className="ellipsis">移到“{p.name}”</span>
-              </button>
-            ))}
-          {s.projectId && (
-            <button className="pop-item" onClick={() => (setMenu(null), props.onMoveToProject(s.id, null))}>
-              <IFolder width={13} height={13} />
-              移出项目
+      {menu?.id === s.id && (
+        <div className="row-menu session-view-menu" style={menu.position} onClick={(e) => e.stopPropagation()}
+          onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); }}>
+          {([["trace", "轨迹", IClock], ["stats", "统计", IChart], ["subagents", "子任务", ILayersLine]] as const).map(([view, label, Icon]) => (
+            <button type="button" key={view} className="pop-item" onClick={() => (setMenu(null), props.onOpen(s.id, view))}>
+              <Icon width={13} height={13} />
+              {label}
             </button>
+          ))}
+          {!archived && (
+            <>
+              <div className="pop-sep" />
+              <button className="pop-item" onClick={() => (setMenu(null), setRenaming(s.id))}>
+                <IPencil width={13} height={13} />
+                重命名
+              </button>
+              {/* 移到项目：列出全部项目；已经在项目里的对话多一个“移出项目” */}
+              {projects
+                .filter((p) => p.id !== s.projectId)
+                .map((p) => (
+                  <button key={p.id} className="pop-item" onClick={() => (setMenu(null), props.onMoveToProject(s.id, p.id))}>
+                    <IFolder width={13} height={13} />
+                    <span className="ellipsis">移到“{p.name}”</span>
+                  </button>
+                ))}
+              {s.projectId && (
+                <button className="pop-item" onClick={() => (setMenu(null), props.onMoveToProject(s.id, null))}>
+                  <IFolder width={13} height={13} />
+                  移出项目
+                </button>
+              )}
+              <button className="pop-item" onClick={() => (setMenu(null), props.onArchive("session", s.id, true))}>
+                <IArchive width={13} height={13} />
+                归档对话
+              </button>
+              <button className="pop-item danger" onClick={() => (setMenu(null), props.onDelete(s.id))}>
+                <IX width={13} height={13} />
+                删除
+              </button>
+            </>
           )}
-          <button className="pop-item" onClick={() => (setMenu(null), props.onArchive("session", s.id, true))}>
-            <IArchive width={13} height={13} />
-            归档对话
-          </button>
-          <button className="pop-item danger" onClick={() => (setMenu(null), props.onDelete(s.id))}>
-            <IX width={13} height={13} />
-            删除
-          </button>
         </div>
       )}
     </div>

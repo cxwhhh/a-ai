@@ -3,6 +3,13 @@
  * 由 scripts 从 agent-icons/svg/*.svg 生成：body 是 <svg> 里面的图形元素（只有 path / circle / rect 等，没有脚本）。
  * 前后端共用：前端画图标，后端校验项目图标名是否合法。
  */
+/** 子任务 ID 本身随机，同一任务在列表和对话标题里使用同一个图标。 */
+export function subagentIcon(id: string) {
+  let hash = 0;
+  for (const char of id) hash = (Math.imul(hash, 31) + char.charCodeAt(0)) >>> 0;
+  return AGENT_ICONS[hash % AGENT_ICONS.length].name;
+}
+
 export const AGENT_ICONS = [
   { name: "chat", label: "对话", body: "<path d=\"M6.5 4h11A2.5 2.5 0 0 1 20 6.5v7a2.5 2.5 0 0 1-2.5 2.5H11l-4.5 4v-4A2.5 2.5 0 0 1 4 13.5v-7A2.5 2.5 0 0 1 6.5 4z\"/>" },
   { name: "messages", label: "消息", body: "<path d=\"M6.5 3.5h6A2.5 2.5 0 0 1 15 6v4a2.5 2.5 0 0 1-2.5 2.5H8.5L6 14.5v-2A2.5 2.5 0 0 1 4 10V6a2.5 2.5 0 0 1 2.5-2.5z\"/><path d=\"M15 8.5h2.5A2.5 2.5 0 0 1 20 11v4a2.5 2.5 0 0 1-2 2.45V20l-2.8-2.5H12A2.5 2.5 0 0 1 9.5 15v-.5\"/>" },

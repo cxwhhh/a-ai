@@ -105,9 +105,22 @@ export const IFolder = lib("folder");
 export const IFolderPlus = lib("project");
 export const IFile = lib("file");
 export const IArchive = lib("archive");
-/** 收件托盘：右上角“任务与文件”按钮用（agent 的产出都收在这里），和单个文件的 IFile 区分开 */
+/** 两行列表：用于对话标题栏的「任务与文件」按钮。 */
 export const IFiles = (p: SVGProps<SVGSVGElement>) => (
-  <svg {...base(p)}><rect x="2.5" y="2.75" width="11" height="10.5" rx="2" /><path d="M2.5 9h2.8l.9 1.5h3.6l.9-1.5h2.8" /></svg>
+  <svg {...base(p)}>
+    <circle cx="3.75" cy="4.5" r="2" />
+    <circle cx="3.75" cy="11.5" r="2" />
+    <path d="M9 4.5h5.25M9 11.5h5.25" />
+  </svg>
+);
+export const IThreads = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base(p)}><path d="M4 5.5v5a2 2 0 0 0 2 2h4M4 7.5h6" /><circle cx="4" cy="3.5" r="1.5" /><circle cx="12" cy="7.5" r="1.5" /><circle cx="12" cy="12.5" r="1.5" /></svg>
+);
+export const ICards = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base(p)}><rect x="2.5" y="2.5" width="4" height="4" rx=".7" /><rect x="9.5" y="2.5" width="4" height="4" rx=".7" /><rect x="2.5" y="9.5" width="4" height="4" rx=".7" /><rect x="9.5" y="9.5" width="4" height="4" rx=".7" /></svg>
+);
+export const IListRows = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base(p)}><path d="M5.5 4h8m-8 4h8m-8 4h8M2.5 4h.01m-.01 4h.01m-.01 4h.01" /></svg>
 );
 export const IClip = lib("attachment");
 export const IImage = lib("image");

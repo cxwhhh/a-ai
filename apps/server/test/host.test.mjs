@@ -1,13 +1,15 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import clientPaths from "../../desktop/src/client-paths.cjs";
+import { DatabaseSync } from "node:sqlite";
 import { after, before, test } from "node:test";
+import { build } from "esbuild";
 
 // 使用构建后的生产入口。所有写入在测试专用目录，模型用内置 Mock。
-const data = mkdtempSync(path.join(tmpdir(), "aai-host-test-"));
+const data = mkdtempSync(path.join(clientPaths.temporaryDirectory("tests"), "aai-host-test-"));
 let child;
 let origin;
 let owner;
@@ -92,6 +94,160 @@ test("桌面更新文件名只解码一次，支持带空格的文件名和断�
   assert.equal(partial.status, 206);
   assert.equal(await partial.text(), "23");
   assert.equal((await fetch(`${origin}/updates/A.ai%2520Setup.exe`)).status, 404);
+});
+
+test("任务勾选保存到账号自己的 Markdown 文件，冲突时保留新版本", async () => {
+  const text = "# 同名计划\r\n\r\n- [ ] 上线\r\n  - [ ] 复核\r\n";
+  async function upload(cookie) {
+    const form = new FormData();
+    form.append("file", new Blob([text]), "plan.md");
+    const res = await request("/api/upload", cookie, { method: "POST", body: form });
+    assert.equal(res.status, 200);
+    return (await res.json()).files[0];
+  }
+  const a = await upload(owner);
+  const b = await upload(visitor);
+  assert.equal(a.path, b.path);
+  assert.notEqual(a.id, b.id);
+  const endpoint = `/api/files?id=${a.id}`;
+  const original = await (await request(endpoint)).json();
+  const toggle = (cookie, revision, itemStart) => request("/api/files", cookie, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ id: a.id, revision, itemStart, checked: true }),
+  });
+  const offset = text.indexOf("- [ ] 上线");
+  assert.equal((await request(endpoint, visitor)).status, 404);
+  assert.equal((await toggle(visitor, original.revision, offset)).status, 404);
+  const updated = await toggle(owner, original.revision, offset);
+  assert.equal(updated.status, 200);
+  const changed = (await updated.json()).content;
+  assert.equal(changed, text.replace("- [ ] 上线", "- [x] 上线"));
+  assert.equal((await toggle(owner, original.revision, text.indexOf("- [ ] 复核"))).status, 409);
+  assert.equal(await (await request(`${endpoint}&download=1`)).text(), changed);
+  assert.equal((await (await request(`/api/files?id=${b.id}`, visitor)).json()).content, text);
+});
+
+test("聊天部署的饮食应用可跨登录读取，数据和页面按账号授权", async () => {
+  const headers = { "Content-Type": "application/json" };
+  const project = await (await request("/api/projects", owner, {
+    method: "POST", headers, body: JSON.stringify({ name: "饮食记录项目" }),
+  })).json();
+  const projectQuery = `/api/workspace-apps?projectId=${project.id}`;
+  const chat = await request("/api/chat", owner, {
+    method: "POST", headers, body: JSON.stringify({ message: "帮我做一个记录我饮食的页面", projectId: project.id }),
+  });
+  assert.equal(chat.status, 200);
+  const stream = await chat.text();
+  const events = stream.split("\n").filter((line) => line.startsWith("data: ")).map((line) => JSON.parse(line.slice(6)));
+  const artifact = events.find((event) => event.type === "artifact")?.artifact;
+  assert.ok(artifact?.workspaceApp?.id, stream.slice(-600));
+  const id = artifact.workspaceApp.id;
+  const endpoint = `/api/workspace-apps?id=${id}`;
+  const command = (body, cookie = owner) => request(endpoint, cookie, { method: "POST", headers, body: JSON.stringify(body) });
+
+  assert.equal((await fetch(origin + endpoint)).status, 401);
+  assert.equal((await request(endpoint, visitor)).status, 404);
+  assert.equal((await request(projectQuery, visitor)).status, 404);
+  assert.equal((await request(`${endpoint}&download=1`, visitor)).status, 404);
+  assert.equal((await command({ action: "list" }, visitor)).status, 404);
+  assert.deepEqual((await (await request("/api/workspace-apps", visitor)).json()).apps, []);
+  assert.equal((await command(null)).status, 400);
+  assert.equal((await command({ action: "create", data: { food: "x".repeat(18_000) } })).status, 413);
+  const deployed = await request(endpoint);
+  assert.match(deployed.headers.get("content-type"), /application\/json/);
+  assert.match((await deployed.json()).app.html, /aai\.records\.create/);
+  const create = await command({ action: "create", data: { food: "烤鱼", meal: "午餐" } });
+  assert.equal(create.status, 200);
+  const { record } = await create.json();
+
+  const login = await fetch(origin + "/api/auth/login", {
+    method: "POST", headers, body: JSON.stringify({ username: "owner", password: "fixture-1234" }),
+  });
+  assert.equal(login.status, 200);
+  const otherDevice = login.headers.getSetCookie()[0].split(";")[0];
+  assert.notEqual(otherDevice, owner);
+  const projects = await (await request("/api/projects", otherDevice)).json();
+  assert.ok(projects.some((item) => item.id === project.id));
+  const list = (await (await request(projectQuery, otherDevice)).json()).apps;
+  assert.equal(list[0].id, id);
+  assert.equal(list[0].projectId, project.id);
+  const download = await request(`${endpoint}&projectId=${project.id}&download=1`, otherDevice);
+  assert.match(download.headers.get("content-disposition"), /^attachment;/);
+  assert.match(await download.text(), /aai\.records\.create/);
+  assert.ok(!(await (await request("/api/artifacts", otherDevice)).json()).some(({ id }) => id === artifact.id));
+  assert.deepEqual((await (await command({ action: "list" }, otherDevice)).json()).records, [record]);
+  const edit = { action: "update", id: record.id, revision: record.revision, data: { food: "青花鱼", meal: "午餐" } };
+  assert.equal((await command(edit, otherDevice)).status, 200);
+  assert.equal((await command(edit)).status, 409);
+  assert.equal((await command({ action: "remove", id: record.id, revision: record.revision }, visitor)).status, 404);
+});
+
+test("同轮网页只列一次，删除文件后退出列表并保留会话快照", async () => {
+  const { reader, sessionId } = await start("帮我做一个记录我饮食的页面");
+  while (!(await reader.read()).done) { /* 等生产入口完成部署 */ }
+  const endpoint = `/api/sessions/${sessionId}`;
+  const session = await (await request(endpoint)).json();
+  const deployed = session.artifacts.find((a) => a.workspaceApp);
+  assert.ok(deployed);
+  const { html } = (await (await request(`/api/workspace-apps?id=${deployed.workspaceApp.id}`)).json()).app;
+
+  // 模拟已上线版本遗留的三条交付记录，再在下一轮建一个同名的独立网页。
+  const now = Date.now();
+  const drafts = [
+    { id: "fixture-preview", title: deployed.title, kind: "html", content: html, createdAt: now },
+    { id: "fixture-independent", title: deployed.title, kind: "html", content: "<p>另一个网页</p>", createdAt: now + 1,
+      file: `output/${sessionId}/independent.html` },
+  ];
+  const sourceFile = `output/${sessionId}/index.html`;
+  const action = (id, name, args) => ({ id, name, arguments: JSON.stringify(args) });
+  const preview = (a) => action(`call-${a.id}`, "create_artifact", { title: a.title, kind: a.kind, content: a.content });
+  const source = action("call-source", "write_file", { path: `/workspace/${sourceFile}`, content: html });
+  const messages = [
+    { role: "assistant", content: "", toolCalls: [preview(drafts[0]), source] },
+    { role: "tool", toolCallId: `call-${drafts[0].id}`, artifactId: drafts[0].id, content: "已展示" },
+    { role: "tool", toolCallId: source.id, content: JSON.stringify({ path: sourceFile }) },
+    { role: "user", content: "做另一个同名的静态网页" },
+    { role: "assistant", content: "", toolCalls: [preview(drafts[1])] },
+    { role: "tool", toolCallId: `call-${drafts[1].id}`, artifactId: drafts[1].id, content: "已展示" },
+  ];
+  const db = new DatabaseSync(path.join(data, "a.db"));
+  let independentPath;
+  try {
+    const { user_id: userId } = db.prepare("SELECT user_id FROM sessions WHERE id = ?").get(sessionId);
+    const workspace = path.join(data, "users", userId, "workspace");
+    independentPath = path.join(workspace, drafts[1].file);
+    mkdirSync(path.dirname(independentPath), { recursive: true });
+    writeFileSync(independentPath, drafts[1].content);
+    writeFileSync(path.join(workspace, sourceFile), html);
+    const addArtifact = db.prepare("INSERT INTO artifacts(id, session_id, created_at, data) VALUES (?, ?, ?, ?)");
+    for (const a of drafts) addArtifact.run(a.id, sessionId, a.createdAt, JSON.stringify(a));
+    const { seq } = db.prepare("SELECT max(seq) AS seq FROM messages WHERE session_id=?").get(sessionId);
+    const addMessage = db.prepare("INSERT INTO messages(id, session_id, seq, role, created_at, data) VALUES (?, ?, ?, ?, ?, ?)");
+    for (const [index, m] of messages.entries()) {
+      const record = { ...m, id: `fixture-output-message-${index}`, createdAt: now + index };
+      addMessage.run(record.id, sessionId, seq + index + 1, record.role, record.createdAt, JSON.stringify(record));
+    }
+  } finally { db.close(); }
+
+  const { outputFiles: [module] } = await build({ entryPoints: ["packages/protocol/src/lib/outputs.ts"],
+    bundle: true, write: false, format: "esm" });
+  const { collectOutputs } = await import(`data:text/javascript;base64,${Buffer.from(module.contents).toString("base64")}`);
+  const reopened = await (await request(endpoint)).json();
+  assert.deepEqual(collectOutputs(reopened.messages, reopened.artifacts).outputs.map((output) => output.key).sort(),
+    [`a:${deployed.id}`, `a:${drafts[1].id}`].sort());
+  const visible = async () => (await (await request("/api/artifacts")).json()).filter((a) => a.sessionId === sessionId);
+  assert.deepEqual((await visible()).map((a) => a.id), [drafts[1].id]);
+  assert.deepEqual(reopened.unavailableOutputKeys, []);
+  unlinkSync(independentPath);
+  assert.deepEqual(await visible(), []);
+  const afterDeletion = await (await request(endpoint)).json();
+  assert.deepEqual(afterDeletion.unavailableOutputKeys, [`a:${drafts[1].id}`]);
+  assert.ok(afterDeletion.artifacts.some((a) => a.id === drafts[1].id));
+  assert.equal((await request(endpoint, visitor)).status, 404);
+  writeFileSync(independentPath, drafts[1].content);
+  assert.deepEqual((await (await request(endpoint)).json()).unavailableOutputKeys, []);
+  assert.deepEqual((await visible()).map((a) => a.id), [drafts[1].id]);
 });
 
 test("生产 Host 按会话读取和设置插件，拒绝越权和未知 ID", async () => {

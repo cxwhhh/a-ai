@@ -60,7 +60,7 @@ export const readDocument: Tool<Args> = {
     },
   },
   async run({ path: p, pages, sheet, offset }, ctx) {
-    const { full, shown } = resolvePath(ctx.workspace, p, "read");
+    const { full, shown } = ctx.readPath ? ctx.readPath(p) : resolvePath(ctx.workspace, p, "read");
     const st = await fs.stat(/*turbopackIgnore: true*/ full).catch(() => null);
     if (!st) throw new Error(`文件不存在：${shown}。先用 glob 按文件名找（例：*.pdf），用户上传的文件在 uploads/ 下`);
     if (st.isDirectory()) throw new Error(`${shown} 是目录不是文件，用 list_files 看里面有什么`);

@@ -1,16 +1,12 @@
 /* 轨迹与对话共享头部，切换时保留已挂载的对话和输入框。 */
 .chat.trace-open > :is(.chat-scroll, .composer-wrap) { display: none; }
-/* 会话标题与视图切换靠上下排列区分，横线容易让两行看成独立面板。 */
-.chat-head:has(+ .conversation-views)::after { content: none; }
-
 /* 轨迹沿用 DSH 的字体栈与语义颜色。主题跟随 A.ai 的 color-scheme，变量只在此视图内生效。 */
-:is(.session-trace, .conversation-views) {
+.session-trace {
   --trace-text-font: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
     "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", Helvetica, Arial, sans-serif;
   --trace-code-font: "SF Mono", "JetBrains Mono", "Fira Code", Consolas,
     "Liberation Mono", Menlo, Courier, "PingFang SC", "Microsoft YaHei";
   --trace-bg: light-dark(#fff, rgb(35 35 36));
-  --trace-plot: light-dark(#fff, rgb(44 44 46));
   --trace-code-bg: light-dark(rgb(249 250 251), rgb(27 27 28));
   --trace-inline-code-bg: light-dark(#fafafa, #292929);
   --trace-text: light-dark(rgb(15 17 21), rgb(249 250 251));
@@ -32,30 +28,6 @@
   --trace-amber-bg: light-dark(rgb(254 245 231), rgb(39 36 31));
   --trace-quote: light-dark(rgb(235 238 242), rgb(53 54 56));
 }
-
-.conversation-views {
-  display: flex;
-  flex: none;
-  height: 33px;
-  gap: clamp(2px, 1vw, 14px);
-  padding: 0 12px;
-  font: 500 13px/16px var(--trace-text-font);
-}
-.conversation-views button { position: relative; padding: 0 7px; color: var(--trace-muted); white-space: nowrap; }
-.conversation-views button:hover { color: var(--trace-text); }
-.conversation-views button[aria-pressed="true"] { color: var(--trace-blue); }
-.conversation-views button[aria-pressed="true"]::after {
-  position: absolute;
-  z-index: 1;
-  right: 7px;
-  bottom: 0;
-  left: 7px;
-  height: 2px;
-  border-radius: 2px;
-  background: currentColor;
-  content: "";
-}
-.conversation-views button:focus-visible { outline: 1px solid var(--trace-blue); outline-offset: -1px; }
 
 .session-trace {
   display: flex;
@@ -131,21 +103,6 @@
 .trace-count { margin-right: auto; white-space: nowrap; }
 .trace-empty, .trace-notice { margin: 0; padding: 18px 14px; color: var(--trace-muted); }
 
-.trace-timeline {
-  display: flex;
-  flex: none;
-  column-gap: 4px;
-  align-items: flex-start;
-  padding: 5px 8px 5px 0;
-  border-bottom: .5px solid var(--trace-line);
-  background: var(--trace-plot);
-}
-.trace-lane-labels, .trace-tick { display: grid; grid-template-rows: repeat(3, 8px); row-gap: 4px; }
-.trace-lane-labels { flex: 0 0 44px; padding-right: 4px; border-right: .5px solid var(--trace-line); color: var(--trace-muted); font: 10px/8px var(--trace-text-font); text-align: right; }
-.trace-track { display: flex; min-width: 0; overflow-x: auto; scrollbar-width: thin; scrollbar-color: var(--trace-line-strong) transparent; }
-.trace-tick { flex: 0 0 14px; padding: 0 2px; }
-.trace-tick[data-turn-start="true"] { margin-left: 3px; border-left: 1px solid var(--trace-line-strong); }
-.trace-order { flex: none; align-self: center; color: var(--trace-muted); font-size: 10px; line-height: 16px; white-space: nowrap; }
 .session-trace [data-kind="input"] { --trace-tone: var(--trace-blue); --trace-tag-bg: var(--trace-blue-bg); }
 .session-trace [data-kind="model"] { --trace-tone: var(--trace-violet); --trace-tag-bg: var(--trace-violet-bg); }
 .session-trace [data-kind="tool"] { --trace-tone: var(--trace-amber); --trace-tag-bg: var(--trace-amber-bg); }
@@ -153,27 +110,31 @@
   --trace-tone: color-mix(in srgb, var(--trace-amber) 62%, var(--trace-muted));
   --trace-tag-bg: color-mix(in srgb, var(--trace-amber-bg) 58%, var(--trace-bg));
 }
-.trace-track button { width: 100%; min-width: 0; height: 8px; padding: 0; border-radius: 1px; background: var(--trace-tone); opacity: .76; }
-.trace-track button:is(:hover, [aria-pressed="true"]) { opacity: 1; }
-.trace-track button[aria-pressed="true"] { outline: 1px solid var(--trace-text); outline-offset: -1px; }
-
 .trace-body { position: relative; display: flex; flex: 1; min-height: 0; overflow: hidden; }
 .trace-list { flex: 1; min-width: 0; overflow: auto; font: 12px/18px var(--trace-text-font); }
+.trace-turn + .trace-turn { border-top: .5px solid var(--trace-line); }
+.trace-turn-title {
+  margin: 0;
+  padding: 8px 12px;
+  background: var(--trace-code-bg);
+  color: var(--trace-secondary);
+}
 .trace-row {
   display: grid;
-  grid-template-columns: 30px 48px minmax(0, 1fr) auto;
+  grid-template-columns: 112px minmax(0, 1fr) auto;
   align-items: start;
   gap: 6px;
   width: 100%;
-  min-height: 25px;
-  padding: 3px 8px;
+  min-height: 32px;
+  padding: 6px 12px;
   overflow: hidden;
   border-bottom: .5px solid var(--trace-line-soft);
   text-align: left;
 }
 .trace-row:hover { background: var(--trace-hover); }
 .trace-row[aria-pressed="true"] { background: var(--trace-active); }
-.trace-position, .trace-meta { flex: none; color: var(--trace-muted); font: 11px/16px var(--trace-code-font); }
+.trace-row[data-child="true"] > .trace-badge { margin-inline-start: 8px; }
+.trace-meta { flex: none; color: var(--trace-muted); font: 11px/16px var(--trace-code-font); }
 .trace-badge {
   display: inline-flex;
   flex: none;
@@ -195,7 +156,7 @@
 .trace-tool-line { display: flex; gap: 6px; min-width: 0; }
 .trace-tool-name { min-width: 0; max-width: 40%; }
 .trace-inline-code { display: block; min-width: 0; max-width: 45%; color: var(--trace-secondary); font-size: 11px; }
-.trace-row-meta { display: flex; justify-content: flex-end; gap: 5px; }
+.trace-row-meta { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0 5px; max-width: 8rem; }
 .trace-more { margin: 8px; }
 
 .trace-details {
@@ -266,7 +227,7 @@
   background: currentColor;
   content: "";
 }
-/* 首行是 DSH 的请求检查标签，次行放 A.ai 已有的消息与工具入口。 */
+/* 请求详情优先放消息往来，窄面板仍可在两行内访问所有标签。 */
 .trace-tabs[data-request="true"] {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -439,7 +400,7 @@
 .trace-block { border-bottom: .5px solid var(--trace-line-soft); }
 .trace-block > summary { min-height: 28px; gap: 6px; padding: 4px 14px; color: var(--trace-secondary); }
 .trace-block > summary:hover { background: var(--trace-hover); }
-.trace-block > summary > :is(svg, code) { flex: none; }
+.trace-block > summary > :is(svg, code, span:first-of-type:not(.ellipsis)) { flex: none; }
 .trace-catalog > summary code { color: var(--trace-text); font-size: 12px; }
 .trace-catalog > summary span { color: var(--trace-muted); font-size: 12px; }
 .trace-attachments { display: grid; gap: 6px; margin: 8px 14px 14px; padding: 0; list-style: none; }
@@ -463,6 +424,22 @@
 .trace-stat-link:hover, .trace-stat-link:hover svg, .trace-stat-more { color: var(--trace-blue); }
 .trace-stat-muted { color: var(--trace-muted); }
 .trace-stat-more { margin: 0 22px 10px; font-size: 12px; }
+
+.subagent-form { display: grid; gap: 10px; margin: 0 14px 12px; max-width: 680px; }
+.subagent-form label { display: grid; gap: 4px; color: var(--trace-secondary); }
+.subagent-form .btn { justify-self: start; }
+.subagent-form summary { margin: 0 0 6px; cursor: pointer; }
+.subagent-form details label + label { margin-top: 6px; }
+.subagent-list > details { border-top: .5px solid var(--trace-line); }
+.subagent-list > details > summary { display: flex; align-items: flex-start; gap: 5px; padding: 7px 14px; list-style: none; cursor: pointer; overflow-wrap: anywhere; }
+.subagent-list > details > summary::-webkit-details-marker { display: none; }
+.subagent-list > details > summary > svg { flex: none; margin-top: 4px; color: var(--trace-caption); }
+.subagent-list > details[open] > summary > svg { transform: rotate(90deg); }
+.subagent-list > details > summary:hover { background: var(--trace-hover); }
+.subagent-list summary small { flex: none; margin-left: 3px; color: var(--trace-muted); }
+.subagent-result { padding-bottom: 8px; overflow-wrap: anywhere; }
+.subagent-result .btn { margin-left: 14px; }
+.subagent-result :is(ul, ol) { margin: 0 0 8px; padding: 0 14px 0 32px; }
 
 /* A.ai 的侧栏会占用宽度，按轨迹区域的实际宽度切换 DSH 的窄屏面板。 */
 @container (max-width: 760px) {

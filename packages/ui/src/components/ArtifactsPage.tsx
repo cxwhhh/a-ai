@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ArtifactMeta, Project } from "../../../protocol/src/lib/shared";
+import type { WorkspaceAppSummary } from "../../../protocol/src/workspace-app";
 import { api } from "../lib/client";
 import { AgentIcon, ICode, IDoc, IFolder, IGlobe, IMore, IPanelLeft, IPlus, ISearch, IX } from "./Icons";
 import "./ArtifactsPage.css";
@@ -299,15 +300,19 @@ function OfficeCreationCard({ onCreate }: { onCreate(text: string): void }) {
  */
 export function ArtifactsPage(props: {
   projects: Project[];
+  libraryVersion: number;
   leftOpen: boolean;
   modKey: string;
   onToggleLeft(): void;
   /** 打开产出物：artifactId 是面板里的产出物；file 是生成的文件（Word / Excel / PPT），按文件打开 */
   onOpen(sessionId: string, artifactId?: string, file?: string): void;
+  onOpenApp(app: WorkspaceAppSummary): void;
   /** 顶部创建卡片：新开一个对话，输入框里预先填好 text */
   onCreate(text: string): void;
 }) {
   const [list, setList] = useState<ArtifactMeta[] | null>(null);
+  const [apps, setApps] = useState<WorkspaceAppSummary[]>([]);
+  const [appsError, setAppsError] = useState("");
   const [err, setErr] = useState("");
   const [q, setQ] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
@@ -338,8 +343,20 @@ export function ArtifactsPage(props: {
   }, [rowMenu]);
 
   useEffect(() => {
-    api.artifacts().then(setList, (e) => setErr(e instanceof Error ? e.message : String(e)));
-  }, []);
+    const controller = new AbortController();
+    const { signal } = controller;
+    api.artifacts(signal).then((items) => {
+      if (!signal.aborted) { setList(items); setErr(""); }
+    }, (error) => {
+      if (!signal.aborted) setErr(error instanceof Error ? error.message : "无法读取产出物");
+    });
+    api.workspaceApps(signal).then((items) => {
+      if (!signal.aborted) { setApps(items); setAppsError(""); }
+    }, (error) => {
+      if (!signal.aborted) setAppsError(error instanceof Error ? error.message : "无法读取账号应用");
+    });
+    return () => controller.abort();
+  }, [props.libraryVersion]);
 
   const inProj = (a: ArtifactMeta) => !proj || (proj === "none" ? !a.projectId : proj === "any" ? !!a.projectId : a.projectId === proj);
   const shown = useMemo(() => {
@@ -359,6 +376,7 @@ export function ArtifactsPage(props: {
   }, [list]);
 
   const projName = (id?: string) => props.projects.find((p) => p.id === id)?.name;
+  const total = (list?.length ?? 0) + apps.length;
 
   return (
     <main className="chat arts">
@@ -374,9 +392,26 @@ export function ArtifactsPage(props: {
           {/* 标题（2026-10-29 重做）：大一号、加粗、字距收紧，右边灰色写总数；下面一行小字说明这页放的是什么 */}
           <div className="arts-top">
             <h1>产出物</h1>
-            {list && list.length > 0 && <span className="arts-total">{list.length} 个</span>}
+            {total > 0 && <span className="arts-total">{total} 个</span>}
           </div>
           <p className="arts-desc">对话里生成的网页、文档、代码和图表都收在这里</p>
+
+          {(apps.length > 0 || appsError) && (
+            <section aria-label="已部署应用">
+              <div className="arts-new-title">应用</div>
+              {appsError ? <p className="arts-desc" role="status">{appsError}</p> : (
+                <div className="arts-list">
+                  {apps.map((app) => (
+                    <button key={app.id} className="arts-row" onClick={() => props.onOpenApp(app)} type="button">
+                      <span className="arts-row-ico c-html"><IGlobe /></span>
+                      <span className="arts-row-title ellipsis">{app.title}</span>
+                      <span className="arts-when">更新于 {ago(app.updatedAt)}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </section>
+          )}
 
           <div className="arts-new-title">创建新内容</div>
           <div className="arts-cats">
@@ -470,7 +505,7 @@ export function ArtifactsPage(props: {
             <div className="arts-empty">读取中…</div>
           ) : !shown.length ? (
             <div className="arts-empty">
-              {list.length ? "没有符合条件的产出物。" : "还没有产出物。在对话里让 A.ai 做网页、写文档或代码，做好的成品会自动收集到这里。"}
+              {list.length ? "没有符合条件的产出物。" : apps.length ? "还没有文件产出物。" : "还没有产出物。在对话里让 A.ai 做网页、写文档或代码，做好的成品会自动收集到这里。"}
             </div>
             ) : view === "list" ? (
             // 列表视图：像 Finder 的列表，一行一个文件；表头固定，列 = 名称 / 类型 / 来源 / 创建时间

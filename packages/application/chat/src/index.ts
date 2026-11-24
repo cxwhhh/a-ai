@@ -1,4 +1,5 @@
 import type { Scheduler } from "../../../scheduler/src/index";
+import type { SubagentOrchestrator } from "../../../subagent/src/subagent";
 import { runAgent } from "../../../agent-loop/src/run";
 import { createConversationTrace } from "../../../conversation-trace/src/recorder";
 import { HistoryConflict, type AgentSessionService } from "../../../session/src/agent-session";
@@ -31,11 +32,12 @@ export async function submitChat(req: Request, userId: string, services: {
   agents: AgentRegistry;
   agentSessions: AgentSessionService;
   scheduler?: Scheduler;
+  subagents?: SubagentOrchestrator;
 }) {
   const registry = services.agents;
   const sessions = services.agentSessions;
   const scheduler = services.scheduler;
-  const body = ((await req.json().catch(() => null)) ?? {}) as { sessionId?: string; message?: string; truncateFrom?: string; projectId?: string; revision?: number; queuedId?: string; modelSelection?: unknown };
+  const body = ((await req.json().catch(() => null)) ?? {}) as { sessionId?: string; message?: string; truncateFrom?: string; projectId?: string; revision?: number; queuedId?: string; modelSelection?: unknown; multiAgent?: unknown };
   const text = typeof body.message === "string" ? body.message.trim() : "";
   if (body.sessionId !== undefined && typeof body.sessionId !== "string") return Response.json({ error: "无效的会话 ID" }, { status: 400 });
   if (body.queuedId !== undefined && (typeof body.queuedId !== "string" || !body.queuedId || !body.sessionId || text || body.truncateFrom)) {
@@ -46,6 +48,9 @@ export async function submitChat(req: Request, userId: string, services: {
     return Response.json({ error: "无效的会话版本" }, { status: 400 });
   const initialModel = body.modelSelection === undefined ? undefined : parseModelSelection(body.modelSelection, getSettings(userId));
   if (initialModel === null || (initialModel && body.sessionId)) return Response.json({ error: "无效的新会话模型选择" }, { status: 400 });
+  if (body.multiAgent !== undefined && (typeof body.multiAgent !== "boolean" || body.sessionId)) {
+    return Response.json({ error: "只能在新对话请求中指定多 Agent 模式" }, { status: 400 });
+  }
 
   // 指定会话时必须属于当前用户；过期或无权访问的请求不能悄悄创建另一个会话。
   // 同一个会话同一时间只能有一个 agent 在跑：两个运行同时往一个会话里写，消息顺序会乱，还可能互相覆盖文件（M1-03）
@@ -71,7 +76,7 @@ export async function submitChat(req: Request, userId: string, services: {
   }
   if (body.revision !== undefined && body.revision !== restored?.revision)
     return Response.json({ error: "会话已更新，请刷新后重试" }, { status: 409 });
-  const opened = await openChatAgent(sessions, registry, userId, restored, titleFrom(text), project?.id).catch((error) => {
+  const opened = await openChatAgent(sessions, registry, userId, restored, titleFrom(text), project?.id, !project && body.multiAgent === true).catch((error) => {
     if (error instanceof AgentUnavailable) return null;
     throw error;
   });
@@ -152,7 +157,7 @@ export async function submitChat(req: Request, userId: string, services: {
         let observing = false;
         for (;;) {
           const { session: s, message } = turn;
-          send({ type: "session", runId, session: { id: s.id, revision: s.revision, title: s.title, createdAt: s.createdAt, updatedAt: s.updatedAt, projectId: s.projectId, modelSelection: s.modelSelection } });
+          send({ type: "session", runId, session: { id: s.id, revision: s.revision, title: s.title, createdAt: s.createdAt, updatedAt: s.updatedAt, projectId: s.projectId, modelSelection: s.modelSelection, multiAgent: s.multiAgent } });
           send({ type: "message", message });
           if (!observing) {
             observing = true;
@@ -240,6 +245,8 @@ export async function submitChat(req: Request, userId: string, services: {
           disabledTools: { ...(await unavailableTools()), ...(settings.skills ? {} : { load_skill: "技能功能已在设置里关闭" }) },
           // 上下文长度决定什么时候压缩历史（见 src/lib/agent/context.ts）
           contextWindow: currentOption(settings).contextWindow,
+          subagents: services.subagents,
+          multiAgent: !!(project || s.multiAgent),
         })) {
           if (ev.type === "done") outcome = ev.interrupted ? "interrupted" : ev.awaitingUser ? "waiting-for-answer"
             : lastModelOutcome === "output-truncated" ? "output-truncated" : "completed";

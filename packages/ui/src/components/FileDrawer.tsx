@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
-import { Markdown } from "./Markdown";
+import { Markdown, type MarkdownTaskActions } from "./Markdown";
 import { IFile, IFolder } from "./Icons";
 import { SvgFrame } from "./SvgFrame";
 import { HlLines } from "./Code";
@@ -8,18 +8,20 @@ import "./FileDrawer.css";
 
 /**
  * 工作区文件的内容区：在右侧大视图里显示文件（带行号）或目录列表。
- * 数据来自 GET /api/files?path=…（与文件工具共用 safePath，读不到工作区之外）。
+ * 数据来自 GET /api/files?path=…，服务端按账号核对真实路径。
  * 文件名保留为 FileDrawer.tsx 是历史原因：最早它是一个独立弹窗。
  */
 
 export type FileRes =
   | { path: string; type: "dir"; items: { name: string; dir: boolean }[] }
-  | { path: string; type: "file"; size: number; mtime: number; binary: boolean; content: string; truncated: boolean; ext: string; preview?: string }
+  | { path: string; type: "file"; id?: string; revision?: string; size: number; mtime: number; binary: boolean; content: string; truncated: boolean; ext: string; preview?: string }
   | { path: string; error: string };
 
 export function useFile(path: string, refreshKey: unknown) {
   const [res, setRes] = useState<FileRes | null>(null);
+  const [generation, setGeneration] = useState(0);
   useEffect(() => {
+    if (!path) return;
     let alive = true;
     setRes(null);
     fetch(`/api/files?path=${encodeURIComponent(path)}`, { cache: "no-store" })
@@ -29,11 +31,11 @@ export function useFile(path: string, refreshKey: unknown) {
     return () => {
       alive = false;
     };
-  }, [path, refreshKey]);
-  return res;
+  }, [path, refreshKey, generation]);
+  return { res: path && res?.path === path ? res : null, setRes, reload: () => setGeneration((n) => n + 1) };
 }
 
-export function FileBody({ path, res, raw, onOpen }: { path: string; res: FileRes | null; raw: boolean; onOpen(p: string): void }) {
+export function FileBody({ path, res, raw, onOpen, tasks }: { path: string; res: FileRes | null; raw: boolean; onOpen(p: string): void; tasks?: MarkdownTaskActions }) {
   if (!res) return <div className="view-empty">读取中…</div>;
   if ("error" in res) return <div className="view-empty err">{res.error}</div>;
 
@@ -87,7 +89,7 @@ export function FileBody({ path, res, raw, onOpen }: { path: string; res: FileRe
   if ((res.ext === "md" || res.ext === "markdown") && !raw) {
     return (
       <div className="doc">
-        <Markdown text={res.content} />
+        <Markdown text={res.content} tasks={tasks} />
       </div>
     );
   }

@@ -1,8 +1,11 @@
 "use client";
-import type { AgentEvent, AgentQueueSnapshot, ArtifactMeta, Groups, Project, ProjectChat, Session, SessionMeta, Skill, ToolInfo, UserMemory } from "../../../protocol/src/lib/shared";
+import type { AgentEvent, AgentQueueSnapshot, ArtifactMeta, Groups, Project, ProjectChat, Session, SessionMeta, Skill, StoredMessage, ToolInfo, UserMemory } from "../../../protocol/src/lib/shared";
+import type { WorkspaceAppSummary } from "../../../protocol/src/workspace-app";
 import type { Settings, UsageStats } from "../../../protocol/src/lib/settings";
 import type { AgentLogEntry, AgentModelSelection } from "../../../protocol/src/agent-events";
 import type { SessionTrace, TraceRecordDetail } from "../../../conversation-trace/src/types";
+import type { RunningDelegation, SubagentThread, TaskRecord } from "../../../subagent/src/ownership-claim";
+import type { TaskContract } from "../../../subagent/src/task-contract";
 
 /**
  * 所有接口请求都走这里：收到 401（没登录或登录过期）就跳到登录页。
@@ -17,6 +20,7 @@ async function call(url: string, init?: RequestInit) {
   return r;
 }
 const json = { "Content-Type": "application/json" };
+const subagentUrl = (id: string) => `/api/sessions/${encodeURIComponent(id)}/agent/subagents`;
 
 export const api = {
   async archive(target: "session" | "project", id: string, archived: boolean) {
@@ -28,6 +32,10 @@ export const api = {
     const r = await call(`/api/sessions/${encodeURIComponent(id)}`, { method: "PATCH", headers: json, body: JSON.stringify({ modelSelection }) });
     if (!r.ok) throw new Error((await r.json().catch(() => ({})))?.error || "无法保存对话模型");
     return r.json();
+  },
+  async setMultiAgent(id: string, multiAgent: boolean) {
+    const r = await call(`/api/sessions/${encodeURIComponent(id)}`, { method: "PATCH", headers: json, body: JSON.stringify({ multiAgent }) });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({})))?.error || "无法保存多agent智能体模式");
   },
   async agentLog(sessionId?: string, before?: number, inputId?: string): Promise<AgentLogEntry[]> {
     const query = new URLSearchParams();
@@ -47,6 +55,44 @@ export const api = {
     const r = await call(`/api/sessions/${encodeURIComponent(id)}/agent/trace/${encodeURIComponent(recordId)}${compare ? "?compare=1" : ""}`, { signal });
     if (!r.ok) throw new Error(r.status === 404 ? "轨迹记录不存在" : "无法读取轨迹详情");
     return r.json();
+  },
+  async subagentTasks(id: string, signal: AbortSignal, before?: string): Promise<{ tasks: TaskRecord[]; nextBefore?: string }> {
+    const r = await call(subagentUrl(id) + (before ? `?before=${encodeURIComponent(before)}` : ""), { signal });
+    if (!r.ok) throw new Error("无法读取子任务");
+    return r.json();
+  },
+  async runningSubagents(id: string, runId: string, signal: AbortSignal): Promise<{ tasks: RunningDelegation[] }> {
+    const r = await call(`${subagentUrl(id)}?${new URLSearchParams({ runId })}`, { signal });
+    if (!r.ok) throw new Error("无法读取运行中的子 Agent");
+    return r.json();
+  },
+  async subagentThreads(id: string, signal: AbortSignal, before?: string, currentOnly = false): Promise<{ tasks: SubagentThread[]; nextBefore?: string }> {
+    const query = new URLSearchParams({ threads: currentOnly ? "active" : "1" });
+    if (before) query.set("before", before);
+    const r = await call(`${subagentUrl(id)}?${query}`, { signal });
+    if (!r.ok) throw new Error("无法读取子 Agent 线程");
+    return r.json();
+  },
+  async subagentConversation(id: string, taskId: string, signal: AbortSignal): Promise<{ task: TaskRecord }> {
+    const r = await call(`${subagentUrl(id)}?${new URLSearchParams({ taskId })}`, { signal });
+    if (!r.ok) throw new Error("无法读取子 Agent 对话");
+    return r.json();
+  },
+  async sendSubagentMessage(id: string, taskId: string, message: string): Promise<{ message: StoredMessage }> {
+    const r = await call(`${subagentUrl(id)}?${new URLSearchParams({ taskId })}`, { method: "POST", headers: json, body: JSON.stringify({ message }) });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error || "无法发送消息");
+    return data;
+  },
+  async submitSubagentTask(id: string, input: TaskContract | { retryTaskId: string }) {
+    const r = await call(subagentUrl(id), { method: "POST", headers: json, body: JSON.stringify(input) });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error || "无法提交子任务");
+    return data.task as TaskRecord;
+  },
+  async stopSubagentTask(id: string, taskId: string) {
+    const r = await call(`${subagentUrl(id)}?taskId=${encodeURIComponent(taskId)}`, { method: "DELETE" });
+    if (!r.ok) throw new Error("无法停止子任务");
   },
   async list(): Promise<SessionMeta[]> {
     return (await call("/api/sessions")).json();
@@ -110,8 +156,18 @@ export const api = {
     await call("/api/groups", { method: "PUT", headers: json, body: JSON.stringify(g) });
   },
   /** 全部产出物的概要（“产出物”页面） */
-  async artifacts(): Promise<ArtifactMeta[]> {
-    return (await call("/api/artifacts")).json();
+  async artifacts(signal?: AbortSignal, projectId?: string): Promise<ArtifactMeta[]> {
+    const query = projectId ? `?projectId=${encodeURIComponent(projectId)}` : "";
+    const response = await call(`/api/artifacts${query}`, { signal });
+    if (!response.ok) throw new Error("无法读取产出物");
+    return response.json();
+  },
+  async workspaceApps(signal?: AbortSignal, projectId?: string): Promise<WorkspaceAppSummary[]> {
+    const query = projectId ? `?projectId=${encodeURIComponent(projectId)}` : "";
+    const response = await call(`/api/workspace-apps${query}`, { signal });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "无法读取账号应用");
+    return result.apps;
   },
   /* ---------- 项目 ---------- */
   /** 项目页下面的对话列表 */
@@ -181,7 +237,7 @@ export const api = {
 
 /** 发送消息并逐个回调 AgentEvent；返回在 signal 中止或流结束时 resolve */
 export async function streamChat(
-  body: { sessionId?: string; message?: string; truncateFrom?: string; projectId?: string; revision?: number; queuedId?: string; modelSelection?: AgentModelSelection },
+  body: { sessionId?: string; message?: string; truncateFrom?: string; projectId?: string; revision?: number; queuedId?: string; modelSelection?: AgentModelSelection; multiAgent?: boolean },
   onEvent: (e: AgentEvent) => void,
   signal: AbortSignal,
 ) {

@@ -5,6 +5,7 @@ import { fileChanges, originalOf } from "../lib/diff";
 import { artifactExt, extOf, iconForExt, type View } from "../../../protocol/src/lib/outputs";
 import { KindIcon } from "./KindIcon";
 import { Markdown } from "./Markdown";
+import { WorkspaceAppCanvas } from "./WorkspaceAppCanvas";
 import { CodeLines, FileBody, fmtSize, useFile } from "./FileDrawer";
 import { SvgFrame } from "./SvgFrame";
 import { FileDiff, diffStat } from "./Code";
@@ -35,13 +36,19 @@ export function Canvas(props: {
   useEffect(() => setTab(changes.some((c) => !c.isNew) ? "diff" : "content"), [viewKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const artifact = view.type === "artifact" ? props.artifacts.find((a) => a.id === view.id) : undefined;
-  const fileRes = useFile(view.type === "file" ? view.path : "", view.type === "file" ? props.refreshKey : null);
-  const file = view.type === "file" && fileRes && "type" in fileRes ? fileRes : null;
+  // Markdown 产出的聊天快照还能用于回看，右侧可编辑视图以工作区文件为准。
+  const filePath = view.type === "file" ? view.path : artifact?.kind === "markdown" ? artifact.file ?? "" : "";
+  const { res: fileRes, setRes: setFileRes, reload } = useFile(filePath, props.refreshKey);
+  const file = fileRes && "type" in fileRes ? fileRes : null;
+  const [saving, setSaving] = useState(false);
+  const [taskError, setTaskError] = useState<{ id: string; text: string } | null>(null);
+  const taskFile = file?.type === "file" && file.id && file.revision ? file : undefined;
 
   // 统一出标题、类型、内容
   const title = artifact ? artifact.title : view.type === "file" ? (view.path === "." ? "工作区" : view.path) : "";
   const ext = artifact ? artifactExt(artifact) : view.type === "file" ? (file?.type === "dir" ? "dir" : extOf(view.path)) : "";
-  const content = artifact ? artifact.content : file?.type === "file" ? file.content : "";
+  const loadingMarkdown = artifact?.kind === "markdown" && Boolean(filePath) && !fileRes;
+  const content = loadingMarkdown ? "" : file?.type === "file" ? file.content : artifact?.content ?? "";
   // 整体改动：对话开始前 → 现在（现在的内容来自刚读到的文件）
   const original = useMemo(() => (changes.length && file?.type === "file" ? originalOf(file.content, changes) : ""), [changes, file]);
   const total = useMemo(() => (changes.length && file?.type === "file" ? diffStat(original, file.content) : { add: 0, del: 0 }), [changes, file, original]);
@@ -63,6 +70,39 @@ export function Canvas(props: {
     Object.assign(document.createElement("a"), { href: url, download: name }).click();
     URL.revokeObjectURL(url);
   };
+
+  const toggleTask = async (itemStart: number, checked: boolean) => {
+    const id = taskFile?.id;
+    if (!id || saving) return;
+    setSaving(true);
+    setTaskError(null);
+    try {
+      const response = await fetch("/api/files", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, revision: taskFile.revision, itemStart, checked }),
+      });
+      const result = await response.json();
+      if (response.status === 409) reload();
+      if (!response.ok) throw new Error(result.error || "保存失败");
+      setFileRes((current) => current && "type" in current && current.type === "file" &&
+        current.id === id && current.revision === taskFile.revision
+        ? { ...current, content: result.content, revision: result.revision, mtime: result.mtime, size: result.size }
+        : current);
+    } catch (error) {
+      setTaskError({ id, text: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setSaving(false);
+    }
+  };
+  const tasks = taskFile ? { toggle: toggleTask, disabled: saving } : undefined;
+  const markdownDownload = file?.type === "file" && file.id && /^(md|markdown)$/.test(ext)
+    ? `/api/files?download=1&id=${encodeURIComponent(file.id)}`
+    : undefined;
+
+  if (artifact?.workspaceApp) {
+    return <WorkspaceAppCanvas {...artifact.workspaceApp} title={artifact.title} onClose={props.onClose} />;
+  }
 
   return (
     <section className="viewer">
@@ -109,14 +149,16 @@ export function Canvas(props: {
             <IDownload />
           </a>
         )}
-        {content && (
+        {(content || markdownDownload) && (
           <>
             <button className="icon-btn" onClick={copy} title="复制">
               {copied ? <ICheck /> : <ICopy />}
             </button>
-            <button className="icon-btn" onClick={download} title="下载">
-              <IDownload />
-            </button>
+            {markdownDownload ? (
+              <a className="icon-btn" href={markdownDownload} download title="下载"><IDownload /></a>
+            ) : (
+              <button className="icon-btn" onClick={download} title="下载"><IDownload /></button>
+            )}
           </>
         )}
         <button className="icon-btn" onClick={props.onClose} title="关闭 Esc">
@@ -125,22 +167,25 @@ export function Canvas(props: {
       </div>
 
       <div className="viewer-body" key={JSON.stringify(view)}>
-        {artifact ? (
+        {taskError?.id === taskFile?.id && taskError && <div className="set-hint" role="status">{taskError.text}</div>}
+        {loadingMarkdown ? (
+          <div className="view-empty">读取中…</div>
+        ) : artifact ? (
           artifact.kind === "html" && !raw ? (
             <iframe className="frame" sandbox="allow-scripts allow-forms allow-modals" srcDoc={artifact.content} title={artifact.title} />
           ) : ext === "svg" && !raw ? (
             <SvgFrame svg={artifact.content} title={artifact.title} />
           ) : artifact.kind === "markdown" && !raw ? (
             <div className="doc">
-              <Markdown text={artifact.content} />
+              <Markdown text={content} tasks={tasks} />
             </div>
           ) : (
-            <CodeLines text={artifact.content} lang={artifact.language || ext} />
+            <CodeLines text={content} lang={artifact.language || ext} />
           )
         ) : view.type === "file" && tab === "diff" && changes.length ? (
           file?.type === "file" ? <FileDiff before={original} after={file.content} lang={view.path} /> : <div className="view-empty">读取中…</div>
         ) : view.type === "file" ? (
-          <FileBody path={view.path} res={fileRes} raw={raw} onOpen={props.onOpenFile} />
+          <FileBody path={view.path} res={fileRes} raw={raw} onOpen={props.onOpenFile} tasks={tasks} />
         ) : (
           <div className="view-empty">内容已不存在</div>
         )}

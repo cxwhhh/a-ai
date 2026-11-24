@@ -2,6 +2,7 @@
 
 import { useState, type ReactNode } from "react";
 import type { RequestMetrics, TraceRecordDetail, TraceRow } from "../../../conversation-trace/src/types";
+import { TURN_ENV_SUFFIX } from "../../../protocol/src/lib/message-tags";
 import { IChevron, IWrench } from "./Icons";
 import {
   TraceJson, TraceMarkdown, TraceMeta, TraceNotice, TraceSchema, TraceSection, TraceSource, TraceThinking,
@@ -9,7 +10,7 @@ import {
 } from "./TraceDetailContent";
 
 type RequestRecord = Extract<TraceRecordDetail, { kind: "request" }>;
-export const requestTabs = ["选项", "用量", "计时", "提示词", "请求消息", "工具清单", "助手输出"] as const;
+export const requestTabs = ["请求消息", "助手输出", "选项", "用量", "计时", "提示词", "工具清单"] as const;
 export type RequestTab = typeof requestTabs[number];
 const phaseNames = { chat: "主请求", compact: "历史压缩", research: "子 Agent" };
 const errorNames = { auth: "鉴权失败", "rate-limit": "限流", request: "请求错误", service: "提供方服务错误", other: "适配器异常" };
@@ -29,7 +30,7 @@ export function TraceRequestOptions({ record, preview }: { record: RequestRecord
     { label: "模型", value: <code>{adapter?.model ?? meta.model}</code> },
     { label: "选定强度", value: <code>{meta.effort}</code> },
     ...(adapter?.reasoningEffort ? [{ label: "适配器强度", value: <code>{adapter.reasoningEffort}</code> }] : []),
-    { label: "消息 / 工具", value: `${request.messages.length} / ${request.tools.length}` },
+    { label: "本次适配器消息 / 工具", value: `${record.context ? Object.values(record.context.messages).reduce((sum, count) => sum + count, 0) : request.messages.length} / ${request.tools.length}` },
   ];
   if (preview) return <TraceMeta rows={rows} />;
 
@@ -141,28 +142,44 @@ function RequestContext({ record, onOpen }: { record: RequestRecord; onOpen(id: 
 
 export function TraceRequestContent({ tab, record, row, onOpen }: { tab: RequestTab; record: RequestRecord; row: TraceRow; onOpen(id: string): void }) {
   const { request, response } = record;
-  if (tab === "选项") return <TraceRequestOptions record={record} />;
+  if (tab === "选项") return <><TraceRequestOptions record={record} /><RequestContext record={record} onOpen={onOpen} /></>;
   if (tab === "用量") return <TraceRequestUsage response={response} />;
   if (tab === "计时") return <TraceRequestTiming record={record} row={row} />;
   if (tab === "提示词") {
-    const system = request.messages.filter((message) => message.role === "system");
-    return system.length ? system.map((message, index) => <div key={index}>
-      <TraceMarkdown text={message.content} />
-      <RequestDisclosure title="提示词原文"><TraceSource text={message.content} label="系统提示词" /></RequestDisclosure>
+    const prompts = record.prompts ?? [];
+    return prompts.length ? prompts.map((prompt, index) => <div key={index}>
+      <TraceMarkdown text={prompt} />
+      <RequestDisclosure title="提示词原文"><TraceSource text={prompt} label="系统提示词" /></RequestDisclosure>
     </div>) : <TraceNotice>本次请求没有系统消息</TraceNotice>;
   }
-  if (tab === "请求消息") return <>
-    <RequestContext record={record} onOpen={onOpen} />
-    <RequestDisclosure title="原始消息 JSON"><TraceJson value={request.messages} label="请求消息 JSON" /></RequestDisclosure>
-    {request.messages.map((message, index) => <RequestDisclosure key={index}
-      title={<><code>{index + 1}. {message.role}</code>{message.toolCallId && <span className="ellipsis">{message.toolCallId}</span>}</>}>
-      {message.reasoning && <TraceThinking text={message.reasoning} />}
-      {message.content && <TraceMarkdown text={message.content} />}
-      {message.toolCalls?.map((call) => <TraceSection key={call.id} title={`${call.name} · ${call.id}`}>
-        <TraceToolArguments raw={call.arguments} tool={call.name} />
-      </TraceSection>)}
-    </RequestDisclosure>)}
-  </>;
+  if (tab === "请求消息") {
+    const messages = request.messages;
+    const research = row.requestPhase === "research";
+    if (!messages.length) return <TraceNotice>{row.requestPhase === "compact" ? "这是历史压缩请求，本轮没有对话消息。" : "本次请求没有可展示的当前对话消息。"}</TraceNotice>;
+    const roles = { system: "系统", user: research ? "子任务输入" : "本轮输入", assistant: "模型回复", tool: "工具返回" };
+    return <>
+      {messages.map((message, index) => {
+        const label = message.role === "user" && index > 0 ? "补充输入" : roles[message.role];
+        const content = <>
+          {message.reasoning && <TraceThinking text={message.reasoning} />}
+          {message.content && <TraceMarkdown text={message.content} />}
+          {message.toolCalls?.map((call) => <TraceSection key={call.id} title={call.name}>
+            <TraceToolArguments raw={call.arguments} tool={call.name} />
+          </TraceSection>)}
+        </>;
+        if (index === 0 && message.role === "user") {
+          const environment = research ? undefined : message.content.match(TURN_ENV_SUFFIX)?.[0];
+          return <div key={index}>
+            <TraceSection title={label}>{environment ? <TraceMarkdown text={message.content.slice(0, -environment.length)} /> : content}</TraceSection>
+            {environment && <RequestDisclosure title="本轮运行环境"><TraceSource text={environment.trim()} label="本轮运行环境" /></RequestDisclosure>}
+          </div>;
+        }
+        const summary = message.toolCalls?.map((call) => call.name).join("、") || message.content.slice(0, 160).trim() || message.toolCallId;
+        return <RequestDisclosure key={index} title={<><span>{label}</span>{summary && <span className="ellipsis">{summary}</span>}</>}>{content}</RequestDisclosure>;
+      })}
+      <RequestDisclosure title="当前消息 JSON"><TraceJson value={messages} label="当前请求消息 JSON" /></RequestDisclosure>
+    </>;
+  }
   if (tab === "工具清单") {
     return request.tools.length ? request.tools.map((tool) => <RequestDisclosure key={tool.name} catalog
       title={<><IWrench width={12} height={12} /><code>{tool.name}</code><span className="ellipsis">{tool.description}</span></>}>

@@ -1,4 +1,4 @@
-import type { Artifact, StoredMessage } from "./shared";
+import { toolStatus, type Artifact, type StoredMessage } from "./shared";
 import { isSvg } from "../../../ui/src/lib/svg";
 
 /**
@@ -64,31 +64,83 @@ export function collectOutputs(messages: StoredMessage[], artifacts: Artifact[])
   const outputs: OutputItem[] = [];
   const used: UsedItem[] = [];
   const seen = new Set<string>();
+  const byId = new Map(artifacts.map((a) => [a.id, a]));
+  const apps = new Set<string>();
+  const duplicate = new Set<string>();
+  const latestFileCall = new Map<string, string>();
+  const backingFiles = new Set(artifacts.flatMap((a) => a.file ? [a.file] : []));
 
-  // 产出物
-  for (const a of artifacts) {
+  // 同一轮成功部署网页后，临时预览和内容完全相同的 HTML 源文件共用应用入口。
+  // 以真实用户消息分轮，别的轮次或会话里的独立网页仍可打开。
+  const publishedTitles = new Set<string>();
+  const publishedHtml = new Set<string>();
+  const deliveredHtml = new Set<string>();
+  const previews: { key: string; title: string; html: string }[] = [];
+  const htmlWrites: { callId: string; html: string }[] = [];
+  const duplicateFileCalls = new Set<string>();
+  function finishRound() {
+    for (const preview of previews) {
+      if (publishedTitles.has(preview.title) || (preview.html && publishedHtml.has(preview.html))) duplicate.add(preview.key);
+    }
+    for (const write of htmlWrites) if (write.html && deliveredHtml.has(write.html)) duplicateFileCalls.add(write.callId);
+    publishedTitles.clear();
+    publishedHtml.clear();
+    deliveredHtml.clear();
+    previews.length = 0;
+    htmlWrites.length = 0;
+  }
+
+  // 一个应用被多次更新时，列表只留最新入口，旧消息仍能按原引用打开。
+  for (const a of [...artifacts].reverse()) {
+    if (a.workspaceApp) {
+      if (apps.has(a.workspaceApp.id)) continue;
+      apps.add(a.workspaceApp.id);
+    }
     const ext = artifactExt(a);
     outputs.push({ key: "a:" + a.id, name: a.title, ext, icon: iconForExt(ext), view: { type: "artifact", id: a.id }, ts: a.createdAt });
   }
 
   // 工具调用：写入的文件算“输出”，读取 / 目录 / 网页算“已使用”
   for (const m of messages) {
+    if (m.role === "user" && !m.feedback) finishRound();
     for (const c of m.toolCalls ?? []) {
       const r = results.get(c.id);
-      if (!r || r.isError) continue;
+      if (!r || toolStatus(r) !== "ok") continue;
       let args: Record<string, unknown> = {};
       try {
         args = JSON.parse(c.arguments || "{}");
       } catch {
         continue;
       }
-      const path = String(args.path ?? "");
+      let path = String(args.path ?? "");
+      const artifact = r.artifactId ? byId.get(r.artifactId) : undefined;
+      const title = artifact?.title.trim();
+      if (c.name === "deploy_app" && artifact?.workspaceApp && title) {
+        const html = String(args.html ?? "").trim();
+        publishedTitles.add(title);
+        publishedHtml.add(html);
+        deliveredHtml.add(html);
+      }
+      if (c.name === "create_artifact" && artifact?.kind === "html" && !artifact.workspaceApp && title) {
+        const html = String(args.content ?? "").trim();
+        previews.push({ key: "a:" + artifact.id, title, html });
+        deliveredHtml.add(html);
+      }
       // 写入或修改过的文件都算“输出”，点开能看改动；write_document 生成的 Word / Excel / PPT 也算（以前漏了，生成了却不在“输出”里）
       if ((c.name === "write_file" || c.name === "edit_file" || c.name === "write_document") && path) {
+        // 优先用工具实际写入的工作区路径，兼容 /workspace/ 前缀或 ./ 等不同写法。
+        try {
+          const written = JSON.parse(r.content)?.path;
+          if (typeof written === "string" && written) path = written;
+        } catch { /* 旧工具结果可能是纯文本 */ }
         const k = "f:" + path;
+        latestFileCall.set(k, c.id);
         const i = outputs.findIndex((o) => o.key === k);
         if (i >= 0) outputs.splice(i, 1); // 同一文件写多次只保留最新一次
         const ext = extOf(path);
+        if (c.name === "write_file" && (ext === "html" || ext === "htm")) {
+          htmlWrites.push({ callId: c.id, html: String(args.content ?? "").trim() });
+        }
         outputs.push({ key: k, name: path, ext: ext || "file", icon: iconForExt(ext), view: { type: "file", path }, ts: r.createdAt });
       } else if (c.name === "read_file" && path && !seen.has("r:" + path)) {
         seen.add("r:" + path);
@@ -109,7 +161,13 @@ export function collectOutputs(messages: StoredMessage[], artifacts: Artifact[])
       }
     }
   }
+  finishRound();
 
   // 产出物和文件按时间混排：后产生的在前
-  return { outputs: outputs.sort((a, b) => b.ts - a.ts), used };
+  return {
+    outputs: outputs.filter((o) => !duplicate.has(o.key) && !duplicateFileCalls.has(latestFileCall.get(o.key) ?? "")
+      && (o.view.type !== "file" || !backingFiles.has(o.view.path)))
+      .sort((a, b) => b.ts - a.ts),
+    used,
+  };
 }

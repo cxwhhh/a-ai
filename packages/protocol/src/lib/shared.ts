@@ -17,6 +17,8 @@ export interface Artifact {
   createdAt: number;
   /** 同时保存到工作区的文件路径（例：output/周报模板.html）。2026-10-29 以前的产出物没有 */
   file?: string;
+  /** 已部署应用的入口，产出卡引用它，应用源码和记录保存在账号工作区。 */
+  workspaceApp?: { id: string; revision: number };
 }
 
 /** “产出物”页面用：一个产出物的概要（不带全文，全文太大），加上它来自哪个对话、哪个项目 */
@@ -51,6 +53,8 @@ export interface StoredMessage extends ChatMessage {
   usage?: Usage;
   /** role=tool 时，若该工具生成了产出物，记录其 id，便于中栏点击打开 */
   artifactId?: string;
+  /** 大型工具结果的可回读信息。正文仍在这条消息上，请求视图只发送消息 ID。 */
+  toolResult?: { name: string; fields: Record<string, string | number | boolean | null | string[]> };
   /**
    * role=tool 时：工具没能正常执行（参数不对、抛错、被拦截、被跳过）。
    * 发给模型的内容不变；CallGuard 靠它拦“同样的调用失败两次”。
@@ -145,6 +149,8 @@ export interface Skill {
 }
 
 export interface SessionMeta {
+  /** 普通对话的选择；项目会话由服务端自动启用协作。旧会话默认关闭。 */
+  multiAgent?: boolean;
   /** 自身归档时间；项目归档状态由所属项目决定。 */
   archivedAt?: number;
   modelSelection?: AgentModelSelection;
@@ -193,6 +199,8 @@ export interface ProjectChat {
 export interface Session extends SessionMeta {
   messages: StoredMessage[];
   artifacts: Artifact[];
+  /** 服务端读取会话时核验的失效产出入口。原消息和快照仍可以回看。 */
+  unavailableOutputKeys?: string[];
 }
 
 /**

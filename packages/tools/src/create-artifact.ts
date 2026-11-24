@@ -17,6 +17,8 @@ export const createArtifact: Tool<Args> = {
     description:
       "把一份完整的成品展示在用户右侧面板，返回产出 id。" +
       "适合：用户会保存、复用或继续修改的内容（网页、文档、报告、代码文件、表格），不要直接贴在对话里。修改已有成品时，重新调用并给出完整的新内容。SVG 图形或动画用 kind=code、language=svg，content 是完整的 <svg> 代码，右侧会直接显示成图。" +
+      "需要在右侧填写表单并把数据保存到账号、从其他设备继续使用时，调用 deploy_app。" +
+      "计划书的可勾选事项用 Markdown 的 - [ ] / - [x]。继续维护已保存的计划时，先用 read_file 读取它的工作区路径，再用 edit_file 修改所需内容，保留用户目前的任务状态。" +
       "不要用于：简短答案和一两行代码（直接在对话里回答）；要保存到工作区某个路径、或后面的脚本要用的文件（用 write_file）；图片文件（用 run_python 生成 png 后告诉用户路径）。",
     parameters: {
       type: "object",

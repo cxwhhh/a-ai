@@ -1,0 +1,25 @@
+.account-row { display: flex; align-items: center; gap: 4px; }
+.account-row > .user-btn { flex: 1; min-width: 0; }
+
+.account-update.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: auto;
+  min-width: 32px;
+  gap: 4px;
+  padding: 0 7px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.account-update.available {
+  color: var(--ok);
+  background: color-mix(in srgb, var(--ok) 11%, transparent);
+}
+.account-update.available:hover {
+  color: var(--ok);
+  background: color-mix(in srgb, var(--ok) 18%, transparent);
+}
+.account-update.error { color: var(--danger); }

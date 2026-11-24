@@ -2,6 +2,7 @@ import type { ToolSpec } from "../../llm/src/types";
 import type { Tool } from "./types";
 import { calculator } from "../../tools/src/calculator";
 import { createArtifact } from "../../tools/src/create-artifact";
+import { deployApp, inspectApp } from "../../tools/src/deploy-app";
 import { currentTime } from "../../tools/src/current-time";
 import { editFile, listFiles, readFile, writeFile } from "../../tools/src/files";
 import { runCommand } from "../../tools/src/run-command";
@@ -20,6 +21,8 @@ import { makeChart } from "../../tools/src/make-chart";
 import { archive } from "../../tools/src/archive";
 import { httpRequest } from "../../tools/src/http-request";
 import { remember } from "../../tools/src/remember";
+import { readSavedToolResult } from "../../tools/src/read-tool-result";
+import { readSavedHistoryExecution, searchSavedHistory } from "../../tools/src/history";
 import { makeLoadTools } from "./load-tools";
 import { prepare } from "./validate";
 import type { StoredMessage } from "../../protocol/src/lib/shared";
@@ -52,13 +55,14 @@ const RAW: Tool<any>[] = [
   // 文件：找 → 读 → 改 → 整理
   listFiles, glob, grep, readFile, readDocument, editFile, writeFile, fileOp, archive,
   // 数据：查询 → 画图
-  queryData, makeChart,
+  queryData, makeChart, readSavedToolResult,
+  searchSavedHistory, readSavedHistoryExecution,
   // 执行
   runCommand, runPython, calculator, currentTime,
   // 联网
   webSearch, webFetch, downloadFile, httpRequest,
   // 交付
-  createArtifact, writeDocument,
+  createArtifact, deployApp, inspectApp, writeDocument,
   // 和用户互动：不清楚就问；要求记住的事记下来
   askUser, remember,
   // 经验：按需读取学会的技能

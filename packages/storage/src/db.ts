@@ -2,6 +2,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { migrateAgentLogTable } from "./log-schema";
+import { migrateHistoryIndex } from "./history-index";
 
 /**
  * 数据库：SQLite，整个库就是一个文件 .data/a.db。
@@ -51,6 +52,14 @@ CREATE TABLE IF NOT EXISTS projects (
 );
 CREATE INDEX IF NOT EXISTS projects_user ON projects(user_id, created_at);
 
+-- 工作区文件的索引。正文继续存在用户目录，避免下载、预览和 Agent 各有一份可编辑正文。
+CREATE TABLE IF NOT EXISTS workspace_files (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  relative_path TEXT NOT NULL,
+  UNIQUE (user_id, relative_path)
+);
+
 -- 项目自己的记忆（项目设置里选了“项目独立记忆”时用），格式和 memories 一样。删项目时一起删
 CREATE TABLE IF NOT EXISTS project_memories (
   project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
@@ -67,6 +76,30 @@ CREATE TABLE IF NOT EXISTS sessions (
   updated_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS sessions_user ON sessions(user_id, updated_at DESC);
+
+-- 子任务状态归属会话。重试单独留痕，删除会话时一起清理。
+CREATE TABLE IF NOT EXISTS subagent_tasks (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  run_id TEXT NOT NULL,
+  input_id TEXT NOT NULL,
+  parent_call_id TEXT,
+  retry_of TEXT REFERENCES subagent_tasks(id) ON DELETE SET NULL,
+  dedupe_key TEXT NOT NULL,
+  fingerprint TEXT NOT NULL,
+  executor TEXT NOT NULL,
+  role TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('queued','running','completed','partial','blocked','failed','timed-out','cancelled','interrupted')),
+  contract TEXT NOT NULL,
+  limits TEXT NOT NULL,
+  snapshot TEXT NOT NULL,
+  result TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  UNIQUE (session_id, dedupe_key)
+) STRICT;
+CREATE INDEX IF NOT EXISTS subagent_tasks_session ON subagent_tasks(session_id, created_at);
+CREATE INDEX IF NOT EXISTS subagent_tasks_retry ON subagent_tasks(session_id, retry_of) WHERE retry_of IS NOT NULL;
 
 -- 一个会话可以启用多个由 Host 注册的 Agent 插件。
 CREATE TABLE IF NOT EXISTS agent_plugin_selection (
@@ -198,6 +231,7 @@ function migrate(d: DatabaseSync) {
     if (!has("sessions", "group_sort")) d.exec("ALTER TABLE sessions ADD COLUMN group_sort INTEGER");
     // 内容版本用于拒绝过期写入，与标题、分组等展示设置分开。
     if (!has("sessions", "history_revision")) d.exec("ALTER TABLE sessions ADD COLUMN history_revision INTEGER NOT NULL DEFAULT 0");
+    if (!has("sessions", "multi_agent")) d.exec("ALTER TABLE sessions ADD COLUMN multi_agent INTEGER NOT NULL DEFAULT 0 CHECK(multi_agent IN (0,1))");
     for (const table of ["sessions", "projects"]) {
       if (!has(table, "archived_at")) d.exec(`ALTER TABLE ${table} ADD COLUMN archived_at INTEGER`);
     }
@@ -241,6 +275,7 @@ function migrate(d: DatabaseSync) {
       if (!has(table, "superseded_by")) d.exec(`ALTER TABLE ${table} ADD COLUMN superseded_by TEXT`);
       d.exec(`CREATE INDEX IF NOT EXISTS ${table}_active ON ${table}(session_id) WHERE superseded_by IS NULL`);
     }
+    migrateHistoryIndex(d);
     // 每次截断一条修订记录：cut_message_id 是重新开始的位置，created_at 是变更时间。
     // message_ids / artifact_ids 保存变更前有效视图的完整 ID 清单（消息按原顺序）。
     // 它们只是正文的引用，不是正文副本；会话彻底删除时，这些记录也随外键一起清理。

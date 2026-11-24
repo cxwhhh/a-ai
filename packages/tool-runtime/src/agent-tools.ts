@@ -13,8 +13,8 @@ export class AgentTools extends Service implements ToolRegistry {
 
   register<Args>(tool: Tool<Args>): () => void | Promise<void> {
     const { name } = tool.spec;
-    // research 由 Agent Loop 单独分发，也占用一个内置名称。
-    if (name === "research" || this.base.findTool(name) || this.local.has(name)) {
+    // 子任务工具由 Agent Loop 单独分发，保留其名称。
+    if (name === "research" || name === "delegate_tasks" || this.base.findTool(name) || this.local.has(name)) {
       throw new Error(`工具名称已注册：${name}`);
     }
     const entry = prepare({ ...tool, spec: structuredClone(tool.spec) });

@@ -1,5 +1,6 @@
 import type { Artifact, ArtifactMeta, Session, SessionMeta, StoredMessage } from "../../protocol/src/lib/shared";
 import { db, newId, tx } from "./db";
+import { indexHistoryMessage } from "./history-index";
 import { recordAgentLog } from "../../session/src/log";
 import type { ReasoningEffort } from "../../protocol/src/agent-events";
 
@@ -22,12 +23,13 @@ const toMeta = (r: Row): SessionMeta => ({
   ...(r.archived_at != null ? { archivedAt: Number(r.archived_at) } : {}),
   ...(r.model ? { modelSelection: { model: String(r.model), effort: r.effort as ReasoningEffort } } : {}),
   ...(r.project_id ? { projectId: r.project_id as string } : {}),
+  ...(r.multi_agent === 1 ? { multiAgent: true } : {}),
 });
 
 export function listSessions(userId: string): SessionMeta[] {
   // has_files：有产出物，或者有一条 assistant 消息调用过 write_file（消息存的是 JSON，用 LIKE 粗查即可）
   return db().prepare(
-    `SELECT s.id, s.title, s.created_at, s.updated_at, s.project_id, s.archived_at, s.history_revision,
+    `SELECT s.id, s.title, s.created_at, s.updated_at, s.project_id, s.archived_at, s.history_revision, s.multi_agent,
        EXISTS(SELECT 1 FROM artifacts a WHERE a.session_id = s.id AND a.superseded_by IS NULL)
        OR EXISTS(SELECT 1 FROM messages m WHERE m.session_id = s.id AND m.superseded_by IS NULL AND m.role = 'assistant' AND m.data LIKE '%"name":"write_file"%') AS has_files
      FROM sessions s WHERE user_id = ? ORDER BY updated_at DESC`,
@@ -51,18 +53,24 @@ export function getSession(id: string, userId: string): Session | null {
 }
 
 /** projectId 要先确认是这个用户自己的项目（见 api/chat 里的 getProject），这里不再检查 */
-export function createSession(userId: string, title = "新对话", projectId?: string): Session {
+export function createSession(userId: string, title = "新对话", projectId?: string, multiAgent = false): Session {
   const now = Date.now();
-  const s: Session = { id: newId("s"), revision: 0, title, createdAt: now, updatedAt: now, messages: [], artifacts: [], ...(projectId ? { projectId } : {}) };
-  db().prepare("INSERT INTO sessions (id, user_id, title, created_at, updated_at, project_id) VALUES (?, ?, ?, ?, ?, ?)").run(s.id, userId, title, now, now, projectId ?? null);
+  const s: Session = { id: newId("s"), revision: 0, title, createdAt: now, updatedAt: now, messages: [], artifacts: [], ...(projectId ? { projectId } : {}), ...(multiAgent ? { multiAgent } : {}) };
+  db().prepare("INSERT INTO sessions (id, user_id, title, created_at, updated_at, project_id, multi_agent) VALUES (?, ?, ?, ?, ?, ?, ?)")
+    .run(s.id, userId, title, now, now, projectId ?? null, Number(multiAgent));
   return s;
+}
+
+/** 只改普通对话的偏好，项目会话的协作由项目归属决定。 */
+export function setMultiAgent(id: string, userId: string, enabled: boolean): boolean {
+  return db().prepare("UPDATE sessions SET multi_agent=? WHERE id=? AND user_id=? AND project_id IS NULL").run(Number(enabled), id, userId).changes > 0;
 }
 
 export function renameSession(id: string, userId: string, title: string): SessionMeta | null {
   const now = Date.now();
   const r = db().prepare("UPDATE sessions SET title = ?, updated_at = ? WHERE id = ? AND user_id = ?").run(title, now, id, userId);
   if (!r.changes) return null;
-  return toMeta(db().prepare("SELECT id, title, created_at, updated_at, project_id FROM sessions WHERE id = ?").get(id)!);
+  return toMeta(db().prepare("SELECT id, title, created_at, updated_at, project_id, multi_agent FROM sessions WHERE id = ?").get(id)!);
 }
 
 /** 删除会话；消息和产出物通过 ON DELETE CASCADE 一起删掉 */
@@ -86,6 +94,7 @@ export function addMessage(s: Session, m: StoredMessage) {
     db().prepare("INSERT INTO messages (id, session_id, seq, role, created_at, data) VALUES (?, ?, ?, ?, ?, ?)").run(
       m.id, s.id, seq, m.role, m.createdAt, JSON.stringify(clean),
     );
+    indexHistoryMessage(db(), s.id, seq, clean);
     db().prepare("UPDATE sessions SET updated_at = ? WHERE id = ?").run(now, s.id);
   });
   // 数据库提交成功后才更新内存；写入失败时，页面不能多出一条实际没有保存的消息。
@@ -142,6 +151,8 @@ export function truncateFrom(s: Session, messageId: string, reason: "edit" | "re
           detail: { revision, reason, cutMessageId: messageId, preview: m.content.slice(0, 400) } });
       }
     }
+    db().prepare(`DELETE FROM history_segments WHERE session_id=? AND input_id IN
+      (SELECT id FROM messages WHERE session_id=? AND superseded_by=?)`).run(s.id, s.id, revision);
     const markArtifact = db().prepare("UPDATE artifacts SET superseded_by = ? WHERE session_id = ? AND id = ? AND superseded_by IS NULL");
     for (const a of artifacts) markArtifact.run(revision, s.id, a.id);
     db().prepare("UPDATE sessions SET updated_at = ? WHERE id = ?").run(now, s.id);
@@ -225,18 +236,23 @@ export function allSessions(userId: string): Session[] {
 }
 
 /**
- * 全部产出物的概要（“产出物”页面用），最新的在前，最多 500 个。
+ * 生成文件和普通产出物的概要，最新的在前，最多 500 个。
+ * 已部署应用在账号应用目录列出。会话产出的引用仅供原对话打开，避免列表出现空白的重复卡片。
  * 和对话一样只查这个用户自己的：JOIN sessions 带上 user_id 条件。
  * 不返回全文：网页、代码可能很长，列表只要标题和开头一小段；点开时再按对话加载全文。
  */
-export function listArtifacts(userId: string): ArtifactMeta[] {
+export function listArtifacts(userId: string, projectId?: string): (ArtifactMeta & { backingFile?: string; hasWorkspaceApp: boolean })[] {
   return db()
     .prepare(
-      `SELECT a.data, a.session_id, s.title AS session_title, s.project_id
+      `SELECT a.data, a.session_id, s.title AS session_title, s.project_id,
+       EXISTS(SELECT 1 FROM artifacts app WHERE app.session_id = s.id AND app.superseded_by IS NULL
+         AND json_extract(app.data, '$.workspaceApp') IS NOT NULL) AS has_app
        FROM artifacts a JOIN sessions s ON s.id = a.session_id
-       WHERE s.user_id = ? AND a.superseded_by IS NULL ORDER BY a.created_at DESC LIMIT 500`,
+       WHERE s.user_id = ? AND a.superseded_by IS NULL AND json_extract(a.data, '$.workspaceApp') IS NULL
+         ${projectId ? "AND s.project_id = ?" : ""}
+       ORDER BY a.created_at DESC LIMIT 500`,
     )
-    .all(userId)
+    .all(...(projectId ? [userId, projectId] : [userId]))
     .map((r) => {
       const a = JSON.parse(r.data as string) as Artifact;
       const isSvg = a.kind === "code" && /^\s*(<\?xml[^>]*>\s*)?<svg[\s>]/i.test(a.content) && a.content.length < 60_000;
@@ -251,6 +267,8 @@ export function listArtifacts(userId: string): ArtifactMeta[] {
         ...(r.project_id ? { projectId: r.project_id as string } : {}),
         snippet: snippetOf(a),
         size: a.content.length,
+        hasWorkspaceApp: Boolean(r.has_app),
+        ...(a.file ? { backingFile: a.file } : {}),
         ...(isSvg ? { svg: a.content } : {}),
       };
     });

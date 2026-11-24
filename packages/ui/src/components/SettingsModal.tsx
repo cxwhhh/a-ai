@@ -8,6 +8,7 @@ import { Connections } from "./Connections";
 import { SandboxPane } from "./SandboxPane";
 import { SkillsPane } from "./SkillsPane";
 import { IChart, IChip, IGear, IInfo, IKeyboard, ISpark, ITerminal, IMemory, IX } from "./Icons";
+import "./ChartContrast.css";
 
 const TABS: { id: SettingsTab; label: string; icon: React.ReactNode }[] = [
   { id: "general", label: "通用", icon: <IGear /> },

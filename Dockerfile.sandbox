@@ -1,7 +1,13 @@
 # A.ai 的命令沙箱镜像：run_command / run_python 在用这个镜像创建的容器里执行（A_SANDBOX=docker 时）。
 # 构建：docker build -f Dockerfile.sandbox -t a-ai-sandbox:latest .   （docker compose up --build 会自动构建）
 # 里面放“查文件、读文件”常用的工具：ripgrep、fd、jq、pdftotext、file、unzip、git，以及处理 Excel/Word/PDF 的 Python 库。
+FROM node:22-bookworm-slim AS app-runtime
 FROM python:3.12-slim-bookworm
+
+# 账号应用由固定运行器读写工作区中的部署和数据。运行器放在容器的只读系统目录。
+COPY --from=app-runtime /usr/local/bin/node /usr/local/bin/node
+COPY packages/protocol/src/workspace-app.ts /opt/a-ai/packages/protocol/src/workspace-app.ts
+COPY packages/workspace/src/app-runtime.ts packages/workspace/src/app-worker.ts /opt/a-ai/packages/workspace/src/
 
 # 软件源走 https（443 端口），不走 http（80 端口）：有的公司网络 / 服务器只放行 443，http 会连接超时。
 # python 官方镜像自带 ca-certificates，所以一开始就能用 https。

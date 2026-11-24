@@ -47,11 +47,18 @@ export class MockProvider implements LLMProvider {
       yield { type: "done", finishReason: "stop", usage: { estimated: true, inputTokens: estimateTokens(msgs.map((m) => m.content).join("")), outputTokens: estimateTokens(out) } };
       return;
     }
-    // 上下文压缩的请求（src/lib/agent/context.ts 的 COMPACT_TAG）：把用户说过的话列成摘要
+    // 用和正式摘要一样的 JSON 形状，演示时也经过结构校验。
     if (msgs[0]?.content.startsWith("[A.ai:compact]")) {
       await sleep(200, signal);
-      const asks = (msgs[1]?.content ?? "").split("\n").filter((l) => l.startsWith("[用户]")).map((l) => "- " + l.slice(4).trim().slice(0, 80));
-      const out = `### 用户的要求\n${asks.join("\n") || "- （无）"}\n\n### 进展\n- Mock 模型的演示摘要：真实模型会在这里总结已完成的事、改过的文件和待办。`;
+      const asks = (msgs[1]?.content ?? "").split("\n").filter((line) => line.startsWith("[用户]"))
+        .map((line) => line.replace(/^\[用户\] \([^)]*\)\s*/, "").slice(0, 80));
+      const out = JSON.stringify({
+        goal: asks[0] || "继续当前对话",
+        constraints: asks.slice(1, 9),
+        confirmed: [],
+        progress: [],
+        pending: [],
+      });
       yield { type: "text", delta: out };
       yield { type: "done", finishReason: "stop", usage: { estimated: true, inputTokens: estimateTokens(msgs.map((m) => m.content).join("")), outputTokens: estimateTokens(out) } };
       return;
@@ -132,8 +139,9 @@ export class MockProvider implements LLMProvider {
       const c = call(s.tool, s.args(results));
       yield* stream("reasoning", thought, signal);
       if (s.say) yield* stream("text", s.say, signal);
-      // 像真实模型一样，先把工具参数一点点“写”出来（界面上能看到代码在增长），再给出完整的调用
-      for (const part of c.arguments.match(/[\s\S]{1,3}/g) ?? []) {
+      // 像真实模型一样逐段输出。应用源码较长，演示时按更大的片段发送。
+      const chunks = c.arguments.match(c.name === "deploy_app" ? /[\s\S]{1,96}/g : /[\s\S]{1,3}/g) ?? [];
+      for (const part of chunks) {
         if (signal?.aborted) return;
         await sleep(25, signal);
         yield { type: "tool_call_delta", index: 0, name: c.name, delta: part };
@@ -162,6 +170,12 @@ interface Step {
 
 function makePlan(text: string): Step[] {
   const t = text.toLowerCase();
+
+  if (/(饮食记录|记录.{0,10}饮食|food log|meal tracker)/.test(t) &&
+      /(做|创建|生成|部署|网页|页面|应用|make|build)/.test(t)) {
+    return [{ tool: "deploy_app", thought: () => "饮食记录需要能填写并从账号空间再次打开。",
+      args: () => ({ title: "饮食记录", html: MEAL_APP }) }];
+  }
 
   // 演示改代码：先用 Python 生成一个旧文件，再用 edit_file 改几行 → 右侧看板能看到改动（新增绿色 +、删除红色 -）
   if (/改代码|修改代码|演示修改|diff/.test(t)) {
@@ -254,6 +268,10 @@ function finish(text: string, plan: Step[], r: R[]): { thought: string; answer: 
         thought: `工具已返回：产出物已展示。${plan.length > 2 ? `\n${plan.length} 个工具全部成功，链路完整。` : ""}\n收尾：一句话说明结果在哪。`,
         answer: plan.length > 2 ? `演示完成：6 个工具依次执行成功，报告在右侧。` : "已完成，内容在右侧。需要调整直接说。",
       };
+    case "deploy_app":
+      return last?.app_id
+        ? { thought: "工具已确认应用部署。", answer: "饮食记录已部署。你可以在右侧填写，也可以从「产出物」再次打开。" }
+        : { thought: "发布工具未返回应用 ID。", answer: "饮食记录部署失败，请稍后重试。" };
     case "calculator":
       return { thought: `计算器返回 ${last?.result}。直接给结果。`, answer: `**${last?.expression} = ${last?.result}**` };
     case "current_time":
@@ -560,6 +578,80 @@ function sample(kind: "html" | "markdown" | "code", prompt: string, time: string
     content: `# ${topic}\n\n> 生成于 ${time}\n\n## 目标\n\n- 用最少的步骤完成任务\n- 结果可直接使用\n\n## 步骤\n\n| # | 事项 | 负责人 | 状态 |\n|---|---|---|---|\n| 1 | 明确需求 | 我 | 完成 |\n| 2 | 生成初稿 | A.ai | 完成 |\n| 3 | 审阅修改 | 我 | 待办 |\n`,
   };
 }
+
+/** 演示模型走同一个真实发布和保存入口，便于用两次登录验证账号数据。 */
+const MEAL_APP = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>饮食记录</title>
+<style>
+  :root { color-scheme: light; font: 14px system-ui,sans-serif; color: #21332b; background: #f4f7f2; }
+  * { box-sizing: border-box; }
+  body { margin: 0; }
+  main { max-width: 680px; margin: auto; padding: 28px 22px; }
+  h1 { margin: 0 0 20px; font-size: 27px; letter-spacing: -.02em; }
+  h2 { margin: 25px 0 10px; font-size: 16px; }
+  form, li { background: #fff; border: 1px solid #dce7de; border-radius: 12px; padding: 16px; }
+  .fields { display: grid; grid-template-columns: 1.4fr 1fr; gap: 12px; }
+  label { display: grid; gap: 6px; font-weight: 600; }
+  .food { grid-column: 1 / -1; }
+  input, select, button { width: 100%; border: 1px solid #dce7de; border-radius: 7px; min-height: 37px; padding: 7px 10px; font: inherit; color: inherit; background: #fff; }
+  button { background: #244c38; color: #fff; width: auto; margin-top: 14px; padding: 7px 17px; cursor: pointer; }
+  button:disabled { opacity: .65; }
+  #status { margin: 0 0 0 10px; color: #425b4c; }
+  ul { display: grid; gap: 8px; list-style: none; margin: 0; padding: 0; }
+  li { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+  small { color: #52695b; }
+  [hidden] { display: none !important; }
+</style></head><body><main>
+<h1>饮食记录</h1>
+<form id="entry">
+  <div class="fields">
+    <label>日期<input name="date" type="date" required></label>
+    <label>餐次<select name="meal"><option>早餐</option><option>午餐</option><option>晚餐</option><option>加餐</option></select></label>
+    <label class="food">食物<input name="food" maxlength="160" required placeholder="例如米饭、烤鱼"></label>
+  </div>
+  <button id="save" type="submit">保存记录</button><span id="status" role="status"></span>
+</form>
+<h2>已记录</h2><p id="empty" hidden>还没有饮食记录</p><ul id="records"></ul><button id="more" type="button" hidden>加载更早记录</button>
+</main><script>
+  const form = document.querySelector("#entry"), records = document.querySelector("#records");
+  const save = document.querySelector("#save"), status = document.querySelector("#status");
+  const empty = document.querySelector("#empty"), more = document.querySelector("#more");
+  form.elements.date.value = new Intl.DateTimeFormat("sv-SE").format(new Date());
+  let before;
+  function show(record, newest) {
+    const item = document.createElement("li"), food = document.createElement("strong"), meta = document.createElement("small");
+    food.textContent = record.data.food;
+    meta.textContent = record.data.date + " · " + record.data.meal;
+    item.append(food, meta);
+    if (newest) records.prepend(item); else records.append(item);
+    empty.hidden = true;
+  }
+  async function load() {
+    more.disabled = true;
+    try {
+      const page = await aai.records.list({before});
+      for (const record of page.records) show(record, false);
+      empty.hidden = records.children.length > 0;
+      before = page.nextBefore;
+      more.hidden = before == null;
+    } catch (error) { status.textContent = error.message; }
+    finally { more.disabled = false; save.disabled = false; }
+  }
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    save.disabled = true;
+    status.textContent = "正在保存…";
+    try {
+      const data = Object.fromEntries(new FormData(form));
+      show(await aai.records.create(data), true);
+      form.elements.food.value = "";
+      status.textContent = "已保存";
+    } catch (error) { status.textContent = error.message; }
+    finally { save.disabled = false; }
+  });
+  more.addEventListener("click", load);
+  save.disabled = true;
+  load();
+</script></body></html>`;
 
 function escapeHtml(s: string) {
   return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);

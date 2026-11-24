@@ -1,8 +1,8 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, writeFileSync, rmSync, readdirSync } from "node:fs";
-import { tmpdir } from "node:os";
 import path from "node:path";
+import clientPaths from "../apps/desktop/src/client-paths.cjs";
 import { createRequire } from "node:module";
 import ts from "typescript";
 import { DatabaseSync } from "node:sqlite";
@@ -16,13 +16,13 @@ import { spawnSync } from "node:child_process";
  * 调整临时编译目录中的模块引用，执行实际存储逻辑。
  * 除了正确结果，还通过故障注入验证：写入和迁移中途失败时，数据库与内存都不留下半份状态。
  */
-const dir = mkdtempSync(path.join(tmpdir(), "aai-history-test-"));
+const dir = mkdtempSync(path.join(clientPaths.temporaryDirectory("tests"), "aai-history-test-"));
 process.env.A_DATA_DIR = dir;
-for (const name of ["storage/src/db", "storage/src/store", "application/projects/src/projects", "memory/src/memory",
+for (const name of ["storage/src/db", "storage/src/store", "storage/src/history-index", "application/projects/src/projects", "memory/src/memory",
   "protocol/src/lib/attachments", "protocol/src/lib/agentIcons", "protocol/src/lib/shared", "session/src/log", "storage/src/log-schema"]) {
   const source = readFileSync(new URL("../packages/" + name + ".ts", import.meta.url), "utf8");
   writeFileSync(path.join(dir, path.basename(name) + ".cjs"), ts.transpileModule(
-    source.replace(/from "(?:(?:\.\.?\/)+(?:[^"\/]+\/)*)(db|memory|attachments|agentIcons|shared|log|log-schema)"/g, 'from "./$1.cjs"'),
+    source.replace(/from "(?:(?:\.\.?\/)+(?:[^"\/]+\/)*)(db|memory|attachments|agentIcons|shared|log|log-schema|history-index)"/g, 'from "./$1.cjs"'),
     { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } },
   ).outputText);
 }

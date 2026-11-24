@@ -7,13 +7,15 @@ import { Markdown } from "./Markdown";
 import { resolveFileName } from "../lib/file-chips";
 import { Trace } from "./Trace";
 import { SessionTrace } from "./SessionTrace";
+import { SubagentTasks } from "./SubagentTasks";
 import { AskCard, findAsk } from "./AskCard";
 import { ApprovalDock } from "./ApprovalDock";
 import { Loader3D } from "./Loader3D";
 import { IconPicker } from "./IconPicker";
 import { DotSpinner } from "./DotSpinner";
 import { CoreLogo } from "./CoreLogo";
-import { IArrowUp, IClip, IFile, IImage, IPanelLeft, ILayers, IStop, IX } from "./Icons";
+import { IconButton } from "./base/buttons/icon-button";
+import { IArrowUp, IChevron, IClip, IFile, IFiles, IImage, IPanelLeft, IStop, IX } from "./Icons";
 import { ACCEPT, isImage, joinAttachments, splitAttachments } from "../../../protocol/src/lib/attachments";
 import type { PendingAttachment } from "../../../protocol/src/lib/attachments";
 import { NameInput } from "./Sidebar";
@@ -22,13 +24,14 @@ import { FilesPeek } from "./OutputsCard";
 import { EditBubble, MessageActions } from "./MessageActions";
 import type { OutputItem, View } from "../../../protocol/src/lib/outputs";
 import type { ReactNode } from "react";
+import { cx } from "../utils/cx";
 
 interface Turn {
   user?: StoredMessage;
   steps: StoredMessage[]; // assistant + tool + 自动反馈（feedback）
 }
 
-export type ConversationView = "chat" | "trace" | "stats";
+export type ConversationView = "chat" | "trace" | "stats" | "subagents";
 
 /** 把扁平的消息列表切成“轮”：一条用户消息 + 之后 agent 的所有步骤 */
 function toTurns(messages: StoredMessage[]): Turn[] {
@@ -45,6 +48,9 @@ function toTurns(messages: StoredMessage[]): Turn[] {
 
 export function ChatPane(props: {
   title?: string;
+  embedded?: { icon: string; ended?: boolean; action?: ReactNode; close(): void };
+  threadControl?: ReactNode;
+  multiAgent?: boolean;
   /** 当前对话所在项目的名字（不在项目里时为空） */
   projectName?: string;
   /** 项目图标（图标库里的名字）和换图标的回调：点项目名左边的图标弹出图标面板 */
@@ -58,8 +64,6 @@ export function ChatPane(props: {
   artifacts: Artifact[];
   outputs: OutputItem[];
   onOpenView(v: View): void;
-  /** 对话里有工具调用（有“进度”可看） */
-  hasSteps: boolean;
   running: Record<string, number>;
   streaming: boolean;
   archived?: boolean;
@@ -92,6 +96,7 @@ export function ChatPane(props: {
   /** 当前对话 id：切换对话时用它让内容重新淡入 */
   sessionId: string;
   conversationView: ConversationView;
+  traceScopeVersion?: number;
   onConversationView(view: ConversationView): void;
   traceSessions: readonly SessionMeta[];
   traceProjects: readonly Project[];
@@ -173,19 +178,35 @@ export function ChatPane(props: {
   const [dragging, setDragging] = useState(false);
   const uploading = props.attachments.some((a) => !a.path && !a.error);
   const ready = props.attachments.some((a) => a.path);
-  const canSend = !props.archived && !uploading && !props.queueBusy && (!streaming || props.queueReady) && (!!draft.trim() || ready);
+  const canSend = !props.archived && !props.embedded?.ended && !uploading && !props.queueBusy && (!streaming || props.queueReady) && (!!draft.trim() || ready);
   const queuedHead = props.queue.find((item) => item.target === "next-turn");
   const awaitingAnswer = !streaming && !!findAsk(turns.at(-1)?.steps ?? []);
-  const canViewTrace = !!props.sessionId && !props.loading;
+  const canViewTrace = !!props.sessionId && !props.loading && !props.embedded;
   const viewingTrace = conversationView !== "chat" && canViewTrace;
+  // 草稿还没创建会话时也要有标题。项目首页由项目名称标识。
+  const title = props.title || (home ? "" : "新对话");
+  const Surface = props.embedded ? "section" : "main";
 
   return (
-    <main className={`chat ${empty ? "is-empty" : ""} ${empty && home ? "is-proj" : ""} ${props.loading ? "loading" : ""} ${viewingTrace ? "trace-open" : ""}`}>
+    <Surface className={cx("chat", empty && !props.embedded && "is-empty", empty && !!home && "is-proj", props.loading && "loading", viewingTrace && "trace-open")}>
       {props.loading && <div className="chat-loading" aria-hidden />}
-      <header className="chat-head">
+      {props.embedded ? <header className="viewer-head">
+        <IconPicker value={props.embedded.icon} size={16} />
+        <div className="viewer-title ellipsis">{props.title}</div>
+        <div className="spacer" />
+        {streaming && <span className="head-status"><Loader3D running size={10} />运行中</span>}
+        {props.embedded.action}
+        <button type="button" className="icon-btn" aria-label="关闭子 Agent 对话" onClick={props.embedded.close}><IX width={16} height={16} /></button>
+      </header> : <header className="chat-head">
         {!props.leftOpen && (
           <button className="icon-btn" onClick={props.onToggleLeft} title={`展开左栏 ${modKey}B`}>
             <IPanelLeft />
+          </button>
+        )}
+        {viewingTrace && (
+          <button type="button" className="icon-btn chat-view-back" title="返回对话" aria-label="返回对话"
+            onClick={() => onConversationView("chat")}>
+            <IChevron width={16} height={16} />
           </button>
         )}
         {/* 在项目里的对话：标题前面显示“[图标] 项目名 /”，点图标可以换（IconPicker） */}
@@ -199,10 +220,10 @@ export function ChatPane(props: {
         {renaming && props.onRename ? (
           <NameInput
             className="title-input"
-            value={props.title || ""}
+            value={title}
             onDone={(v) => {
               setRenaming(false);
-              if (v && v !== props.title) props.onRename?.(v);
+              if (v && v !== title) props.onRename?.(v);
             }}
           />
         ) : (
@@ -211,28 +232,30 @@ export function ChatPane(props: {
             onClick={() => props.onRename && setRenaming(true)}
             title={props.onRename ? "点击改名" : undefined}
           >
-            {props.title || ""}
+            {title}
           </div>
         )}
-        {streaming && (
-          <span className="head-status">
-            <Loader3D running size={10} />
-            运行中
-          </span>
-        )}
-        {/* 任务与文件按钮：固定在窗口最右上角（CSS 里 position: fixed），右侧面板 / 大视图开没开都在同一个位置。
-            鼠标停上去弹出文件列表，点击开关任务面板 */}
-        {(props.outputs.length > 0 || props.hasSteps) && (
+        {/* 只开任务面板时，运行状态与按钮一起移到面板上方。 */}
+        <div className={cx("head-actions", props.rightOpen && !props.viewOpen && "over-panel")}>
+          {streaming && (
+            <span className="head-status">
+              <Loader3D running size={10} />
+              运行中
+            </span>
+          )}
+          {props.threadControl}
           <div className="out-wrap" onMouseEnter={showPeek} onMouseLeave={hidePeek}>
             <button
+              type="button"
               className={`icon-btn out-btn ${props.rightOpen ? "on" : ""}`}
               onClick={() => {
                 setPeek(false);
                 props.onToggleRight();
               }}
               aria-label={`任务与文件 ${modKey}\\`}
+              aria-expanded={props.rightOpen}
             >
-              <ILayers />
+              <IFiles />
               {props.outputs.length > 0 && <span>{props.outputs.length}</span>}
             </button>
             {peek && !props.rightOpen && (
@@ -245,18 +268,11 @@ export function ChatPane(props: {
               />
             )}
           </div>
-        )}
-      </header>
-      {canViewTrace && (
-        <nav className="conversation-views" aria-label="会话视图">
-          {([["chat", "对话"], ["trace", "轨迹"], ["stats", "统计"]] as const).map(([view, label]) => (
-            <button type="button" key={view} className={view === "trace" ? "trace-toggle" : undefined}
-              aria-pressed={conversationView === view} onClick={() => onConversationView(view)}>{label}</button>
-          ))}
-        </nav>
-      )}
-
-      {viewingTrace && <SessionTrace key={props.sessionId} sessionId={props.sessionId} sessions={props.traceSessions}
+        </div>
+      </header>}
+      {viewingTrace && conversationView === "subagents" && <SubagentTasks key={props.sessionId} sessionId={props.sessionId}
+        archived={props.archived} streaming={streaming} enabled={props.multiAgent} />}
+      {viewingTrace && conversationView !== "subagents" && <SessionTrace key={`${props.sessionId}:${props.traceScopeVersion}`} sessionId={props.sessionId} sessions={props.traceSessions}
         projects={props.traceProjects} streaming={streaming} showStats={conversationView === "stats"}
         onShowTrace={() => onConversationView("trace")} />}
 
@@ -270,7 +286,7 @@ export function ChatPane(props: {
       >
         {empty && home ? (
           home.head
-        ) : empty ? (
+        ) : empty && props.embedded ? null : empty ? (
           // 新对话：logo + 问候语，输入框紧跟在下面，整体在页面中间（布局见 CSS .chat.is-empty）
           <div className="welcome">
             <CoreLogo size={72} morph={false} />
@@ -315,7 +331,7 @@ export function ChatPane(props: {
                         />
                       </div>
                     ) : (
-                      <UserMsg content={t.user.content} disabled={streaming || !!props.archived} onEdit={() => setEditing(t.user!.id)} onOpenFile={props.onOpenFile} />
+                      <UserMsg content={t.user.content} disabled={streaming || !!props.archived || !!props.embedded} onEdit={() => setEditing(t.user!.id)} onOpenFile={props.onOpenFile} />
                     ))}
                   {(hasTrace || answer) && (
                     <div className="msg assistant">
@@ -345,7 +361,7 @@ export function ChatPane(props: {
                           text={answer}
                           always={isLast}
                           disabled={streaming || !!props.archived}
-                          onRetry={t.user ? () => props.onResend(t.user!.id, t.user!.content) : undefined}
+                          onRetry={t.user && !props.embedded ? () => props.onResend(t.user!.id, t.user!.content) : undefined}
                         />
                       )}
                       {ask && <AskCard {...ask} active={isLast && !streaming && !props.archived} onAnswer={props.onAnswer} />}
@@ -442,8 +458,9 @@ export function ChatPane(props: {
             ref={inputRef}
             value={draft}
             rows={1}
-            disabled={props.archived}
-            placeholder={streaming ? "发送后排队，也可点「引导」加入当前任务" : "输入任务…"}
+            disabled={props.archived || props.embedded?.ended}
+            aria-label={props.embedded ? "给子 Agent 发消息" : undefined}
+            placeholder={props.embedded ? props.embedded.ended ? "任务已结束，可恢复后继续" : "给子 Agent 发消息…" : streaming ? "发送后排队，也可点「引导」加入当前任务" : "输入任务…"}
             onChange={(e) => props.setDraft(e.target.value)}
             // 截图直接粘贴：剪贴板里有文件时当附件上传，文字照常粘贴
             onPaste={(e) => {
@@ -462,19 +479,19 @@ export function ChatPane(props: {
               }
             }}
           />
-          {/* 运行中可以发文字或附件到下一轮队列；空输入框显示停止。 */}
+          {/* 沿用原停止条件。发送箭头只在没有输入文字时出现，文字仍由原快捷键发送。 */}
           {streaming && !draft.trim() && !ready ? (
-            <button type="button" className="send stop" onClick={props.onStop} title="停止 Esc">
-              <IStop />
-            </button>
-          ) : (
-            <button type="submit" className="send" disabled={!canSend} aria-label={streaming ? "排队发送" : "发送"} title={uploading ? "附件上传中…" : streaming ? "排队发送" : "发送"}>
+            <IconButton size="small" icon={IStop} className="composer-stop" onClick={props.onStop}
+              aria-label={props.embedded ? "停止子 Agent" : "停止生成"} title={props.embedded ? "停止子 Agent" : "停止 Esc"} />
+          ) : !draft && (
+            <button type="submit" className="send" disabled={!canSend} aria-label={props.embedded ? "发送给子 Agent" : streaming ? "排队发送" : "发送"}
+              title={props.embedded ? "发送给子 Agent" : uploading ? "附件上传中…" : streaming ? "排队发送" : "发送"}>
               <IArrowUp />
             </button>
           )}
         </form>
         {/* 输入框下面一行：左边上传文件，右边上下文占用和模型（props.bar）。上传按钮不放进输入框里，输入框只管打字和发送 */}
-        <div className="under-row">
+        {!props.embedded && <div className="under-row">
           <button type="button" className="cbar-btn att-under" disabled={props.archived} onClick={() => fileRef.current?.click()} title="上传文件：PDF、图片、Word、Excel、PPT…">
             <IClip width={14} height={14} />
             <span>上传文件</span>
@@ -491,10 +508,10 @@ export function ChatPane(props: {
             }}
           />
           {props.bar}
-        </div>
+        </div>}
         {empty && home?.chats}
       </div>
-    </main>
+    </Surface>
   );
 }
 

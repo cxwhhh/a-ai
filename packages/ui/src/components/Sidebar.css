@@ -73,6 +73,7 @@
 .side .side-search-box { height: calc(32px * var(--side-k)); }
 .side .side-search-box input { font-size: calc(13.5px * var(--side-k)); }
 .side .row-menu .pop-item { font-size: calc(12.5px * var(--side-k)); }
+.side .session-view-menu { position: fixed; overflow-y: auto; }
 .side .side-foot { font-size: calc(12px * var(--side-k)); }
 .side .user-id { font-size: calc(13px * var(--side-k)); }
 .side .user-sub { font-size: calc(11.5px * var(--side-k)); }

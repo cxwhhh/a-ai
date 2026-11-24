@@ -3,6 +3,7 @@ import path from "node:path";
 import { safePath, workspaceOf } from "../../../../../../packages/tools/src/files";
 import { MAX_UPLOAD } from "../../../../../../packages/protocol/src/lib/attachments";
 import { currentUser, unauthorized } from "../../../../../../packages/application/users/src/auth";
+import { registerWorkspaceFile } from "../../../../../../packages/storage/src/workspace-files";
 
 
 /**
@@ -22,12 +23,13 @@ export async function POST(req: Request) {
   const sub = cleanDir(String(form?.get("dir") ?? ""));
   const dir = safePath(workspaceOf(user.id), sub ? `uploads/${sub}` : "uploads");
   await fs.mkdir(/*turbopackIgnore: true*/ dir, { recursive: true });
-  const out: { name: string; path: string; size: number }[] = [];
+  const out: { id: string; name: string; path: string; size: number }[] = [];
   for (const f of files) {
     if (f.size > MAX_UPLOAD) return Response.json({ error: `${f.name} 超过 50 MB` }, { status: 413 });
     const name = await freeName(dir, cleanName(f.name));
     await fs.writeFile(/*turbopackIgnore: true*/ path.join(/*turbopackIgnore: true*/ dir, name), Buffer.from(await f.arrayBuffer()));
-    out.push({ name, path: `uploads/${sub ? sub + "/" : ""}${name}`, size: f.size });
+    const relativePath = `uploads/${sub ? sub + "/" : ""}${name}`;
+    out.push({ id: registerWorkspaceFile(user.id, relativePath), name, path: relativePath, size: f.size });
   }
   return Response.json({ files: out });
 }

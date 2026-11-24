@@ -3,6 +3,7 @@ import path from "node:path";
 import { DATA_DIR } from "../../storage/src/db";
 import { resolvePath } from "../../workspace/src/access";
 import { hashFileBytes, readFileHash } from "../../workspace/src/file-fingerprint";
+import { replaceWorkspaceFile } from "../../workspace/src/file-write";
 import type { Tool } from "../../tool-runtime/src/types";
 
 /**
@@ -42,14 +43,14 @@ export const listFiles: Tool<{ path?: string }> = {
     },
   },
   async run({ path: p }, ctx) {
-    await fs.mkdir(ctx.workspace, { recursive: true });
-    const { full: dir, shown } = resolvePath(ctx.workspace, p, "read");
+    if (!ctx.readPath) await fs.mkdir(ctx.workspace, { recursive: true });
+    const { full: dir, shown } = ctx.readPath ? ctx.readPath(p) : resolvePath(ctx.workspace, p, "read");
     const entries = await fs.readdir(/*turbopackIgnore: true*/ dir, { withFileTypes: true }).catch((e: NodeJS.ErrnoException) => {
       throw new Error(e.code === "ENOENT" ? `目录不存在：${shown}。用 list_files 看上一级目录，或用 glob 按名字找` : e.code === "ENOTDIR" ? `${shown} 是文件不是目录，用 read_file 读它` : e.message);
     });
     const items = await Promise.all(
       entries
-        .filter((e) => !e.name.startsWith("."))
+        .filter((e) => !e.name.startsWith(".") && (!ctx.readPath || !e.isSymbolicLink()))
         .map(async (e) => {
           const st = await fs.stat(/*turbopackIgnore: true*/ path.join(/*turbopackIgnore: true*/ dir, e.name));
           return {
@@ -102,7 +103,7 @@ export const readFile: Tool<{
     },
   },
   async run({ path: p, offset, limit }, ctx) {
-    const { full, shown } = resolvePath(ctx.workspace, p, "read");
+    const { full, shown } = ctx.readPath ? ctx.readPath(p) : resolvePath(ctx.workspace, p, "read");
     const st = await fs.stat(/*turbopackIgnore: true*/ full).catch(() => null);
     if (!st) throw new Error(`文件不存在：${shown}。先用 glob 或 list_files 确认文件名和路径`);
     if (st.isDirectory()) throw new Error(`${shown} 是目录不是文件，用 list_files 看里面有什么`);
@@ -210,8 +211,10 @@ export const editFile: Tool<{
     const next = replace_all ? text.split(oldS).join(newS) : text.slice(0, positions[0]) + newS + text.slice(positions[0] + oldS.length);
     const bytes = Buffer.from(next, "utf8");
     ctx.signal?.throwIfAborted();
-    if (inWorkspace) ctx.checkpointFileWrite?.(shown, hashFileBytes(original), hashFileBytes(bytes));
-    await fs.writeFile(/*turbopackIgnore: true*/ full, bytes);
+    // 右侧 Markdown 也可写入工作区。从读到提交之间出现了其他编辑，就让模型重读。
+    if (!replaceWorkspaceFile(full, original, bytes, () => {
+      if (inWorkspace) ctx.checkpointFileWrite?.(shown, hashFileBytes(original), hashFileBytes(bytes));
+    })) throw new Error(`文件已被更新：${shown}。请重新读取修改位置后再编辑`);
 
     // 返回修改后那一段（前后各带 2 行），模型不用再 read_file 就能确认改对了
     const line = lineAt(next, positions[0]);

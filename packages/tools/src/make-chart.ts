@@ -30,6 +30,8 @@ const W = 860;
 const H = 500;
 const COLORS = ["#2563eb", "#f59e0b", "#10b981", "#ef4444", "#8b5cf6", "#06b6d4", "#ec4899", "#84cc16", "#64748b", "#f97316"];
 const FONT = `font-family="-apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', 'Hiragino Sans', sans-serif"`;
+const INK = "#111113";
+const OUTLINE = `stroke="${INK}" stroke-width="1" vector-effect="non-scaling-stroke"`;
 
 export const makeChart: Tool<Args> = {
   spec: {
@@ -162,9 +164,9 @@ function niceTicks(min: number, max: number, count = 5) {
 
 function header(title?: string) {
   return (
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" ${FONT}>` +
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" ${FONT} fill="${INK}">` +
     `<rect width="${W}" height="${H}" fill="#ffffff"/>` +
-    (title ? `<text x="${W / 2}" y="34" text-anchor="middle" font-size="20" font-weight="600" fill="#111827">${esc(title)}</text>` : "")
+    (title ? `<text x="${W / 2}" y="34" text-anchor="middle" font-size="20" font-weight="600">${esc(title)}</text>` : "")
   );
 }
 
@@ -178,7 +180,7 @@ function legend(names: string[], y: number) {
   let x = (W - widths.reduce((a, b) => a + b, 0)) / 2;
   return items
     .map((it, i) => {
-      const g = `<rect x="${x}" y="${y - 10}" width="12" height="12" rx="2" fill="${it.c}"/><text x="${x + 18}" y="${y}" font-size="13" fill="#374151">${esc(it.n)}</text>`;
+      const g = `<rect x="${x}" y="${y - 10}" width="12" height="12" rx="1" fill="${it.c}" ${OUTLINE}/><text x="${x + 18}" y="${y}" font-size="13">${esc(it.n)}</text>`;
       x += widths[i];
       return g;
     })
@@ -201,10 +203,12 @@ function xy(type: "line" | "bar", labels: string[], series: Required<Series>[], 
   const every = Math.max(1, Math.ceil(labels.length / 16));
 
   let g = header(o.title);
+  // 坐标轴保持 1px，不随面板大小变粗。仅水平/垂直网格贴齐像素，曲线仍平滑。
   for (const t of ticks)
-    g += `<line x1="${left}" x2="${right}" y1="${y(t)}" y2="${y(t)}" stroke="${t === 0 ? "#9ca3af" : "#e5e7eb"}"/><text x="${left - 8}" y="${y(t) + 4}" text-anchor="end" font-size="12" fill="#6b7280">${fmt(t)}</text>`;
+    g += `<line x1="${left}" x2="${right}" y1="${y(t)}" y2="${y(t)}" shape-rendering="crispEdges" ${t === 0 ? OUTLINE : 'stroke="#b6b6ba"'}/><text x="${left - 8}" y="${y(t) + 4}" text-anchor="end" font-size="12">${fmt(t)}</text>`;
+  g += `<line x1="${left}" x2="${left}" y1="${top}" y2="${bottom}" shape-rendering="crispEdges" ${OUTLINE}/>`;
   labels.forEach((l, i) => {
-    if (i % every === 0) g += `<text x="${cx(i)}" y="${bottom + 20}" text-anchor="middle" font-size="12" fill="#374151">${esc(l.length > 12 ? l.slice(0, 11) + "…" : l)}</text>`;
+    if (i % every === 0) g += `<text x="${cx(i)}" y="${bottom + 20}" text-anchor="middle" font-size="12">${esc(l.length > 12 ? l.slice(0, 11) + "…" : l)}</text>`;
   });
 
   if (type === "bar") {
@@ -216,20 +220,20 @@ function xy(type: "line" | "bar", labels: string[], series: Required<Series>[], 
         const x = cx(i) - inner / 2 + bw * si;
         const y0 = y(Math.max(0, v));
         const h = Math.abs(y(v) - y(0));
-        g += `<rect x="${x + 1}" y="${y0}" width="${Math.max(1, bw - 2)}" height="${h}" rx="2" fill="${COLORS[si]}"/>`;
-        if (labels.length * series.length <= 24) g += `<text x="${x + bw / 2}" y="${y0 - 5}" text-anchor="middle" font-size="11" fill="#374151">${fmt(v)}</text>`;
+        if (h > 0) g += `<rect x="${x + 1}" y="${y0}" width="${Math.max(1, bw - 2)}" height="${h}" rx="1" fill="${COLORS[si]}" ${OUTLINE}/>`;
+        if (labels.length * series.length <= 24) g += `<text x="${x + bw / 2}" y="${y0 - 5}" text-anchor="middle" font-size="11">${fmt(v)}</text>`;
       }),
     );
   } else {
     series.forEach((s, si) => {
       const pts = s.values.map((v, i) => `${cx(i).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
-      g += `<polyline points="${pts}" fill="none" stroke="${COLORS[si]}" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>`;
-      if (labels.length <= 40) s.values.forEach((v, i) => (g += `<circle cx="${cx(i)}" cy="${y(v)}" r="3.5" fill="#fff" stroke="${COLORS[si]}" stroke-width="2"/>`));
-      if (labels.length <= 12 && series.length <= 2) s.values.forEach((v, i) => (g += `<text x="${cx(i)}" y="${y(v) - 10}" text-anchor="middle" font-size="11" fill="#374151">${fmt(v)}</text>`));
+      g += `<polyline points="${pts}" fill="none" stroke="${COLORS[si]}" stroke-width="1.5" vector-effect="non-scaling-stroke" stroke-linejoin="round" stroke-linecap="round"/>`;
+      if (labels.length <= 40) s.values.forEach((v, i) => (g += `<circle cx="${cx(i)}" cy="${y(v)}" r="3.5" fill="${COLORS[si]}" ${OUTLINE}/>`));
+      if (labels.length <= 12 && series.length <= 2) s.values.forEach((v, i) => (g += `<text x="${cx(i)}" y="${y(v) - 10}" text-anchor="middle" font-size="11">${fmt(v)}</text>`));
     });
   }
-  if (o.y_label) g += `<text transform="translate(18 ${(top + bottom) / 2}) rotate(-90)" text-anchor="middle" font-size="13" fill="#374151">${esc(o.y_label)}</text>`;
-  if (o.x_label) g += `<text x="${(left + right) / 2}" y="${bottom + 46}" text-anchor="middle" font-size="13" fill="#374151">${esc(o.x_label)}</text>`;
+  if (o.y_label) g += `<text transform="translate(18 ${(top + bottom) / 2}) rotate(-90)" text-anchor="middle" font-size="13">${esc(o.y_label)}</text>`;
+  if (o.x_label) g += `<text x="${(left + right) / 2}" y="${bottom + 46}" text-anchor="middle" font-size="13">${esc(o.x_label)}</text>`;
   g += legend(series.map((s) => s.name), H - 16);
   return g + "</svg>";
 }
@@ -247,15 +251,15 @@ function pie(labels: string[], s: Required<Series>, title?: string) {
   s.values.forEach((v, i) => {
     const a1 = a0 + (v / total) * Math.PI * 2;
     const c = COLORS[i % COLORS.length];
-    if (v / total > 0.9999) g += `<circle cx="${cx}" cy="${cy}" r="${r}" fill="${c}"/>`;
+    if (v / total > 0.9999) g += `<circle cx="${cx}" cy="${cy}" r="${r}" fill="${c}" ${OUTLINE}/>`;
     else if (v > 0) {
       const large = a1 - a0 > Math.PI ? 1 : 0;
       const p = (a: number) => `${(cx + r * Math.cos(a)).toFixed(2)} ${(cy + r * Math.sin(a)).toFixed(2)}`;
-      g += `<path d="M ${cx} ${cy} L ${p(a0)} A ${r} ${r} 0 ${large} 1 ${p(a1)} Z" fill="${c}" stroke="#fff" stroke-width="2"/>`;
+      g += `<path d="M ${cx} ${cy} L ${p(a0)} A ${r} ${r} 0 ${large} 1 ${p(a1)} Z" fill="${c}" ${OUTLINE} stroke-linejoin="round"/>`;
     }
     // 右侧图例：名称、数值、百分比
     const ly = cy - (labels.length * 26) / 2 + i * 26 + 13;
-    g += `<rect x="530" y="${ly - 11}" width="14" height="14" rx="3" fill="${c}"/><text x="552" y="${ly + 1}" font-size="14" fill="#374151">${esc(labels[i])}  ${fmt(v)}（${((v / total) * 100).toFixed(1)}%）</text>`;
+    g += `<rect x="530" y="${ly - 11}" width="14" height="14" rx="1" fill="${c}" ${OUTLINE}/><text x="552" y="${ly + 1}" font-size="14">${esc(labels[i])}  ${fmt(v)}（${((v / total) * 100).toFixed(1)}%）</text>`;
     a0 = a1;
   });
   return g + "</svg>";

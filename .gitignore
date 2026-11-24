@@ -16,6 +16,7 @@ __pycache__/
 *.pyc
 .venv/
 /release/
+/updates/
 /dist-electron/
 /dist/
 /evals/results/

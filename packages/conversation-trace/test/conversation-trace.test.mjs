@@ -46,6 +46,9 @@ test("轨迹保存真实请求顺序与调用时工具定义，子请求和子�
   const oldPrompt = fixtureSettings.systemPrompt;
   const oldDescription = tool.spec.description;
   const oldRun = tool.run;
+  const session = store.createSession("u", "轨迹测试", undefined, true);
+  store.addMessage(session, { id: "earlier-input", role: "user", content: "前一轮的专用文字", createdAt: Date.now() });
+  store.addMessage(session, { id: "earlier-output", role: "assistant", content: "前一轮的回复", createdAt: Date.now() });
   fixtureSettings.systemPrompt = "调用时的自定义提示词";
   tool.spec.description = "调用时的读取定义";
   tool.run = async () => ({ content: "受控工具结果", status: "timeout", errorKind: "network" });
@@ -68,7 +71,7 @@ test("轨迹保存真实请求顺序与调用时工具定义，子请求和子�
     } };
   } };
   try {
-    const stream = await readRun(await request({ message: "检查程序" }));
+    const stream = await readRun(await request({ sessionId: session.id, message: "检查程序" }));
     const events = await stream.rest();
     assert.equal(events.some((event) => event.type === "error"), false, JSON.stringify(events));
     assert.equal(calls, 4);
@@ -96,14 +99,20 @@ test("轨迹保存真实请求顺序与调用时工具定义，子请求和子�
     assert.equal(analysis.requests.reported.cacheRead, 6);
     assert.equal(analysis.requests.reported.cacheReadInput, 30);
     assert.equal(analysis.requests.estimated.input, 10);
-    assert.equal(analysis.legacyModelRows, 0);
+    assert.equal(analysis.legacyModelRows, 1);
     assert.deepEqual(analysis.tools.find(({ name }) => name === "read_file").states, { timeout: 1 });
-    assert.deepEqual(analysis.turns.map(({ closedSteps, requests, tools, consumed }) => [closedSteps, requests, tools, consumed]), [[2, 4, 2, true]]);
+    assert.deepEqual(analysis.turns.filter((turn) => turn.requests).map(({ closedSteps, requests, tools, consumed }) => [closedSteps, requests, tools, consumed]), [[2, 4, 2, true]]);
     const read = (recordId, id = stream.sessionId) =>
       traceDetail(new Request("http://localhost/?compare=1"), { params: Promise.resolve({ id, recordId }) });
     tool.spec.description = "后来修改的定义";
     const initial = await (await read(top[0].id)).json();
-    assert.match(initial.request.messages[0].content, /调用时的自定义提示词/);
+    assert.match(initial.prompts[0], /调用时的自定义提示词/);
+    assert.deepEqual(initial.request.messages.map((message) => message.role), ["user"]);
+    assert.match(initial.request.messages[0].content, /^检查程序/);
+    assert.equal(initial.context.messages.user, 2);
+    const nextMain = await (await read(top[1].id)).json();
+    assert.deepEqual(nextMain.request.messages.map((message) => message.role), ["user", "assistant", "tool"]);
+    assert.doesNotMatch(JSON.stringify([initial.request.messages, nextMain.request.messages]), /前一轮/);
     assert.deepEqual(initial.response.blocks.map((block) => block.kind), ["reasoning", "tool-call"]);
     assert.doesNotMatch(JSON.stringify(initial), /provider-internal/);
     const childRequest = await (await read(nested[0].id)).json();
@@ -133,6 +142,32 @@ test("轨迹保存真实请求顺序与调用时工具定义，子请求和子�
     tool.spec.description = oldDescription;
     tool.run = oldRun;
   }
+});
+
+test("旧请求按当前输入校验展示边界，子任务隐藏继承资料", async () => {
+  const { SUBAGENT_REFERENCE_TAG } = load("packages/protocol/src/lib/message-tags.ts");
+  const { insertTraceEntry, readTraceRecordView } = load("packages/conversation-trace/src/store.ts");
+  const session = store.createSession("u");
+  const inputId = "legacy-current";
+  store.addMessage(session, { id: inputId, role: "user", content: "重复的输入", createdAt: Date.now() });
+  function read(phase, messages, metadata = {}, scopeInput = inputId) {
+    const id = `trace:${crypto.randomUUID()}`;
+    insertTraceEntry(session.id, { id, at: Date.now(), meta: {
+      kind: "request", phase, step: 1, runId: "legacy", inputId: scopeInput, model: "mock", effort: "default",
+    } }, { messages, tools: [], ...metadata });
+    return readTraceRecordView(session.id, "u", id, true);
+  }
+  const history = [{ role: "system", content: "系统" }, { role: "user", content: "重复的输入" }, { role: "assistant", content: "旧回复" }];
+  const current = [{ role: "user", content: "重复的输入\n\n<环境>\n测试环境\n</环境>" }, { role: "user", content: "【用户补充】本轮补充" }];
+  assert.deepEqual(read("chat", [...history, ...current]).request.messages, current);
+  assert.deepEqual(read("chat", history, {}, "missing").request.messages, []);
+  assert.deepEqual(read("chat", [...history, ...current], { turnStart: null }).request.messages, []);
+  const task = { role: "user", content: "子任务输入" };
+  const reference = { role: "user", content: SUBAGENT_REFERENCE_TAG + "从母对话带入的材料" };
+  const childMessages = [history[0], task, reference, { role: "assistant", content: "子任务回复" }];
+  const expected = [task, childMessages[3]];
+  assert.deepEqual(read("research", childMessages).request.messages, expected);
+  assert.deepEqual(read("research", childMessages, { referenceIndex: 2 }).request.messages, expected);
 });
 
 test("停止模型流后，持久轨迹保留已收到的部分思考", async () => {
@@ -302,23 +337,30 @@ test("模型选项匹配实际请求，缺失提供方用量时读取该步骤�
 
 test("压缩提示词和压缩后的主请求分别保存，且关联同一个步骤", async () => {
   const { createConversationTrace } = load("packages/conversation-trace/src/recorder.ts");
-  const { listTraceEntries, readTraceEntry } = load("packages/conversation-trace/src/store.ts");
+  const { listTraceEntries, readTraceEntry, readTraceRecordView } = load("packages/conversation-trace/src/store.ts");
   const s = store.createSession("u");
   for (const [id, content] of [["old", "早期对话材料".repeat(1000)], ["near", "最近一轮"], ["new", "继续处理"]]) {
     store.addMessage(s, { id: `compact-${id}`, role: "user", content, createdAt: Date.now() });
   }
   const provider = { id: "mock", async *stream({ messages }) {
     const compact = messages[0].content.startsWith("[A.ai:compact]");
-    yield { type: "text", delta: compact ? "测试压缩摘要" : "最终答复" };
+    yield { type: "text", delta: compact
+      ? JSON.stringify({ goal: "测试压缩摘要", constraints: [], confirmed: [], progress: [], pending: [] })
+      : "最终答复" };
     yield { type: "done", finishReason: "stop" };
   } };
   for await (const _ of runAgent({ session: s, provider, userId: "u", workspace: data, contextWindow: 4096, maxSteps: 3,
+    execution: { runId: "compact", inputId: "compact-new" },
     conversationTrace: createConversationTrace({ sessionId: s.id, runId: "compact", inputId: "compact-new", model: "mock", effort: "default" }),
   })) { /* 消费完整模型流。 */ }
   const entries = listTraceEntries(s.id, "u");
   assert.deepEqual(entries.map(({ meta }) => [meta.phase, meta.step]), [["compact", 1], ["chat", 1]]);
   assert.match(readTraceEntry(s.id, "u", entries[0].id).request.messages[0].content, /\[A\.ai:compact\]/);
   assert.ok(readTraceEntry(s.id, "u", entries[1].id).request.messages.some((message) => message.content.includes("测试压缩摘要")));
+  assert.deepEqual(readTraceRecordView(s.id, "u", entries[0].id).request.messages, []);
+  const view = readTraceRecordView(s.id, "u", entries[1].id);
+  assert.equal(view.request.messages.length, 1);
+  assert.match(view.request.messages[0].content, /^继续处理/);
 });
 
 test("被重复失败保护拦下的工具不启动，也不产生执行中的轨迹事件", async () => {

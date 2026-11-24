@@ -33,7 +33,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
 
   requestOptions(req: ChatRequest) {
     return {
-      protocol: "openai-compatible" as const, model: this.o.model, temperature: req.temperature,
+      protocol: "openai-compatible" as const, model: this.o.model, temperature: req.temperature, maxOutputTokens: req.maxOutputTokens,
       sendReasoning: !!this.o.sendReasoning, thinking: this.o.thinking, reasoningEffort: this.o.effort, includeUsage: true,
     };
   }
@@ -50,6 +50,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
       body.tools = req.tools.map((t) => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.parameters } }));
     }
     if (options.temperature !== undefined) body.temperature = options.temperature;
+    if (options.maxOutputTokens !== undefined) body.max_tokens = options.maxOutputTokens;
     if (options.thinking) body.thinking = { type: options.thinking };
     if (options.reasoningEffort) body.reasoning_effort = options.reasoningEffort;
 

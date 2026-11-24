@@ -68,7 +68,7 @@
   color: var(--c); background: color-mix(in srgb, var(--c) 12%, var(--surface));
 }
 .arts-row-ico svg { width: 18px; height: 18px; }
-.arts-row-title { flex: 1; min-width: 0; }
+.arts-row-title { flex: 1; min-width: 0; text-align: left; }
 .arts-when { flex: none; font-size: 13px; color: var(--fg-3); font-variant-numeric: tabular-nums; }
 .arts-more-wrap { position: relative; flex: none; margin-left: 18px; }
 .arts-more { width: 32px; height: 32px; color: var(--fg-2); }
@@ -263,20 +263,23 @@
 .bk-mini-title { font: 600 clamp(7px, 2.2cqw, 10px)/1.25 var(--font-sans, sans-serif); color: var(--fg); white-space: nowrap; }
 
 /* 月份和柱组共享同一组列宽，缩放卡片时仍对齐。 */
-.bk-chart { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: 4%; padding: 5% 7%; }
+.bk-chart {
+  display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: 4%; padding: 5% 7%;
+  border: 1px solid var(--fg); box-shadow: none;
+}
 .bk-chart-heading { display: flex; align-items: center; justify-content: space-between; gap: 4px; }
 .bk-chart-key { flex: none; display: flex; gap: 3px; }
 .bk-chart-key i { width: 6px; height: 4px; border-radius: 1px; background: var(--c); }
-.bk-chart-key i + i, .bk-bar-group i + i { background: color-mix(in srgb, var(--c) 37%, var(--surface)); }
+.bk-chart-key i + i, .bk-bar-group i + i { background: color-mix(in srgb, var(--c) 55%, var(--surface)); }
 .bk-bars, .bk-chart-scale { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .bk-bars {
-  border-inline-start: 1px solid var(--edge); border-bottom: 1px solid var(--edge);
+  border-inline-start: 1px solid var(--fg); border-bottom: 1px solid var(--fg);
   background: linear-gradient(to bottom, var(--edge) 1px, transparent 1px) 0 0 / 100% 25%;
 }
 .bk-bar-group { display: flex; align-items: flex-end; justify-content: center; gap: 8%; min-width: 0; }
 .bk-bar-group i {
-  width: 26%; border-radius: 2px 2px 0 0;
-  background: linear-gradient(to top, var(--c), color-mix(in srgb, var(--c) 72%, var(--surface)));
+  width: 26%; border-radius: 1px 1px 0 0;
+  border: 1px solid var(--fg); background: var(--c);
 }
 .bk-chart-scale { padding-inline-start: 1px; text-align: center; color: var(--fg-2); font: 7px/1 var(--mono); }
 .bk-chart-scale i { font-style: normal; }

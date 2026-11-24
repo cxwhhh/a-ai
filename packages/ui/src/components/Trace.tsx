@@ -113,6 +113,10 @@ const TOOLS: Record<string, { done: string; run: string; label: string; target(c
     done: "已调研", run: "子 agent 正在调研", label: "调研",
     target: ({ a }) => clip(str(a.task).replace(/\s+/g, " "), 80),
   },
+  delegate_tasks: {
+    done: "已汇报分工结果", run: "子 Agent 分工执行中", label: "任务分工",
+    target: ({ a }) => clip(str(a.objective).replace(/\s+/g, " "), 80),
+  },
   web_search: {
     done: "已搜索网页", run: "正在搜索网页", label: "搜索网页",
     target: ({ a, r }) => (
@@ -550,6 +554,7 @@ function toolBody({ call, a, r, result, onOpenFile }: { call: ToolCall; a: R; r:
         </ul>
       ) : null;
     case "research":
+    case "delegate_tasks":
       // 结果是子 agent 写的 Markdown（结论、要点、来源），末尾附着它调用过的工具
       return result?.content ? <Markdown text={result.content} /> : null;
     case "calculator":

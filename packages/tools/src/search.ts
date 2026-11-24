@@ -127,8 +127,8 @@ export const glob: Tool<{
   },
   async run({ pattern, path: p }, ctx) {
     if (!String(pattern ?? "").trim()) throw new Error("pattern 不能为空。例：*.csv、**/*.py；想看一个目录有什么用 list_files");
-    await fs.mkdir(ctx.workspace, { recursive: true });
-    const { full: base, shown, inWorkspace } = resolvePath(ctx.workspace, p, "read");
+    if (!ctx.readPath) await fs.mkdir(ctx.workspace, { recursive: true });
+    const { full: base, shown, inWorkspace } = ctx.readPath ? ctx.readPath(p) : resolvePath(ctx.workspace, p, "read");
     const match = matcher(String(pattern));
     const hits: Entry[] = [];
     for await (const e of walk(base, base, ctx.signal)) if (match(e.rel)) hits.push(e);
@@ -209,14 +209,14 @@ export const grep: Tool<{
       throw new Error(`正则表达式有误：${e instanceof Error ? e.message : e}。( ) [ ] . * + ? 这些字符要匹配原文时前面加 \\，例：foo\\(1\\)`);
     }
     if (!args.pattern) throw new Error("pattern 不能为空。例：def load_data、TODO|FIXME");
-    await fs.mkdir(ctx.workspace, { recursive: true });
+    if (!ctx.readPath) await fs.mkdir(ctx.workspace, { recursive: true });
     const mode = args.output_mode === "files" || args.output_mode === "count" ? args.output_mode : "content";
     const ctxLines = Math.min(Math.max(0, Math.floor(Number(args.context) || 0)), 5);
     const max = Math.min(Math.max(1, Math.floor(Number(args.max_results) || 100)), 500);
     const only = args.glob ? matcher(String(args.glob)) : null;
 
     // path 可以是单个文件
-    const { full: target, inWorkspace } = resolvePath(ctx.workspace, args.path, "read");
+    const { full: target, inWorkspace } = ctx.readPath ? ctx.readPath(args.path) : resolvePath(ctx.workspace, args.path, "read");
     const ws = resolvePath(ctx.workspace, ".", "read").full;
     const st = await fs.stat(/*turbopackIgnore: true*/ target).catch(() => null);
     if (!st) throw new Error(`路径不存在：${args.path}。先用 list_files 或 glob 确认；不填 path 会搜整个工作区`);

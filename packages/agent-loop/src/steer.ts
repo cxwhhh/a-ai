@@ -16,8 +16,7 @@ import { FEEDBACK_TAG } from "../../verifier/src/verify";
 
 import { PLAN_MARK } from "../../protocol/src/plan";
 export { PLAN_MARK } from "../../protocol/src/plan";
-/** 本轮环境快照（env.ts 的 turnEnv）附在用户消息末尾的格式；mock 模型靠它把快照去掉再看用户说了什么 */
-export const ENV_RE = /\n*<环境>\n[\s\S]*?\n<\/环境>\s*$/;
+export { TURN_ENV_SUFFIX as ENV_RE } from "../../protocol/src/lib/message-tags";
 /** 连续几步没进展就提醒 */
 const STALL_STEPS = 3;
 /** 每轮最多提醒几次“卡住了”，再多也没用，交给步数上限 */

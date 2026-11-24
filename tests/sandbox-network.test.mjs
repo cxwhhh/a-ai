@@ -1,14 +1,16 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
 import path from "node:path";
+import clientPaths from "../apps/desktop/src/client-paths.cjs";
 import { createRequire } from "node:module";
 import childProcess from "node:child_process";
 import ts from "typescript";
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
 
 // 真实 SQLite、策略模块和路由；只替换登录身份和 Docker 进程，不访问实际用户库或 Docker。
-const data = mkdtempSync(path.join(tmpdir(), "aai-network-test-"));
+const data = mkdtempSync(path.join(clientPaths.temporaryDirectory("tests"), "aai-network-test-"));
 const savedEnv = { data: process.env.A_DATA_DIR, mode: process.env.A_SANDBOX, network: process.env.A_SANDBOX_NETWORK };
 process.env.A_DATA_DIR = data;
 process.env.A_SANDBOX = "docker";
@@ -17,12 +19,19 @@ const require = createRequire(import.meta.url);
 const root = path.resolve(".");
 const cache = new Map();
 const commands = [];
+const children = [];
+const execs = [];
 let actor = { id: "owner" };
 const overrides = {
   "packages/application/users/src/auth.ts": { currentUser: async () => actor, unauthorized: () => Response.json({}, { status: 401 }) },
   "node:child_process": { ...childProcess,
     execFile: (bin, args, opts, callback) => { commands.push(args); callback(null, "", ""); },
-    spawn: () => ({}),
+    spawn: (_bin, args) => {
+      execs.push(args);
+      const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough() });
+      children.push(child);
+      return child;
+    },
   },
 };
 function load(name) {
@@ -92,4 +101,48 @@ test("同会话按策略版本创建 bridge/none 容器，重复执行复用，�
   assert.equal(new Set(names).size, 3);
   // 创建前只清理目标新容器，没有因切换设置而删除上一个容器。
   for (const name of names) assert.equal(commands.filter((args) => args[0] === "rm" && args.includes(name)).length, 1);
+});
+
+test("Docker 执行并发达上限时拒绝分配，命令退出后可以继续执行", async () => {
+  const saved = process.env.A_SANDBOX_MAX_CONCURRENT;
+  process.env.A_SANDBOX_MAX_CONCURRENT = "1";
+  try {
+    const { runInSandbox } = load("packages/sandbox/src/sandbox.ts");
+    const opts = { sessionId: "quota", workspace: data, cwd: "/workspace", script: "true", env: {}, timeoutMs: 5000, onData() {} };
+    const first = runInSandbox(opts);
+    await assert.rejects(runInSandbox({ ...opts, sessionId: "other-quota" }), /并发上限/);
+    await new Promise(setImmediate);
+    children.at(-1).emit("close", 0, null);
+    assert.equal((await first).code, 0);
+    const second = runInSandbox(opts);
+    await new Promise(setImmediate);
+    children.at(-1).emit("close", 0, null);
+    assert.equal((await second).code, 0);
+  } finally {
+    if (saved === undefined) delete process.env.A_SANDBOX_MAX_CONCURRENT;
+    else process.env.A_SANDBOX_MAX_CONCURRENT = saved;
+  }
+});
+
+test("聊天与应用按账号工作区复用容器，应用数据只通过标准输入", async () => {
+  const { sandboxExec, runInSandbox } = load("packages/sandbox/src/sandbox.ts");
+  const start = commands.length;
+  const workspace = path.join(data, "account-one");
+  const opts = { sessionId: "chat-one", workspace, cwd: "/workspace", script: "true", env: {} };
+  await sandboxExec(opts);
+  await sandboxExec({ ...opts, sessionId: "chat-two" });
+  await sandboxExec({ ...opts, workspace: path.join(data, "account-two") });
+  const input = JSON.stringify({ data: "私有测试记录" });
+  const app = runInSandbox({ ...opts, sessionId: "workspace-app", input, timeoutMs: 5000, onData() {} });
+  await new Promise(setImmediate);
+  let received = "";
+  for await (const chunk of children.at(-1).stdin) received += chunk.toString();
+  children.at(-1).emit("close", 0, null);
+  assert.equal((await app).code, 0);
+  assert.equal(received, input);
+  assert.ok(execs.at(-1).includes("-i"));
+  assert.ok(!execs.at(-1).join(" ").includes("私有测试记录"));
+  const created = commands.slice(start).filter((args) => args[0] === "run" && args.includes("-d"));
+  assert.equal(created.length, 2);
+  assert.notEqual(created[0][created[0].indexOf("--name") + 1], created[1][created[1].indexOf("--name") + 1]);
 });

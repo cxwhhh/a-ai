@@ -1,5 +1,6 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { audit } from "../../telemetry/src/audit";
 import { networkHint, runInSandbox, sandboxEnv, sandboxInfo, sandboxRoot } from "../../sandbox/src/sandbox";
 import type { Tool } from "../../tool-runtime/src/types";
@@ -39,7 +40,7 @@ export const runPython: Tool<{
     const info = sandboxInfo();
     const dir = path.join(ctx.workspace, ".runs");
     await fs.mkdir(dir, { recursive: true });
-    const name = `run_${Date.now()}.py`;
+    const name = `run_${randomUUID()}.py`;
     await fs.writeFile(path.join(dir, name), String(code ?? ""), "utf8");
 
     // 和 run_command 一样在沙箱里跑：只能读写工作区和授权目录，读不到 a.db 和别的用户的文件
@@ -59,8 +60,7 @@ export const runPython: Tool<{
       timeoutMs: TIMEOUT_MS,
       signal: ctx.signal,
       onData: (s, d) => (s === "out" ? (stdout = (stdout + d).slice(-MAX_OUT * 4)) : (stderr = (stderr + d).slice(-MAX_OUT * 4))),
-    });
-    await fs.rm(path.join(dir, name), { force: true });
+    }).finally(() => fs.rm(path.join(dir, name), { force: true }));
     audit({
       userId: ctx.userId ?? "",
       sessionId: ctx.sessionId,

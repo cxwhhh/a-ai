@@ -1,0 +1,15 @@
+diff --git a/out/targets/nsis/NsisTarget.js b/out/targets/nsis/NsisTarget.js
+index 2eea3d627af1937d09aad77503b4bddf4b65b708..24c3fbc63ba3dd6a7d45021d230fd2b7514992f6 100644
+--- a/out/targets/nsis/NsisTarget.js
++++ b/out/targets/nsis/NsisTarget.js
+@@ -369,8 +369,8 @@ class NsisTarget extends core_1.Target {
+         defines.UNINSTALLER_OUT_FILE = isWin ? uninstallerPath : path.win32.join("Z:", uninstallerPath);
+         await this.executeMakensis(defines, commands, sharedHeader + (await this.computeFinalScript(script, false, archs)));
+         // http://forums.winamp.com/showthread.php?p=3078545
+-        // TODO: remove workaround when wine is fully upgraded to 11
+-        if ((0, macosVersion_1.isMacOsCatalina)()) {
++        // Prefer the existing static extractor on Windows as well, avoiding running an intermediate installer during packaging.
++        if (isWin || (0, macosVersion_1.isMacOsCatalina)()) {
+             try {
+                 await nsisUtil_1.UninstallerReader.exec(installerPath, uninstallerPath);
+             }

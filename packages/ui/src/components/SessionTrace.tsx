@@ -15,8 +15,12 @@ import { IChevron, IRetry, ISearchLine } from "./Icons";
 import "./SessionTrace.css";
 
 const labels: Record<TraceKind, string> = { input: "用户", model: "助手", tool: "工具", event: "事件" };
+type TraceFilter = TraceKind | "flow" | "all";
 type DetailTab = RequestTab | "概述" | "预览" | "原始内容" | "代码" | "参数" | "结果" | "Schema";
 const pageSize = 150;
+
+/** 流程聚焦当前分支的对话往来。历史版本、压缩和系统事件可在全部记录里查看。 */
+const inFlow = (row: TraceRow) => !row.historical && row.kind !== "event" && row.requestPhase !== "compact";
 
 /** 切换对话只改变读取范围。卸载或切换时取消旧请求，避免晚到的响应覆盖新对话。 */
 export function SessionTrace({ sessionId, sessions, projects, streaming, showStats, onShowTrace }: {
@@ -67,7 +71,7 @@ function TraceTimeline({ id, refresh, streaming, showStats, onShowTrace }: {
   const [data, setData] = useState<TraceData>();
   const [error, setError] = useState("");
   const [query, setQuery] = useState("");
-  const [kind, setKind] = useState<TraceKind | "all">("all");
+  const [kind, setKind] = useState<TraceFilter>("flow");
   const [path, setPath] = useState("");
   const [turn, setTurn] = useState("");
   const [selected, setSelected] = useState<string>();
@@ -95,31 +99,37 @@ function TraceTimeline({ id, refresh, streaming, showStats, onShowTrace }: {
 
   const paths = useMemo(() => [...new Set(data?.rows.flatMap((row) => row.paths ?? []))].sort(), [data]);
   const turns = useMemo(() => [...new Set(data?.rows.flatMap((row) => row.turn ?? []))].sort((a, b) => a - b), [data]);
+  const ordered = useMemo(() => [...(data?.rows ?? [])].sort((a, b) => (b.turn ?? 0) - (a.turn ?? 0)), [data]);
   const filtered = useMemo(() => {
     const term = query.trim().toLowerCase();
-    return (data?.rows ?? []).filter((row) =>
-      (kind === "all" || kind === row.kind) && (!path || row.paths?.includes(path)) && (!turn || row.turn === Number(turn)) &&
+    return ordered.filter((row) =>
+      (kind === "all" || (kind === "flow" ? inFlow(row) : kind === row.kind)) && (!path || row.paths?.includes(path)) && (!turn || row.turn === Number(turn)) &&
       (!term || [row.title, row.tool, row.status, row.result, row.args, row.reasoning, row.preview?.reasoning, row.preview?.text, ...(row.paths ?? [])]
         .some((part) => part?.toLowerCase().includes(term))));
-  }, [data, kind, path, query, turn]);
+  }, [ordered, kind, path, query, turn]);
   const row = filtered.find((item) => item.id === selected);
   const linkedRequests = useMemo(() => new Set((data?.rows ?? []).filter((item) => item.kind === "model" && !item.traceId && item.requestId).map((item) => item.requestId)), [data]);
-  const pick = (id: string, index: number) => {
-    jump.current = id;
-    setSelected(id);
-    setLimit((value) => Math.max(value, Math.ceil((index + 1) / pageSize) * pageSize));
-    list.current?.querySelector(`[data-row="${CSS.escape(id)}"]`)?.scrollIntoView({ block: "nearest" });
-  };
+  const visibleTurns = new Map<number | undefined, TraceRow[]>();
+  for (const item of filtered.slice(0, limit)) {
+    const items = visibleTurns.get(item.turn);
+    if (items) items.push(item);
+    else visibleTurns.set(item.turn, [item]);
+  }
   const openRecord = (targetId: string, targetTurn?: number) => {
-    if (!data) return;
-    const candidates = targetTurn === undefined ? data.rows : data.rows.filter((item) => item.turn === targetTurn);
+    const target = ordered.find((item) => item.id === targetId);
+    if (!target) return;
+    const nextKind = kind === "flow" && inFlow(target) ? "flow" : "all";
+    const candidates = ordered.filter((item) => (nextKind === "all" || inFlow(item)) && (targetTurn === undefined || item.turn === targetTurn));
     const index = candidates.findIndex((item) => item.id === targetId);
     if (index < 0) return;
-    setKind("all");
+    setKind(nextKind);
     setPath("");
     setQuery("");
     setTurn(targetTurn === undefined ? "" : String(targetTurn));
-    pick(targetId, index);
+    jump.current = targetId;
+    setSelected(targetId);
+    setLimit((value) => Math.max(value, Math.ceil((index + 1) / pageSize) * pageSize));
+    list.current?.querySelector(`[data-row="${CSS.escape(targetId)}"]`)?.scrollIntoView({ block: "nearest" });
     if (showStats) onShowTrace();
   };
   useEffect(() => {
@@ -127,7 +137,7 @@ function TraceTimeline({ id, refresh, streaming, showStats, onShowTrace }: {
     const item = list.current?.querySelector(`[data-row="${CSS.escape(jump.current)}"]`);
     item?.scrollIntoView({ block: "nearest" });
     jump.current = null;
-  }, [selected, limit, showStats, turn]);
+  }, [selected, filtered, limit, showStats]);
 
   if (showStats) return <>
     {error && <p className="trace-empty" role="alert">{error}</p>}
@@ -139,8 +149,9 @@ function TraceTimeline({ id, refresh, streaming, showStats, onShowTrace }: {
     <>
       <div className="trace-filters">
         <span className="trace-count">{data ? `${filtered.length} 条记录 · ${new Set(filtered.flatMap((item) => item.turn ?? [])).size} 轮` : "对话轨迹"}</span>
-        <select className="set-input select" aria-label="事件类型" value={kind} onChange={(e) => { setKind(e.target.value as TraceKind | "all"); setLimit(pageSize); }}>
-          <option value="all">全部类型</option>
+        <select className="set-input select" aria-label="轨迹视图" value={kind} onChange={(e) => { setKind(e.target.value as TraceFilter); setLimit(pageSize); }}>
+          <option value="flow">对话流程</option>
+          <option value="all">全部记录</option>
           {Object.entries(labels).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
         </select>
         {turns.length > 0 && <select className="set-input select" aria-label="按轮次筛选" value={turn} onChange={(e) => { setTurn(e.target.value); setLimit(pageSize); }}>
@@ -161,26 +172,26 @@ function TraceTimeline({ id, refresh, streaming, showStats, onShowTrace }: {
       {!data && !error && <p className="trace-empty" role="status">正在读取轨迹…</p>}
       {data && filtered.length === 0 && <p className="trace-empty">{data.rows.length ? "没有匹配的记录" : "这段对话还没有轨迹记录"}</p>}
       {filtered.length > 0 && <>
-        <TimelineBars rows={filtered} selected={selected} onSelect={pick} />
         <div className="trace-body">
           <div className="trace-list" ref={list} aria-label="轨迹记录">
-            {filtered.slice(0, limit).map((item) => {
-              const summary = rowSummary(item);
-              const status = displayStatus(item);
-              return (
-                <button type="button" className="trace-row" data-row={item.id} key={item.id}
-                  aria-pressed={item.id === row?.id} onClick={() => setSelected(item.id)}>
-                  <span className="trace-position">{item.turn ? `${item.turn}${item.step ? `.${item.step}` : ""}` : ""}</span>
-                  <span className="trace-badge" data-kind={item.kind} data-subtool={!!(item.kind === "tool" && item.parentId)}>{recordLabel(item)}</span>
-                  <TraceRowContent row={item} summary={summary} showResponse={!linkedRequests.has(item.id)} />
-                  <span className="trace-row-meta">
-                    {item.historical && <span className="trace-meta">历史版本</span>}
-                    {status && <span className="trace-meta">{status}</span>}
-                    {item.durationMs !== undefined && <span className="trace-meta">{traceDuration(item.durationMs)}</span>}
-                  </span>
-                </button>
-              );
-            })}
+            {[...visibleTurns].map(([number, items]) => <section className="trace-turn" key={number ?? "session"}>
+              <h3 className="trace-turn-title text-caption-1-semibold">{number === undefined ? "会话记录" : `第 ${number} 轮`}</h3>
+              {items.map((item) => {
+                const status = displayStatus(item);
+                return (
+                  <button type="button" className="trace-row" data-row={item.id} key={item.id}
+                    data-child={!!item.parentId} aria-pressed={item.id === row?.id} onClick={() => setSelected(item.id)}>
+                    <span className="trace-badge" data-kind={item.kind} data-subtool={!!(item.kind === "tool" && item.parentId)}>{recordLabel(item)}</span>
+                    <TraceRowContent row={item} summary={rowSummary(item)} showResponse={!linkedRequests.has(item.id)} showPayload={kind !== "flow"} />
+                    <span className="trace-row-meta">
+                      {item.historical && <span className="trace-meta">历史版本</span>}
+                      {status && <span className="trace-meta">{status}</span>}
+                      {item.durationMs !== undefined && <span className="trace-meta">{traceDuration(item.durationMs)}</span>}
+                    </span>
+                  </button>
+                );
+              })}
+            </section>)}
             {limit < filtered.length && <button type="button" className="btn trace-more" onClick={() => setLimit((value) => value + pageSize)}>显示更多</button>}
           </div>
           {row && <TraceDetails key={row.id} sessionId={id} row={row}
@@ -194,7 +205,12 @@ function TraceTimeline({ id, refresh, streaming, showStats, onShowTrace }: {
 }
 
 function recordLabel(row: TraceRow) {
-  if (row.kind === "model" && row.traceId) return row.parentId ? "子请求" : "请求";
+  if (row.kind === "model") {
+    if (row.requestPhase === "compact") return "历史压缩";
+    if (row.requestPhase === "research") return "子 Agent → 模型";
+    return row.traceId || row.requestPhase === "chat" ? "Agent → 模型" : "模型 → Agent";
+  }
+  if (row.kind === "input") return row.input?.kind === "guidance" ? "用户补充" : "用户 → Agent";
   if (row.kind === "tool" && row.parentId) return "子工具";
   return labels[row.kind];
 }
@@ -206,7 +222,12 @@ function displayStatus(row: TraceRow) {
 
 /** 列表只需要一行助手摘要，完整 Markdown 在详情里解析。 */
 function rowSummary(row: TraceRow) {
-  if (row.kind !== "model" || row.traceId) return row.title;
+  if (row.traceId && row.kind === "model") {
+    const step = row.childStep ?? row.step;
+    const location = step && (row.childStep ? `子步骤 ${step}` : `第 ${step} 步`);
+    return [location, row.detail?.model ?? row.title].filter(Boolean).join(" · ");
+  }
+  if (row.kind !== "model") return row.title;
   const line = row.title.slice(0, 2048).split("\n").map((part) => part.trim())
     .find((part) => part && !/^(?:```|~~~)/.test(part));
   if (!line) return "助手输出";
@@ -216,18 +237,8 @@ function rowSummary(row: TraceRow) {
   return text.length > 160 ? `${text.slice(0, 160)}…` : text || "助手输出";
 }
 
-/** 保持行内容紧凑，同时让模型输出、请求上下文与工具结果不用打开右侧即可读到。 */
-function TraceRowContent({ row, summary, showResponse }: { row: TraceRow; summary: string; showResponse: boolean }) {
-  const context = row.preview?.context;
-  const metrics = row.requestMetrics;
-  const use = metrics?.usage;
-  const facts = [
-    context && `上下文：系统 ${context.messages.system} · 用户 ${context.messages.user} · 助手 ${context.messages.assistant} · 工具结果 ${context.messages.tool} · 工具定义 ${context.tools}`,
-    metrics?.firstOutputMs !== undefined && `首段 ${traceDuration(metrics.firstOutputMs)}`,
-    use && `${use.estimated ? "估算 " : ""}${use.inputTokens.toLocaleString()} 入 / ${use.outputTokens.toLocaleString()} 出`,
-    metrics?.finishReason && `结束 ${metrics.finishReason}`,
-    metrics?.error && `请求错误 ${metrics.error.status ?? metrics.error.kind}`,
-  ].filter(Boolean).join(" · ");
+/** 主模型回复已有独立记录。子请求等没有独立回复行的记录在请求下显示已保存的回复。 */
+function TraceRowContent({ row, summary, showResponse, showPayload }: { row: TraceRow; summary: string; showResponse: boolean; showPayload: boolean }) {
   const reasoning = row.reasoning ?? (showResponse ? row.preview?.reasoning : undefined);
   const response = showResponse ? row.preview?.text : undefined;
   const hasMainSummary = row.kind !== "model" || row.traceId || !reasoning || row.body?.trim();
@@ -236,42 +247,16 @@ function TraceRowContent({ row, summary, showResponse }: { row: TraceRow; summar
   const result = row.result ? plain(row.result) : "";
   return (
     <span className="trace-summary">
-      {row.kind === "tool" && (args || result) ? (
+      {row.kind === "tool" && showPayload && (args || result) ? (
         <span className="trace-tool-line">
           <span className="ellipsis trace-tool-name" title={summary}><code>{row.tool}</code>{row.tool !== summary && ` ${summary}`}</span>
           {args && <code className="ellipsis trace-inline-code" title={args}>{args}</code>}
           {result && <><span className="trace-inline-label" aria-label="结果">→</span><code className="ellipsis trace-inline-code" title={result}>{result}</code></>}
         </span>
       ) : hasMainSummary && <span className="ellipsis trace-row-main" title={summary}>{row.tool && row.tool !== summary && <code>{row.tool} </code>}{summary}</span>}
-      {facts && <span className="ellipsis trace-row-facts" title={facts}>{facts}</span>}
-      {reasoning && <span className="ellipsis trace-row-facts" title={plain(reasoning)}><strong>分析</strong> {plain(reasoning)}</span>}
-      {response && <span className="ellipsis trace-row-facts" title={plain(response)}><strong>回复</strong> {plain(response)}</span>}
+      {reasoning && !row.body?.trim() && !response && <span className="ellipsis trace-row-facts" title={plain(reasoning)}><strong>思考</strong> {plain(reasoning)}</span>}
+      {response && <span className="ellipsis trace-row-facts" title={plain(response)}><strong>{row.requestPhase === "research" ? "模型 → 子 Agent" : "模型回复"}</strong> {plain(response)}</span>}
     </span>
-  );
-}
-
-function TimelineBars({ rows, selected, onSelect }: { rows: TraceRow[]; selected?: string; onSelect(id: string, index: number): void }) {
-  const requests = new Set(rows.filter((row) => row.kind === "model" && row.traceId).map((row) => row.id));
-  const marks = rows.flatMap((row, index) => row.kind === "event" || (row.kind === "model" && row.requestId && requests.has(row.requestId))
-    ? [] : [{ row, index }]);
-  const lane = { input: 1, model: 2, tool: 3 };
-  if (!marks.length) return null;
-  return (
-    <div className="trace-timeline" aria-label="按事件顺序">
-      <div className="trace-lane-labels"><span>输入</span><span>模型</span><span>工具</span></div>
-      <div className="trace-track" title="按事件顺序排列，悬停查看实际时间和耗时">
-        {marks.map(({ row, index }, i) => {
-          if (row.kind === "event") return null;
-          const title = [row.turn && `第 ${row.turn} 轮`, row.tool ?? recordLabel(row), traceTimestamp(row.at),
-            row.durationMs === undefined ? undefined : traceDuration(row.durationMs)].filter(Boolean).join(" · ");
-          return <span key={row.id} className="trace-tick" data-turn-start={i > 0 && row.turn !== undefined && row.turn !== marks[i - 1].row.turn}>
-            <button type="button" data-kind={row.kind} tabIndex={-1} aria-label={title} aria-pressed={row.id === selected}
-              title={title} onClick={() => onSelect(row.id, index)} style={{ gridRow: lane[row.kind] }} />
-          </span>;
-        })}
-      </div>
-      <span className="trace-order">事件顺序</span>
-    </div>
   );
 }
 
@@ -320,12 +305,16 @@ function TraceDetails({ sessionId, row, schema, related, onOpenRecord, onClose }
   onOpenRecord(id: string): void;
   onClose(): void;
 }) {
-  const [tab, setTab] = useState<DetailTab>("概述");
+  const requestId = row.kind === "model" ? row.traceId ?? row.requestId : undefined;
+  const requestRow = !!requestId;
+  const [tab, setTab] = useState<DetailTab>(() => {
+    if (!requestRow || row.requestPhase === "compact") return "概述";
+    return row.traceId ? "请求消息" : "助手输出";
+  });
   const tabPrefix = useId();
-  const requestRow = row.kind === "model" && !!row.traceId;
   const toolRow = row.kind === "tool";
   const message = row.kind === "input" || (row.kind === "model" && !requestRow && !!(row.body || row.reasoning));
-  const { record, error } = useTraceRecord(sessionId, row.traceId, row.status, requestRow);
+  const { record, error } = useTraceRecord(sessionId, requestId ?? row.traceId, row.status, requestRow);
   const schemaSource = useTraceRecord(sessionId, toolRow && (tab === "概述" || tab === "Schema") ? row.requestId : undefined);
   const request = record?.kind === "request" ? record : undefined;
   const historicalSchema = schemaSource.record?.kind === "request"
@@ -341,7 +330,7 @@ function TraceDetails({ sessionId, row, schema, related, onOpenRecord, onClose }
   // 子工具的参数按需读取。加载完发现有脚本时，已打开的参数标签自然切换为代码标签。
   const activeTab = tab === "参数" || tab === "代码" ? argumentTab : tab;
   const tabs: DetailTab[] = requestRow
-    ? ["概述", ...requestTabs]
+    ? [...requestTabs.slice(0, 2), "概述", ...requestTabs.slice(2)]
     : toolRow ? ["概述", argumentTab, "结果", "Schema", "计时"]
     : message ? ["概述", "预览", "原始内容"] : ["概述", "计时"];
 

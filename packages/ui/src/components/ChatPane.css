@@ -1,16 +1,20 @@
 /* 对话区的界面细节（2026-10-24）。单独放一个文件，不改 globals.css，避免和其他改动冲突。
    这个文件在 globals.css 之后加载，选择器也多加了一层，所以能覆盖 globals.css 里的旧写法。 */
 
-/* 停止按钮：只有描边，中间是空心圆角方块；静态，不转圈。
-   和发送按钮一样大、一样圆角，按下发送后只是“实心箭头”换成“描边方块” */
-.composer .send.stop {
-  background: var(--surface); color: var(--fg);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fg) 30%, transparent), 0 1px 2px rgba(0, 0, 0, 0.05);
+/* 停止是运行时的主要操作。用主题前景色做圆形底，图标用主题底色，切换主题时随之反转。 */
+.composer .composer-stop {
+  width: 30px; height: 30px;
+  border: 0; border-radius: 50%; box-shadow: none;
+  background: var(--color-text-primary); color: var(--color-background-primary-default);
 }
-.composer .send.stop::after { content: none; animation: none; } /* 去掉 globals.css 里那段转圈的弧线 */
-.composer .send.stop svg { width: 14px; height: 14px; }
-.composer .send.stop svg rect { fill: none; stroke: currentColor; stroke-width: 1.5; }
-.composer .send.stop:hover { background: var(--hover); box-shadow: inset 0 0 0 1px var(--fg), 0 1px 2px rgba(0, 0, 0, 0.05); }
+.composer .composer-stop:hover {
+  background: color-mix(in srgb, var(--color-text-primary) 86%, var(--color-background-primary-default));
+}
+.composer .composer-stop:active {
+  background: color-mix(in srgb, var(--color-text-primary) 74%, var(--color-background-primary-default));
+}
+.composer .composer-stop:focus-visible { outline-color: var(--color-border-focus-ring); }
+.composer .composer-stop svg { width: 20px; height: 20px; fill: currentColor; stroke: none; }
 
 /* 新对话的输入框隐藏原生滚动条。长草稿达到高度上限后仍能滚动编辑。 */
 .chat.is-empty .composer textarea { scrollbar-width: none; }
@@ -29,6 +33,10 @@
 .model-pop-head .icon-btn svg { transform: rotate(180deg); }
 .model-pop-head .picker-search::placeholder { color: var(--fg-3); }
 .model-pop-body { min-height: 0; overflow-y: auto; }
+.model-pop-agent-mode .switch { margin-inline-start: auto; flex-shrink: 0; }
+.subagent-chat-view .chat-scroll { min-height: 0; }
+.subagent-chat-view .thread { max-width: 100%; }
+.subagent-chat-view .composer-wrap { padding-bottom: 14px; }
 
 /* 排队内容与已写入的对话分开显示；引导期间显示状态，避免重复提交。 */
 .chat-queue { margin: 0 0 8px; padding: 6px 10px; border: 1px solid var(--edge); border-radius: 10px; background: var(--surface); font-size: 12px; }
@@ -145,14 +153,11 @@ button.att:hover { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fg) 25%,
 .head-proj > .ellipsis { min-width: 0; }
 .head-proj i { font-style: normal; margin: 0 2px 0 4px; opacity: 0.6; }
 
-/* 标题下的分隔横线（2026-10-29）：
-   画在 .chat-head 的 ::after 上，right 设成 -100vw 让它一直延伸到窗口右边，
-   右侧任务面板 / 文件大视图打开时，横线也连续地穿过它们上方。
-   右侧一列整体从横线下面开始（margin-top = 标题栏 48px + 10px 间距），
-   于是右上角按钮点开的面板、悬浮的文件列表都在横线下面。 */
-.chat-head { position: relative; }
+/* 和右侧子 Agent 的标题栏使用同样的边框。仅任务面板没有独立标题栏，仍把横线延伸到它上方。 */
+.chat-head { position: relative; border-bottom: 1px solid var(--edge); }
+.chat-head .chat-view-back svg { transform: rotate(180deg); }
 .chat-head::after {
-  content: ""; position: absolute; left: 0; right: -100vw; bottom: 0; height: 1px;
+  content: ""; position: absolute; left: 100%; right: -100vw; bottom: -1px; height: 1px;
   background: var(--edge); pointer-events: none;
 }
 .app { overflow: hidden; }
@@ -161,10 +166,11 @@ button.att:hover { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fg) 25%,
 .chat-head .peek { top: calc(100% + 16px); }
 .chat-head .peek::before { top: -18px; height: 18px; }
 
-/* 任务与文件按钮（2026-10-29）：固定在窗口最右上角，在横线上面的标题栏里。
-   以前它跟着对话区走，右侧面板一打开，按钮就停在屏幕中间；
-   大视图打开时又搬到大视图标题栏里，位置一直在变。现在只有这一个按钮、一个位置。 */
-.chat-head .out-wrap { position: fixed; top: 10px; right: 12px; z-index: 5; }
+/* 状态与入口用同一组排版。只开任务面板时整组贴窗口右端，
+   避免按钮对齐面板、状态却被留在变窄的对话栏。 */
+.chat-head .head-actions { display: flex; flex: none; align-items: center; gap: 8px; margin-left: auto; }
+.chat-head .head-actions .head-status { margin-right: 0; white-space: nowrap; }
+.chat-head .head-actions.over-panel { position: fixed; top: 0; right: 12px; height: 48px; z-index: 5; }
 /* 任务面板永远贴在最右边，正好在按钮下面；文件大视图同时打开时排在面板左边（只用 order 换顺序，DOM 不动） */
 .right .panel { order: 2; }
 
@@ -174,7 +180,7 @@ button.att:hover { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fg) 25%,
    - 只开任务面板：面板从标题横线下面开始（横线照常穿过它上方），一直到底。
    - 打开了文件（网页 / md 等）：文件视图从窗口最顶上开始，连横线那一行也占用；
      它自己的标题栏高 48px，和对话标题栏一样高，底下的线正好接上对话区的横线。
-     这时对话区的横线只画到对话区右边为止，任务按钮也跟着回到对话区标题栏的最右边。 */
+     这时对话区的横线只画到对话区右边为止，运行状态和任务按钮位于同一标题栏。 */
 .app .right {
   margin: 0; align-self: stretch; gap: 0;
   border-left: 1px solid var(--edge); background: var(--surface-2);
@@ -192,17 +198,10 @@ button.att:hover { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fg) 25%,
 .app .right.with-panel:not(.panel-only) .panel { border-left: 1px solid var(--edge); }
 .app .right .viewer-head { min-height: 48px; height: 48px; padding-top: 0; padding-bottom: 0; }
 .app .right .resize-handle { left: -5px; }
-.app.right-open .chat-head::after { right: 0; }
-/* 放回标题栏的普通排版里（不再绝对定位），这样“运行中”状态和按钮各占各的位置，不会叠在一起 */
-.app.right-open .chat-head .out-wrap { position: relative; top: auto; right: auto; }
-.app.right-open .chat-head .peek { right: 0; }
+.app.right-open .chat-head::after { content: none; }
 @media (max-width: 900px) {
   .app .right, .app .right.panel-only { margin: 0; border-left: 0; }
 }
-
-/* 修复（2026-10-29）：没打开文件时，文件按钮固定在窗口右上角（position: fixed），不占标题栏的位置，
-   标题栏里最右边的“运行中”就会钻到按钮底下。给有文件按钮的标题栏右边留出按钮的宽度 */
-.app:not(.right-open) .chat-head:has(.out-wrap) .head-status { margin-right: 64px; }
 
 /* 修复（2026-10-29）：思维链里一行展开后，下面的代码框紧贴着这一行的底边（.tr-body 上内边距是 0），
    鼠标移到这一行时整行变灰，灰底和代码框的边框挨在一起，看起来像压住了代码框。

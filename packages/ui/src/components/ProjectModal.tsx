@@ -4,6 +4,15 @@ import type { Project, ProjectMemoryMode } from "../../../protocol/src/lib/share
 import { IX } from "./Icons";
 import "./ProjectModal.css";
 
+interface DesktopWorkspace {
+  state(): Promise<{ local?: boolean; canCreateLocal?: boolean }>;
+  createLocal(): Promise<{ ok?: boolean; error?: string }>;
+}
+
+declare global {
+  interface Window { aaiWorkspace?: DesktopWorkspace }
+}
+
 const MEMORY: { v: ProjectMemoryMode; label: string; hint: string }[] = [
   { v: "global", label: "全局记忆", hint: "和平时的对话共用一份记忆：A.ai 记得你的习惯，这个项目里学到的也会记进去。" },
   { v: "project", label: "项目独立", hint: "这个项目单独一份记忆，只在项目里用，不和其他项目、平时的对话混在一起。" },
@@ -23,6 +32,13 @@ export function ProjectModal(props: { project?: Project; onSave(p: Omit<Project,
   const [share, setShare] = useState(p?.share ?? true);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const [device, setDevice] = useState<{ local?: boolean; canCreateLocal?: boolean }>({});
+
+  useEffect(() => {
+    let current = true;
+    void window.aaiWorkspace?.state().then((state) => { if (current) setDevice(state); }).catch(() => {});
+    return () => { current = false; };
+  }, []);
 
   useEffect(() => {
     const esc = (e: KeyboardEvent) => e.key === "Escape" && props.onClose();
@@ -38,6 +54,18 @@ export function ProjectModal(props: { project?: Project; onSave(p: Omit<Project,
       await props.onSave({ name: name.trim(), description: description.trim(), memory, share });
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
+      setBusy(false);
+    }
+  }
+
+  async function startLocal() {
+    setBusy(true);
+    setErr("");
+    try {
+      const result = await window.aaiWorkspace?.createLocal();
+      if (!result?.ok) throw new Error(result?.error || "无法打开本地项目");
+    } catch (error) {
+      setErr(error instanceof Error ? error.message : "无法打开本地项目");
       setBusy(false);
     }
   }
@@ -59,6 +87,18 @@ export function ProjectModal(props: { project?: Project; onSave(p: Omit<Project,
             <IX width={14} height={14} />
           </button>
         </header>
+
+        {!p && (
+          <div className="pm-field">
+            <span className="set-label">存储位置</span>
+            {device.canCreateLocal ? (
+              <div className="seg text pm-seg">
+                <button type="button" className="on" aria-pressed="true">云端</button>
+                <button type="button" onClick={() => void startLocal()} disabled={busy}>在此电脑创建</button>
+              </div>
+            ) : <div className="set-hint">{device.local ? "此电脑 · 文件和会话保存在本机" : "云端 · 同一账号可跨设备打开"}</div>}
+          </div>
+        )}
 
         <label className="pm-field">
           <span className="set-label">项目名字</span>

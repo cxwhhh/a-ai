@@ -6,7 +6,8 @@ import type {
   TraceLocation, TracePhase, TraceScope, TraceToolResult,
 } from "./types";
 
-type RequestLocation = TraceLocation & { phase: TracePhase; assistantId?: string; agent?: RequestSnapshot["agent"] };
+type RequestLocation = TraceLocation & { phase: TracePhase; assistantId?: string }
+  & Pick<RequestSnapshot, "agent" | "turnStart" | "referenceIndex">;
 
 /** 连接配置与适配器错误正文只服务执行层，调试快照只保存稳定字段。 */
 function requestOptions(provider: LLMProvider, request: ChatRequest): ModelRequestOptions | undefined {
@@ -53,9 +54,11 @@ export function createConversationTrace(scope: TraceScope) {
      * 快照保存交给适配器的请求。消费包装流时逐块转发，同时记录已收到的内容和首段输出时间。
      * 流被提前关闭时保留已有片段。快照未创建成功时，调用方仍消费原模型流。
      */
-    request(provider: LLMProvider, request: ChatRequest, { agent, ...location }: RequestLocation) {
+    request(provider: LLMProvider, request: ChatRequest, { agent, turnStart, referenceIndex, ...location }: RequestLocation) {
       const snapshot: RequestSnapshot = {
         messages: request.messages.map(({ role, content, reasoning, toolCalls, toolCallId }) => ({ role, content, reasoning, toolCalls, toolCallId })),
+        turnStart,
+        referenceIndex,
         tools: request.tools ?? [],
         temperature: request.temperature,
         provider: { label: provider.id, options: requestOptions(provider, request) },
@@ -113,8 +116,10 @@ export function createConversationTrace(scope: TraceScope) {
       return { id: entry?.id, stream: entry ? observed(entry) : requireModelEnd(provider.stream(request), request.signal) };
     },
     /** 包装一次子工具调用。记录结果时优先使用工具返回的状态，原有返回值或异常继续传给调用方。 */
-    async tool(call: ToolCall, location: TraceLocation, signal: AbortSignal | undefined, run: () => Promise<TraceToolResult>): Promise<TraceToolResult> {
+    async tool(call: ToolCall, location: TraceLocation, signal: AbortSignal | undefined, run: () => Promise<TraceToolResult>,
+      onTraceId?: (id: string) => void): Promise<TraceToolResult> {
       const entry = start({ ...owner, ...location, kind: "tool", callId: call.id, name: call.name }, call);
+      if (entry) onTraceId?.(entry.id);
       let result: TraceToolResult | undefined;
       try {
         result = await run();

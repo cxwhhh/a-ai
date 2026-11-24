@@ -1,0 +1,63 @@
+.chat-head .subagent-thread-trigger {
+  color: var(--fg-2); border-color: transparent; background: transparent; box-shadow: none;
+}
+.chat-head .subagent-thread-trigger[aria-expanded="true"], .chat-head .subagent-thread-trigger:hover {
+  color: var(--fg); background: var(--hover);
+}
+.row-menu.subagent-thread-preview {
+  position: fixed; z-index: 42; width: min(300px, calc(100vw - 72px)); pointer-events: none;
+}
+.subagent-thread-preview-title { padding: 6px 8px 2px; color: var(--fg-2); font-size: 12px; }
+.subagent-thread-preview .out-row { cursor: default; }
+.subagent-thread-overview .viewer-head { color: var(--fg-2); }
+.subagent-thread-overview .viewer-title { color: var(--fg); }
+.subagent-thread-overview .viewer-head .seg button:hover { color: var(--fg); }
+.subagent-thread-groups { padding: 12px; overscroll-behavior: contain; }
+.subagent-thread-group + .subagent-thread-group { margin-top: 16px; }
+.subagent-thread-group h3 {
+  display: flex; align-items: center; gap: 8px; margin: 0; padding: 4px 4px 8px;
+  color: var(--fg-2); font-size: 13px; font-weight: 600;
+}
+.subagent-thread-group h3 span { color: var(--fg-3); font-weight: 400; }
+.subagent-thread-entries[data-layout="cards"] {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 118px), 1fr)); gap: 8px;
+}
+.subagent-thread-open {
+  display: block; width: 100%; min-width: 0; text-align: left; padding: 0 8px;
+  border-bottom: 1px solid var(--edge);
+}
+.subagent-thread-entries[data-layout="cards"] .subagent-thread-open {
+  padding: 10px; border: 1px solid color-mix(in srgb, var(--fg) 26%, transparent);
+  border-radius: 8px; background: var(--surface);
+}
+.subagent-thread-open:is(:hover, :focus-visible),
+.subagent-thread-entries[data-layout="cards"] .subagent-thread-open:is(:hover, :focus-visible) {
+  background: var(--hover);
+}
+.subagent-thread-entry-head {
+  display: flex;
+  align-items: center; gap: 8px; min-height: 32px;
+  font-size: 13px; color: var(--fg);
+}
+.subagent-thread-entry-head .out-name { flex: 0 1 auto; }
+.subagent-thread-glyph { color: var(--fg); }
+.subagent-thread-glyph svg { display: block; }
+.subagent-thread-glyph svg :is(path, line, polyline, polygon, circle, rect, ellipse) {
+  stroke-width: 1.2px; vector-effect: non-scaling-stroke;
+}
+.subagent-thread-entries[data-layout="cards"] .subagent-thread-entry-head {
+  min-height: 66px; flex-direction: column; justify-content: center; text-align: center; gap: 4px;
+}
+.subagent-thread-entries[data-layout="cards"] .subagent-thread-glyph svg { width: 22px; height: 22px; }
+.subagent-thread-entries[data-layout="cards"] .out-name { max-width: 100%; }
+.subagent-thread-status { flex: none; white-space: nowrap; color: var(--fg-2); font-size: 12px; }
+/* 长标题在自己的位置省略，横向条目的状态始终右对齐。 */
+.subagent-thread-entries:not([data-layout="cards"]) .subagent-thread-status { margin-inline-start: auto; }
+.subagent-thread-metrics {
+  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; padding: 4px 0 8px;
+  font-variant-numeric: tabular-nums;
+}
+.subagent-thread-metrics > span { min-width: 0; display: grid; gap: 2px; color: var(--fg-3); font-size: 11px; }
+.subagent-thread-metrics b { color: var(--fg); font-size: 13px; font-weight: 600; }
+.subagent-thread-metrics small { font-size: inherit; }
+.subagent-thread-groups > .btn { margin-top: 12px; }

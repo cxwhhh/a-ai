@@ -13,7 +13,8 @@ export async function PATCH(req: Request, { params, runtime }: Ctx) {
   const body = await req.json().catch(() => null);
   const { id } = await params;
   if (typeof body?.archived === "boolean") {
-    const result = setArchive((sid, uid) => runtime.agents.get(sid, uid), "project", id, user.id, body.archived);
+    const result = setArchive((sid, uid) => runtime.agents.get(sid, uid), "project", id, user.id, body.archived,
+      (sessionId, userId) => !!runtime.subagents?.isBusy({ sessionId, userId }));
     if (result === "busy") return Response.json({ error: "项目还有对话在运行，请停止并等待收尾后再归档" }, { status: 409 });
     return result === "ok" ? Response.json({ ok: true }) : notFound();
   }

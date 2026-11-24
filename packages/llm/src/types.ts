@@ -51,6 +51,8 @@ export interface ChatRequest {
   messages: ChatMessage[];
   tools?: ToolSpec[];
   temperature?: number;
+  /** 子任务预留本次输出额度。未指定时沿用适配器默认。 */
+  maxOutputTokens?: number;
   signal?: AbortSignal;
 }
 

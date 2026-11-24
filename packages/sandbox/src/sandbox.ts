@@ -1,4 +1,5 @@
 import { execFile, execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -13,7 +14,7 @@ import { networkPolicy } from "./sandbox-network";
  *      只是字符串检查，能被绕过，但能让模型马上知道“该去哪找”，查得更准。
  *   2. 用户确认：会改东西的命令先问用户（run.ts 的 confirm，第 7.22 步）。
  *   3. 操作系统级隔离：就算命令绕过了第 1 层，也读不到、写不了授权范围之外的文件。
- *        docker   ：每个会话一个容器，只挂载工作区和授权目录（只读的就只读挂载），默认断网
+ *        docker   ：每个账号工作区一个容器，只挂载工作区和授权目录（只读的就只读挂载），默认断网
  *        seatbelt ：macOS 自带的 sandbox-exec，用规则限制读写路径和网络，不需要装 Docker
  *        local    ：没有隔离，只有第 1、2 层（开发时用，设置页会提示“未隔离”）
  *
@@ -209,6 +210,9 @@ export interface ExecOptions {
    */
   argv?: string[];
   env: Record<string, string | undefined>;
+  /** 固定应用运行器使用标准输入，应用数据不会进入命令行。 */
+  input?: string;
+  signal?: AbortSignal;
 }
 
 export interface Exec {
@@ -322,12 +326,17 @@ export function seatbeltProfile(workspace: string, info: SandboxInfo) {
     .join("\n");
 }
 
-/* ---------- docker：每个会话一个常驻容器 ---------- */
+/* ---------- docker：每个账号工作区一个可复用容器 ---------- */
 
 const IMAGE = () => process.env.A_SANDBOX_IMAGE || "a-ai-sandbox:latest";
 const IDLE_MS = 15 * 60_000;
-const containers = new Map<string, { lastUsed: number; ready: Promise<void> }>();
+// 同一主机上的试用实例使用独立标签，启动时只回收自己遗留的容器。
+const namespace = process.env.A_SANDBOX_NAMESPACE || "1";
+const sandboxLabel = `a-ai.sandbox=${namespace}`;
+const sandboxPrefix = namespace === "1" ? "a-ai-sbx-" : `a-ai-sbx-${namespace}-`;
+const containers = new Map<string, { lastUsed: number; active: number; ready: Promise<void> }>();
 let sweeper: ReturnType<typeof setInterval> | undefined;
+let activeDockerRuns = 0;
 
 const docker = (args: string[], timeout = 60_000) =>
   new Promise<string>((resolve, reject) =>
@@ -397,27 +406,37 @@ async function dockerExec(o: ExecOptions, info: SandboxInfo): Promise<Exec> {
   // 旧命令继续收尾，新命令使用新策略的容器；不通过强删正在执行的容器来应用设置。
   const policy = networkPolicy();
   info = { ...info, network: policy.enabled };
-  const name = "a-ai-sbx-" + o.sessionId.replace(/[^a-zA-Z0-9_.-]/g, "").slice(0, 40) + "-net" + Number(policy.enabled) + "-v" + policy.revision;
+  // 会话 ID 仍用于审计。同一账号的聊天、代码和应用操作通过工作区复用执行环境。
+  const workspaceKey = createHash("sha256").update(path.resolve(o.workspace)).digest("hex").slice(0, 32);
+  const name = `${sandboxPrefix}user-${workspaceKey}-net${Number(policy.enabled)}-v${policy.revision}`;
   let c = containers.get(name);
   if (!c) {
     const ready = createContainer(name, o.workspace, info).catch((e: Error) => {
       throw new Error("沙箱容器启动失败：" + explainDocker(e.message));
     });
-    c = { lastUsed: Date.now(), ready };
+    c = { lastUsed: Date.now(), active: 0, ready };
     containers.set(name, c);
     c.ready.catch(() => containers.delete(name));
   }
   await c.ready;
+  o.signal?.throwIfAborted();
   c.lastUsed = Date.now();
   startSweeper();
 
-  // 在容器里用 setsid 开一个新会话，把它的进程号记下来，结束时按进程组整组杀掉
+  // 记录进程组方便取消。正常退出清理标记，避免频繁调用应用时在 tmpfs 留下临时文件。
   const runId = Math.random().toString(36).slice(2);
   const pidFile = `/tmp/.a-ai-run-${runId}`;
-  const wrapped = `echo $$ > ${pidFile}\n${o.script}`;
+  const wrapped = `echo $$ > ${pidFile}\ntrap 'rm -f -- ${pidFile}' EXIT\n${o.script}`;
   const envArgs = Object.entries(o.env).flatMap(([k, v]) => (v === undefined ? [] : ["-e", `${k}=${v}`]));
-  const proc = spawn("docker", ["exec", "-w", o.cwd, ...envArgs, name, "setsid", "-w", "bash", "-c", wrapped], {
-    stdio: ["ignore", "pipe", "pipe"],
+  const input = o.input === undefined ? [] : ["-i"];
+  const proc = spawn("docker", ["exec", ...input, "-w", o.cwd, ...envArgs, name, "setsid", "-w", "bash", "-c", wrapped], {
+    stdio: [input.length ? "pipe" : "ignore", "pipe", "pipe"],
+  });
+  c.active++;
+  const running = c;
+  proc.once("close", () => {
+    running.active--;
+    running.lastUsed = Date.now();
   });
   let killed = false;
   const kill = () => {
@@ -429,7 +448,7 @@ async function dockerExec(o: ExecOptions, info: SandboxInfo): Promise<Exec> {
 }
 
 /**
- * 创建会话容器：
+ * 创建账号工作区容器：
  *   --network none        默认断网
  *   --memory/--cpus/--pids-limit  防止吃光机器、fork 炸弹
  *   --cap-drop ALL + no-new-privileges + 非 root 用户
@@ -455,7 +474,7 @@ async function createContainer(name: string, workspace: string, info: SandboxInf
   }
 
   await docker([
-    "run", "-d", "--name", name, "--label", "a-ai.sandbox=1",
+    "run", "-d", "--name", name, "--label", sandboxLabel,
     "--memory", process.env.A_SANDBOX_MEMORY || "1g", "--cpus", process.env.A_SANDBOX_CPUS || "1", "--pids-limit", "256",
     "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", "1000:1000",
     "--read-only", "--tmpfs", "/tmp:rw,exec,size=512m",
@@ -464,19 +483,19 @@ async function createContainer(name: string, workspace: string, info: SandboxInf
   ]);
 }
 
-/** 每分钟看一次：15 分钟没用过的会话容器删掉 */
+/** 空闲时可回收容器，账号工作区及部署记录由持久卷提供。 */
 function startSweeper() {
   if (sweeper) return;
   sweeper = setInterval(() => {
     for (const [name, c] of containers)
-      if (Date.now() - c.lastUsed > IDLE_MS) {
+      if (!c.active && Date.now() - c.lastUsed > IDLE_MS) {
         containers.delete(name);
         docker(["rm", "-f", name]).catch(() => {});
       }
   }, 60_000);
   sweeper.unref();
   // 服务重启前留下的沙箱容器（不在 containers 里）也清掉
-  docker(["ps", "-a", "--filter", "label=a-ai.sandbox=1", "--format", "{{.Names}}"])
+  docker(["ps", "-a", "--filter", `label=${sandboxLabel}`, "--format", "{{.Names}}"])
     .then((out) => out.split("\n").filter((n) => n && !containers.has(n)).forEach((n) => docker(["rm", "-f", n]).catch(() => {})))
     .catch(() => {});
 }
@@ -520,12 +539,29 @@ export interface RunResult {
  * 所以 bash 退出后最多再等 300ms，然后把整组结束。
  */
 export async function runInSandbox(
-  o: ExecOptions & { timeoutMs: number; signal?: AbortSignal; onData(stream: "out" | "err", text: string): void },
+  o: ExecOptions & { timeoutMs: number; onData(stream: "out" | "err", text: string): void },
 ): Promise<RunResult> {
+  o.signal?.throwIfAborted();
+  if (sandboxInfo().mode !== "docker") return runProcess(o);
+  const limit = Number(process.env.A_SANDBOX_MAX_CONCURRENT ?? 0);
+  if (Number.isSafeInteger(limit) && limit > 0 && activeDockerRuns >= limit) {
+    throw new Error("服务器代码执行已达到并发上限，请稍后再试");
+  }
+  // 容器创建也占用执行名额。启动失败、取消或超时后都要释放名额。
+  activeDockerRuns++;
+  try {
+    return await runProcess(o);
+  } finally {
+    activeDockerRuns--;
+  }
+}
+
+async function runProcess(o: Parameters<typeof runInSandbox>[0]): Promise<RunResult> {
   const { proc, kill } = await sandboxExec(o);
   let timedOut = false;
   const timer = setTimeout(() => ((timedOut = true), kill()), o.timeoutMs);
   o.signal?.addEventListener("abort", kill, { once: true });
+  if (o.signal?.aborted) kill();
   // docker 模式下命令被杀时，容器里的 setsid 会多打一行“child … did not exit normally”，去掉它，按“被 SIGKILL 结束”报告
   let killedInContainer = false;
   const SETSID_NOISE = /setsid: child \d+ did not exit normally[^\n]*\n?/;
@@ -552,6 +588,10 @@ export async function runInSandbox(
           resolve({ code, signal, timedOut });
         }, 300).unref(),
       );
+      if (proc.stdin && o.input !== undefined) {
+        proc.stdin.on("error", () => { /* 容器进程先退出时，以退出结果为准。 */ });
+        proc.stdin.end(o.input);
+      }
     });
   } finally {
     clearTimeout(timer);

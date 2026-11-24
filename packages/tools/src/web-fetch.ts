@@ -37,7 +37,7 @@ export const webFetch: Tool<{
         "User-Agent": UA,
         Accept: "text/html,text/plain,*/*"
       }
-    });
+    }, ctx.checkWebUrl);
     if (!res.ok) throw new Error(`打开网页失败：HTTP ${res.status}${httpHint(res.status)}`);
 
     const type = res.headers.get("content-type") || "";
@@ -77,7 +77,7 @@ export const UA = "Mozilla/5.0 (compatible; A.ai/0.1; +agent)";
  *   - 不只看网址里写的主机名，还做一次 DNS 解析：evil.example.com 也可能解析到 127.0.0.1
  *   - 自己处理重定向（redirect: "manual"）：公网地址 302 跳到 http://192.168.1.1 也会被拦下
  */
-export async function safeFetch(url: string, init: RequestInit & { signal?: AbortSignal }): Promise<Response> {
+export async function safeFetch(url: string, init: RequestInit & { signal?: AbortSignal }, checkUrl?: (url: URL) => void): Promise<Response> {
   let u: URL;
   try {
     u = new URL(String(url ?? ""));
@@ -85,6 +85,7 @@ export async function safeFetch(url: string, init: RequestInit & { signal?: Abor
     throw new Error(`不是有效的网址：${url}。要写完整的 http(s)://… 地址；没有网址就先 web_search`);
   }
   for (let hop = 0; hop < 6; hop++) {
+    checkUrl?.(u);
     if (!/^https?:$/.test(u.protocol)) throw new Error(`只支持 http/https，收到的是 ${u.protocol}。本地文件用 read_file / read_document`);
     await assertPublic(u.hostname);
     const res = await fetch(u, {

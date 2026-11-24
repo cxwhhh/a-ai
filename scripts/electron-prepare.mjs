@@ -13,4 +13,6 @@ await build({
   outfile: path.join(bundle, "main.cjs"),
   bundle: true, platform: "node", format: "cjs", target: "node22", external: ["electron"],
 });
-await fs.copyFile(path.join(root, "apps/desktop/src/splash.html"), path.join(bundle, "splash.html"));
+await Promise.all(["splash.html", "preload.cjs", "titlebar.html", "titlebar-preload.cjs"].map((file) =>
+  fs.copyFile(path.join(root, "apps/desktop/src", file), path.join(bundle, file)),
+));

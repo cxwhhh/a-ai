@@ -1,5 +1,6 @@
 import { gzipSync, gunzipSync } from "node:zlib";
 import { db } from "../../storage/src/db";
+import { SUBAGENT_REFERENCE_TAG } from "../../protocol/src/lib/message-tags";
 import { analyzeRequestContext } from "./analysis";
 import type { ToolCall } from "../../llm/src/types";
 import type { RequestResponse, RequestSnapshot, TraceEntry, TraceEntryMeta, TraceFinishFacts, TracePreview, TraceRecordDetail, TraceToolResult } from "./types";
@@ -108,19 +109,55 @@ export function readTraceEntry(sessionId: string, userId: string, id: string, co
   if (result && !result.usage && typeof row.message_usage === "string") result.usage = JSON.parse(row.message_usage);
   let baseline: { entry: TraceEntry; request: RequestSnapshot } | undefined;
   if (compare) {
-    const { runId, inputId, phase, parentId } = entry.meta;
+    const { runId, inputId, phase, parentId, taskId } = entry.meta;
     // 排队输入可共享 runId，子 Agent 可共享步骤号。对比必须同时匹配输入、阶段与父调用。
     const previous = db().prepare(`SELECT p.id,p.at,p.finished_at,p.outcome,p.meta,p.payload
       FROM conversation_trace_entries p JOIN sessions s ON s.id=p.session_id
       WHERE p.session_id=? AND s.user_id=? AND p.rowid<?
         AND json_extract(p.meta,'$.kind')='request' AND json_extract(p.meta,'$.runId')=?
         AND json_extract(p.meta,'$.inputId')=? AND json_extract(p.meta,'$.phase')=?
-        AND json_extract(p.meta,'$.parentId') IS ? ORDER BY p.rowid DESC LIMIT 1`)
-      .get(sessionId, userId, row.sequence, runId, inputId, phase, parentId ?? null);
+        AND json_extract(p.meta,'$.parentId') IS ? AND json_extract(p.meta,'$.taskId') IS ? ORDER BY p.rowid DESC LIMIT 1`)
+      .get(sessionId, userId, row.sequence, runId, inputId, phase, parentId ?? null, taskId ?? null);
     if (previous) {
       try { baseline = { entry: toEntry(previous), request: decode(previous.payload) }; }
       catch { /* 旧快照损坏不影响查看当前请求。 */ }
     }
   }
   return { ...entry, kind: "request", request: payload, response: result, context: compare ? analyzeRequestContext(payload, baseline) : undefined };
+}
+
+/** 旧主请求没有保存起点，按本会话内的输入 ID 找回起点，兼容当时附加在输入末尾的环境快照。 */
+function legacyTurnStart(sessionId: string, inputId: string, messages: RequestSnapshot["messages"]) {
+  const row = db().prepare("SELECT data FROM messages WHERE session_id=? AND id=? AND role='user'").get(sessionId, inputId);
+  if (!row) return -1;
+  const { content, feedback } = JSON.parse(String(row.data));
+  if (typeof content !== "string" || feedback) return -1;
+  const environmentPrefix = `${content}\n\n<环境>\n`;
+  let exact = -1;
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index];
+    if (message.role !== "user") continue;
+    if (message.content.startsWith(environmentPrefix) && message.content.endsWith("\n</环境>")) return index;
+    if (exact < 0 && message.content === content) exact = index;
+  }
+  return exact;
+}
+
+/** 请求详情只交付当前对话的消息。用量和变化仍按原快照计算，提示词由独立标签读取。 */
+export function readTraceRecordView(sessionId: string, userId: string, id: string, compare = false): TraceRecordDetail | null {
+  const detail = readTraceEntry(sessionId, userId, id, compare);
+  if (!detail || detail.kind !== "request" || detail.meta.kind !== "request") return detail;
+  const { messages, turnStart, referenceIndex, ...request } = detail.request;
+  const prompts = messages.filter((message) => message.role === "system").map((message) => message.content);
+  const { phase, inputId } = detail.meta;
+  let current: RequestSnapshot["messages"] = [];
+  if (phase === "chat") {
+    const start = turnStart === undefined ? legacyTurnStart(sessionId, inputId, messages) : turnStart;
+    if (start !== null && start >= 0 && messages[start]?.role === "user") current = messages.slice(start);
+  } else if (phase === "research") {
+    const inherited = referenceIndex === undefined && messages[2]?.role === "user"
+      && messages[2].content.startsWith(SUBAGENT_REFERENCE_TAG) ? 2 : referenceIndex;
+    current = messages.filter((_, index) => index !== inherited);
+  }
+  return { ...detail, prompts, request: { ...request, messages: current.filter((message) => message.role !== "system") } };
 }

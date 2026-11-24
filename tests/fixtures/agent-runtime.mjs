@@ -1,8 +1,8 @@
 import { before, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
 import path from "node:path";
+import clientPaths from "../../apps/desktop/src/client-paths.cjs";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import ts from "typescript";
@@ -10,7 +10,7 @@ import ts from "typescript";
 // 使用实际队列、存储和 Agent 循环。仅环境探测与工具目录使用受控夹具，模型只返回预设响应。
 // 所有数据写入临时目录；不连接模型服务，不启动真实命令，也不访问用户数据库。
 const root = fileURLToPath(new URL("../../", import.meta.url));
-const data = mkdtempSync(path.join(tmpdir(), "aai-queue-test-"));
+const data = mkdtempSync(path.join(clientPaths.temporaryDirectory("tests"), "aai-queue-test-"));
 process.env.A_DATA_DIR = data;
 const require = createRequire(import.meta.url);
 const cache = new Map();

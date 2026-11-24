@@ -55,6 +55,15 @@ export function getProject(id: string | undefined | null, userId: string): Proje
   return r ? toProject(r) : null;
 }
 
+/** 兼容项目归属尚未存进应用库时生成的网页，通过当前项目的有效会话引用查找。 */
+export function projectAppReferences(projectId: string, userId: string): Set<string> {
+  const refs = db().prepare(`SELECT DISTINCT json_extract(a.data, '$.workspaceApp.id') AS id
+    FROM artifacts a JOIN sessions s ON s.id=a.session_id
+    WHERE s.project_id=? AND s.user_id=? AND a.superseded_by IS NULL AND json_extract(a.data, '$.workspaceApp.id') IS NOT NULL`)
+    .all(projectId, userId);
+  return new Set(refs.map((ref) => String(ref.id)));
+}
+
 export function createProject(userId: string, p: Omit<Project, "id" | "createdAt">): Project {
   const id = newId("p");
   const now = Date.now();

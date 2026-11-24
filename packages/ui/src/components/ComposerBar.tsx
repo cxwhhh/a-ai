@@ -5,6 +5,8 @@ import type { StoredMessage } from "../../../protocol/src/lib/shared";
 import { currentOption, modelOptions, reasoningOptions, type Settings } from "../../../protocol/src/lib/settings";
 import type { ReasoningEffort } from "../../../protocol/src/agent-events";
 import { ICheck, IChevron, IModel, IUpDown } from "./Icons";
+import { cx } from "../utils/cx";
+import "./ChartContrast.css";
 
 /**
  * 输入框下方的一行，全部靠右：上下文占用在左，模型名在最右边，中间空约 4 个字。
@@ -19,6 +21,7 @@ export function ComposerBar(props: {
   onPickModel(value: string): void;
   onPickEffort(value: ReasoningEffort): void;
   modelDisabled?: boolean;
+  multiAgent?: { enabled: boolean; onChange(value: boolean): void };
   onManage(): void;
   onUsage(): void;
 }) {
@@ -26,7 +29,7 @@ export function ComposerBar(props: {
     <div className="cbar">
       <div className="spacer" />
       <ContextRing {...props} />
-      <ModelPicker settings={props.settings} onPick={props.onPickModel} onPickEffort={props.onPickEffort} onManage={props.onManage} disabled={props.modelDisabled} />
+      <ModelPicker settings={props.settings} onPick={props.onPickModel} onPickEffort={props.onPickEffort} onManage={props.onManage} disabled={props.modelDisabled} multiAgent={props.multiAgent} />
     </div>
   );
 }
@@ -35,7 +38,7 @@ export function ComposerBar(props: {
 
 const EFFORT_LABEL: Record<ReasoningEffort, string> = { default: "Default", low: "Low", medium: "Medium", high: "High", max: "Max" };
 
-function ModelPicker(props: { settings: Settings; onPick(v: string): void; onPickEffort(v: ReasoningEffort): void; onManage(): void; disabled?: boolean }) {
+function ModelPicker(props: { settings: Settings; onPick(v: string): void; onPickEffort(v: ReasoningEffort): void; onManage(): void; disabled?: boolean; multiAgent?: { enabled: boolean; onChange(value: boolean): void } }) {
   const [view, setView] = useState<"summary" | "models" | "effort" | null>(null);
   const [query, setQuery] = useState("");
   const panelId = useId();
@@ -89,6 +92,11 @@ function ModelPicker(props: { settings: Settings; onPick(v: string): void; onPic
               <button type="button" className="pop-item model-pop-summary" disabled={props.disabled} onClick={() => setView("effort")}>
                 <span>推理等级</span><span className="ellipsis pop-dim">{EFFORT_LABEL[effort]}</span><IChevron width={13} height={13} />
               </button>
+              {props.multiAgent && <div className="pop-item model-pop-summary model-pop-agent-mode">
+                <span>多agent智能体模式</span>
+                <button type="button" className={cx("switch", props.multiAgent.enabled && "on")} role="switch" aria-label="多agent智能体模式"
+                  aria-checked={props.multiAgent.enabled} disabled={props.disabled} onClick={() => props.multiAgent?.onChange(!props.multiAgent.enabled)}><span /></button>
+              </div>}
             </>
           ) : (
             <>

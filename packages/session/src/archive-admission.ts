@@ -18,7 +18,8 @@ export function isSessionArchived(sessionId: string, userId: string): boolean {
  * 标记和事件在同一事务内提交，日志写入失败时一并回滚。
  */
 export function setArchive(lookup: (id: string, userId: string) => Agent | undefined,
-  target: ArchiveTarget, id: string, userId: string, archived: boolean): "ok" | "missing" | "busy" {
+  target: ArchiveTarget, id: string, userId: string, archived: boolean,
+  hasRunningSubagents?: (id: string, userId: string) => boolean): "ok" | "missing" | "busy" {
   const table = target === "session" ? "sessions" : "projects";
   return tx(() => {
     const row = db().prepare(`SELECT archived_at FROM ${table} WHERE id=? AND user_id=?`).get(id, userId);
@@ -28,7 +29,7 @@ export function setArchive(lookup: (id: string, userId: string) => Agent | undef
     const ids = target === "session" ? [id] : db().prepare("SELECT id FROM sessions WHERE project_id=? AND user_id=?").all(id, userId).map((s) => String(s.id));
     if (archived && ids.some((sid) => {
       const status = lookup(sid, userId)?.status;
-      return status === "running" || status === "closing";
+      return status === "running" || status === "closing" || hasRunningSubagents?.(sid, userId);
     })) return "busy";
     db().prepare(`UPDATE ${table} SET archived_at=? WHERE id=? AND user_id=?`).run(archived ? Date.now() : null, id, userId);
     for (const sid of ids) recordAgentLog(sid, {

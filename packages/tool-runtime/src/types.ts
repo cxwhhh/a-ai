@@ -12,10 +12,17 @@ export interface ToolRegistry {
 /** 工具运行时能拿到的上下文 */
 export interface ToolContext {
   sessionId: string;
+  /** 历史搜索从当前问题之前查找，避免把正在执行的搜索本身当成历史匹配。 */
+  inputId?: string;
+  /** 由服务端从当前会话取得的项目归属，工具参数无法改写。 */
+  projectId?: string;
   /** 当前用户 id：审计日志按用户记录（run_command / run_python） */
   userId?: string;
   /** 当前用户的工作区目录（绝对路径）。文件工具和 run_python 只能在这里面读写 */
   workspace: string;
+  /** 子任务附加的资源边界。文件仍沿用工作区解析，网页跳转逐次检查。 */
+  readPath?(path?: string): import("../../workspace/src/access").Resolved;
+  checkWebUrl?(url: URL): void;
   /** 把内容推到右栏，并返回保存后的产出物 */
   emitArtifact(a: Omit<Artifact, "id" | "createdAt">): Artifact;
   /** 用户点“停止”时会被触发，耗时工具应当监听它 */

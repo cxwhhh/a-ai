@@ -6,6 +6,7 @@ node_modules
 dist
 dist-electron
 release
+updates
 .env*
 *.log
 __MACOSX
