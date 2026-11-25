@@ -1081,7 +1081,7 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
               messages={cur.messages}
               systemTokens={fixedTokens.system}
               toolsTokens={fixedTokens.tools}
-              onPickModel={(value) => void pickModel(value)}
+              onPickModel={(value) => void pickModel(value, value === settings.currentModel ? settings.reasoningEffort : "default")}
               onPickEffort={(effort) => void pickModel(selection.model, effort)}
               modelDisabled={isArchived || modelBusyIds.includes(cur.id) || streaming}
               multiAgent={cur.projectId ? undefined : { enabled: multiAgent, onChange: (enabled) => void changeMultiAgent(enabled) }}

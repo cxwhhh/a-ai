@@ -225,7 +225,7 @@ export function SettingsModal(props: {
                     {reasoningOptions(s, s.currentModel).length > 1 && (
                       <Row label="默认思考强度">
                         <select className="set-input select" value={s.reasoningEffort} onChange={(e) => update({ reasoningEffort: e.target.value as Settings["reasoningEffort"] })}>
-                          {reasoningOptions(s, s.currentModel).map((effort) => <option key={effort} value={effort}>{{ default: "模型默认", low: "低", medium: "中", high: "高", max: "最高" }[effort]}</option>)}
+                          {reasoningOptions(s, s.currentModel).map((effort) => <option key={effort} value={effort}>{{ default: "默认", low: "低", medium: "中", high: "高", xhigh: "极高", max: "最高" }[effort]}</option>)}
                         </select>
                       </Row>
                     )}

@@ -20,10 +20,10 @@ test("SQLite 按事件类型拒绝缺失或错误的作用域和字段", () => {
     { ...event, detail: { ...detail, extra: "unexpected" } },
     { ...event, kind: "unknown-kind" },
     { kind: "archived", runId: "run-1", detail: { target: "session", targetId: id } },
-  ]) assert.throws(() => recordAgentLog(id, invalid), /agent_event_contract_v1/);
+  ]) assert.throws(() => recordAgentLog(id, invalid), /agent_event_contract_v2/);
   const insert = db().prepare("INSERT INTO agent_events(session_id,at,kind,run_id,input_id,detail) VALUES(?,?,?,?,?,?)");
-  assert.throws(() => insert.run(id, 1, "tool-result", "run-1", "input-1", "{broken"), /agent_event_contract_v1/);
-  assert.throws(() => insert.run(id, 1, "model-request", "run-1", "input-1", '{"step":1}'), /agent_event_contract_v1/);
+  assert.throws(() => insert.run(id, 1, "tool-result", "run-1", "input-1", "{broken"), /agent_event_contract_v2/);
+  assert.throws(() => insert.run(id, 1, "model-request", "run-1", "input-1", '{"step":1}'), /agent_event_contract_v2/);
   assert.deepEqual(readAgentEvents("u", id), []);
   recordAgentLog(id, event);
   recordAgentLog(id, { kind: "stop-requested", runId: "run-1", detail: { reason: "两轮之间停止" } });

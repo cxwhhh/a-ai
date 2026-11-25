@@ -19,10 +19,10 @@ import { spawnSync } from "node:child_process";
 const dir = mkdtempSync(path.join(clientPaths.temporaryDirectory("tests"), "aai-history-test-"));
 process.env.A_DATA_DIR = dir;
 for (const name of ["storage/src/db", "storage/src/store", "storage/src/history-index", "application/projects/src/projects", "memory/src/memory",
-  "protocol/src/lib/attachments", "protocol/src/lib/agentIcons", "protocol/src/lib/shared", "session/src/log", "storage/src/log-schema"]) {
+  "protocol/src/lib/attachments", "protocol/src/lib/agentIcons", "protocol/src/lib/shared", "protocol/src/lib/reasoning-effort", "session/src/log", "storage/src/log-schema"]) {
   const source = readFileSync(new URL("../packages/" + name + ".ts", import.meta.url), "utf8");
   writeFileSync(path.join(dir, path.basename(name) + ".cjs"), ts.transpileModule(
-    source.replace(/from "(?:(?:\.\.?\/)+(?:[^"\/]+\/)*)(db|memory|attachments|agentIcons|shared|log|log-schema|history-index)"/g, 'from "./$1.cjs"'),
+    source.replace(/from "(?:(?:\.\.?\/)+(?:[^"\/]+\/)*)(db|memory|attachments|agentIcons|shared|reasoning-effort|log|log-schema|history-index)"/g, 'from "./$1.cjs"'),
     { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } },
   ).outputText);
 }
@@ -55,13 +55,15 @@ test("收紧事件表时保留有效记录与游标，约束失败则回滚旧�
       INSERT INTO sessions VALUES('s');
       CREATE TABLE agent_events(
         id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-        at INTEGER NOT NULL, kind TEXT NOT NULL, run_id TEXT, input_id TEXT, detail TEXT NOT NULL
+        at INTEGER NOT NULL, kind TEXT NOT NULL, run_id TEXT, input_id TEXT, detail TEXT NOT NULL,
+        CONSTRAINT agent_event_contract_v1 CHECK (json_extract(detail, '$.effort') IS NULL
+          OR json_extract(detail, '$.effort') IN ('default', 'low', 'medium', 'high', 'max'))
       );
       CREATE INDEX agent_events_session ON agent_events(session_id, id DESC);
       INSERT INTO agent_events VALUES(2,'s',0,'turn-start','r','i','{}');
       INSERT INTO agent_events VALUES(9,'s',0,'tool-result',NULL,NULL,'{}');
       BEGIN IMMEDIATE;`);
-    assert.throws(() => migrateAgentLogTable(d), /agent_event_contract_v1/);
+    assert.throws(() => migrateAgentLogTable(d), /agent_event_contract_v2/);
     d.exec("ROLLBACK");
     assert.equal(d.prepare("SELECT COUNT(*) AS n FROM agent_events").get().n, 2);
     d.exec("BEGIN IMMEDIATE; DELETE FROM agent_events WHERE id=9;");
@@ -69,8 +71,9 @@ test("收紧事件表时保留有效记录与游标，约束失败则回滚旧�
     migrateAgentLogTable(d);
     d.exec("COMMIT");
     assert.equal(d.prepare("SELECT id FROM agent_events").get().id, 2);
-    const insert = d.prepare("INSERT INTO agent_events(session_id,at,kind,run_id,input_id,detail) VALUES('s',1,'turn-start','r','j','{}')");
-    assert.equal(insert.run().lastInsertRowid, 10);
+    const insert = d.prepare("INSERT INTO agent_events(session_id,at,kind,detail) VALUES('s',1,'model-selected',?)");
+    assert.equal(insert.run('{"model":"test-model","effort":"xhigh"}').lastInsertRowid, 10);
+    assert.throws(() => insert.run('{"model":"test-model","effort":"unknown"}'), /agent_event_contract_v2/);
     d.exec("DELETE FROM sessions WHERE id='s'");
     assert.equal(d.prepare("SELECT COUNT(*) AS n FROM agent_events").get().n, 0);
   } finally {

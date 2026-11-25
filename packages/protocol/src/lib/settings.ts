@@ -4,12 +4,15 @@
  * 其中 systemPrompt、maxSteps、maxFixRounds、memory、skills 会被 agent 循环实际使用（见 src/lib/agent/run.ts）。
  */
 import type { ReasoningEffort } from "../agent-events";
+import { MODEL_REASONING_EFFORTS, REASONING_EFFORTS, type ModelReasoningEffort } from "./reasoning-effort";
 
 /* ---------------- 模型连接 ---------------- */
 
 export interface ModelEntry {
   id: string; // 发给 API 的模型名，例如 deepseek-flash
   contextWindow: number; // 上下文长度（token），用于计算占用百分比
+  /** 自定义兼容服务中该模型支持的 reasoning_effort；旧连接缺少此项时沿用默认。 */
+  reasoningEfforts?: ModelReasoningEffort[];
 }
 
 /** 一个“连接” = 一个 OpenAI 兼容的 API 地址 + Key + 它下面可用的若干模型 */
@@ -78,13 +81,27 @@ export function currentOption(s: Pick<Settings, "connections" | "currentModel">)
   return all.find((o) => o.value === s.currentModel) ?? all[0];
 }
 
-/** 按已知模型协议展示可发送的强度；自定义兼容端点继续使用连接默认值。 */
+/** 官方 GPT-6 的工具调用走 Responses。兼容网关仍按用户配置走 Chat Completions。 */
+export function openAIReasoningProtocol(connection: Connection, model: string) {
+  if (connection.preset !== "custom" || !URL.canParse(connection.baseUrl)) return;
+  if (new URL(connection.baseUrl).hostname !== "api.openai.com") return;
+  if (/^gpt-6(?:\.2-(?:sol|astra)|\.1-terra|-luna)(?:-\d{4}-\d{2}-\d{2})?$/.test(model)) return "openai-responses";
+  if (/^gpt-5\.[245](?:-\d{4}-\d{2}-\d{2})?$/.test(model)) return "openai-compatible";
+}
+
+/** 只提供服务端会区分的档位。例如 DeepSeek 的 medium 与 xhigh 都等同于 high。 */
 export function reasoningOptions(s: Pick<Settings, "connections">, model: string): ReasoningEffort[] {
   const split = model.indexOf("/");
   const connection = split > 0 ? s.connections.find((c) => c.id === model.slice(0, split)) : undefined;
   const id = model.slice(split + 1);
-  if (connection?.preset === "deepseek" && /^(deepseek-flash|deepseek-v4(?:\.1)?-(?:flash|pro))$/.test(id)) return ["default", "low", "high", "max"];
-  if (connection?.preset === "anthropic" && /^(claude-(?:opus|sonnet|haiku)-5-5)(?:-\d{8})?$/.test(id)) return ["default", "low", "medium", "high"];
+  const entry = connection?.models.find((m) => m.id === id);
+  if (!connection || !entry) return ["default"];
+  if (connection.preset === "deepseek" && /^(deepseek-flash|deepseek-v4(?:\.1)?-(?:flash|pro))$/.test(id)) return ["default", "low", "high", "max"];
+  if (connection.preset === "anthropic" && /^claude-(?:opus|sonnet|haiku)-5-5(?:-\d{8})?$/.test(id)) return [...REASONING_EFFORTS];
+  const protocol = openAIReasoningProtocol(connection, id);
+  if (protocol === "openai-responses") return [...REASONING_EFFORTS];
+  if (protocol === "openai-compatible") return ["default", "low", "medium", "high", "xhigh"];
+  if (connection.preset === "custom") return ["default", ...(entry.reasoningEfforts ?? [])];
   return ["default"];
 }
 
@@ -189,7 +206,7 @@ export function normalizeSettings(input: unknown): Settings {
     commandApproval: s.commandApproval === "ask" || s.commandApproval === "auto" ? s.commandApproval : "readonly",
     connections: Array.isArray(s.connections) ? s.connections.slice(0, 20).map(normalizeConnection).filter((c): c is Connection => !!c) : [],
     currentModel: typeof s.currentModel === "string" && s.currentModel ? s.currentModel : d.currentModel,
-    reasoningEffort: s.reasoningEffort === "low" || s.reasoningEffort === "medium" || s.reasoningEffort === "high" || s.reasoningEffort === "max" ? s.reasoningEffort : "default",
+    reasoningEffort: REASONING_EFFORTS.find((effort) => effort === s.reasoningEffort) ?? "default",
     version: d.version,
   };
 }
@@ -206,7 +223,13 @@ function normalizeConnection(x: unknown): Connection | null {
           const e = (m ?? {}) as Record<string, unknown>;
           const mid = typeof e.id === "string" ? e.id.trim().slice(0, 120) : "";
           const cw = Number(e.contextWindow);
-          return mid ? { id: mid, contextWindow: Number.isFinite(cw) && cw > 0 ? Math.round(cw) : 128_000 } : null;
+          if (!mid) return null;
+          const configuredEfforts = e.reasoningEfforts;
+          const reasoningEfforts = preset === "custom" && Array.isArray(configuredEfforts)
+            ? MODEL_REASONING_EFFORTS.filter((effort) => configuredEfforts.includes(effort)) : [];
+          const model: ModelEntry = { id: mid, contextWindow: Number.isFinite(cw) && cw > 0 ? Math.round(cw) : 128_000 };
+          if (reasoningEfforts.length) model.reasoningEfforts = reasoningEfforts;
+          return model;
         })
         .filter((m): m is ModelEntry => !!m)
         .slice(0, 50)

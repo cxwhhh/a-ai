@@ -1,4 +1,4 @@
-import type { ChatMessage, ChatRequest, LLMProvider, StreamChunk, ToolCall, Usage } from "../types";
+import type { ChatMessage, ChatRequest, LLMProvider, ModelRequestOptions, StreamChunk, ToolCall, Usage } from "../types";
 import { ModelStreamInterrupted } from "../stream";
 
 /**
@@ -19,7 +19,9 @@ export interface OpenAICompatibleOptions {
   sendReasoning?: boolean;
   /** DeepSeek 的思考开关：不传 = 用模型默认（开启） */
   thinking?: "enabled" | "disabled";
-  effort?: "low" | "medium" | "high" | "max";
+  effort?: ModelRequestOptions["reasoningEffort"];
+  /** OpenAI 官方推理模型要求 max_completion_tokens。兼容服务继续用 max_tokens。 */
+  completionTokenLimit?: boolean;
   /** 显示名 */
   label?: string;
 }
@@ -33,7 +35,8 @@ export class OpenAICompatibleProvider implements LLMProvider {
 
   requestOptions(req: ChatRequest) {
     return {
-      protocol: "openai-compatible" as const, model: this.o.model, temperature: req.temperature, maxOutputTokens: req.maxOutputTokens,
+      protocol: "openai-compatible" as const, model: this.o.model,
+      temperature: this.o.effort ? undefined : req.temperature, maxOutputTokens: req.maxOutputTokens,
       sendReasoning: !!this.o.sendReasoning, thinking: this.o.thinking, reasoningEffort: this.o.effort, includeUsage: true,
     };
   }
@@ -50,7 +53,9 @@ export class OpenAICompatibleProvider implements LLMProvider {
       body.tools = req.tools.map((t) => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.parameters } }));
     }
     if (options.temperature !== undefined) body.temperature = options.temperature;
-    if (options.maxOutputTokens !== undefined) body.max_tokens = options.maxOutputTokens;
+    if (options.maxOutputTokens !== undefined) {
+      body[this.o.completionTokenLimit ? "max_completion_tokens" : "max_tokens"] = options.maxOutputTokens;
+    }
     if (options.thinking) body.thinking = { type: options.thinking };
     if (options.reasoningEffort) body.reasoning_effort = options.reasoningEffort;
 
@@ -175,7 +180,7 @@ function toUsage(u: OAUsage): Usage | undefined {
 /* ---------------- SSE 解析 ---------------- */
 
 /** 把字节流按 SSE 规则切成一条条 data（一条可能跨多个网络包，所以要缓冲） */
-async function* sseData(body: ReadableStream<Uint8Array>): AsyncIterable<string> {
+export async function* sseData(body: ReadableStream<Uint8Array>): AsyncIterable<string> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buf = "";

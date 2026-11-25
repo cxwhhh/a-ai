@@ -6,6 +6,8 @@
  * 接入新模型 = 新建一个实现 LLMProvider 的类，然后在 ./index.ts 里注册。
  */
 
+import type { ModelReasoningEffort } from "../../protocol/src/lib/reasoning-effort";
+
 export type Role = "system" | "user" | "assistant" | "tool";
 
 export interface ToolCall {
@@ -69,11 +71,11 @@ export interface Usage {
 
 /** 适配器可供轨迹查看的白名单选项，不包含地址、凭据、消息和提供方原始内容。 */
 export interface ModelRequestOptions {
-  protocol: "openai-compatible" | "anthropic" | "mock";
+  protocol: "openai-compatible" | "openai-responses" | "anthropic" | "mock";
   model: string;
   temperature?: number;
   thinking?: "enabled" | "disabled" | "adaptive";
-  reasoningEffort?: "low" | "medium" | "high" | "max";
+  reasoningEffort?: ModelReasoningEffort;
   maxOutputTokens?: number;
   sendReasoning?: boolean;
   includeUsage?: boolean;

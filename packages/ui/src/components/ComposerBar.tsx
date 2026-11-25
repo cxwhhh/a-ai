@@ -36,7 +36,9 @@ export function ComposerBar(props: {
 
 /* ---------------- 模型切换 ---------------- */
 
-const EFFORT_LABEL: Record<ReasoningEffort, string> = { default: "Default", low: "Low", medium: "Medium", high: "High", max: "Max" };
+const EFFORT_LABEL: Record<ReasoningEffort, string> = {
+  default: "默认", low: "低", medium: "中", high: "高", xhigh: "极高", max: "最高",
+};
 
 function ModelPicker(props: { settings: Settings; onPick(v: string): void; onPickEffort(v: ReasoningEffort): void; onManage(): void; disabled?: boolean; multiAgent?: { enabled: boolean; onChange(value: boolean): void } }) {
   const [view, setView] = useState<"summary" | "models" | "effort" | null>(null);
@@ -49,7 +51,8 @@ function ModelPicker(props: { settings: Settings; onPick(v: string): void; onPic
   const current = currentOption(props.settings);
   const modelLabel = current.value === currentModel ? current.label : "模型不可用";
   const efforts = reasoningOptions(props.settings, currentModel);
-  const effort = efforts.includes(reasoningEffort) ? reasoningEffort : "default";
+  const effort = reasoningEffort;
+  const effortLabel = efforts.includes(effort) ? EFFORT_LABEL[effort] : "不可用";
   const groups = useMemo(() => {
     const needle = query.trim().toLowerCase();
     const g = new Map<string, ReturnType<typeof modelOptions>>();
@@ -90,7 +93,7 @@ function ModelPicker(props: { settings: Settings; onPick(v: string): void; onPic
                 <span>模型</span><span className="ellipsis pop-dim" title={modelLabel}>{modelLabel}</span><IChevron width={13} height={13} />
               </button>
               <button type="button" className="pop-item model-pop-summary" disabled={props.disabled} onClick={() => setView("effort")}>
-                <span>推理等级</span><span className="ellipsis pop-dim">{EFFORT_LABEL[effort]}</span><IChevron width={13} height={13} />
+                <span>推理等级</span><span className="ellipsis pop-dim">{effortLabel}</span><IChevron width={13} height={13} />
               </button>
               {props.multiAgent && <div className="pop-item model-pop-summary model-pop-agent-mode">
                 <span>多agent智能体模式</span>

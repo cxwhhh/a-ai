@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import type { ChatMessage, ChatRequest, LLMProvider, StreamChunk, Usage } from "../types";
+import type { ChatMessage, ChatRequest, LLMProvider, ModelRequestOptions, StreamChunk, Usage } from "../types";
 
 /**
  * Claude（Anthropic Messages API）的模型实现，用官方 SDK @anthropic-ai/sdk。
@@ -16,7 +16,7 @@ import type { ChatMessage, ChatRequest, LLMProvider, StreamChunk, Usage } from "
  * 设置 prefix_mismatch_behavior: "drop_block"：失效的思考块由 API 丢掉（不计费），而不是报 400。
  */
 export interface AnthropicOptions {
-  effort?: "low" | "medium" | "high" | "max";
+  effort?: ModelRequestOptions["reasoningEffort"];
   baseUrl?: string; // 默认 https://api.anthropic.com
   apiKey: string;
   model: string; // 例如 claude-opus-5-5

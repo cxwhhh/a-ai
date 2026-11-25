@@ -1,5 +1,6 @@
 import { STATUS_LABEL } from "../../protocol/src/lib/shared";
 import type { ErrorKind, ToolStatus } from "../../protocol/src/lib/shared";
+import { REASONING_EFFORTS } from "../../protocol/src/lib/reasoning-effort";
 import type { DatabaseSync } from "node:sqlite";
 
 /** 字符串数组声明可用枚举值。ID 要求非空，计数从 0 开始，步骤号从 1 开始。 */
@@ -30,7 +31,7 @@ const optionalNullable = <T extends FieldType>(type: T) => ({
 
 const modelSelection = {
   model: "id",
-  effort: ["default", "low", "medium", "high", "max"],
+  effort: REASONING_EFFORTS,
 } as const;
 
 const modelStep = {
@@ -291,7 +292,7 @@ function agentLogSqlCheck(): string {
  */
 export function migrateAgentLogTable(db: DatabaseSync): void {
   const existing = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'agent_events'").get();
-  if (typeof existing?.sql === "string" && existing.sql.includes("CONSTRAINT agent_event_contract_v1")) return;
+  if (typeof existing?.sql === "string" && existing.sql.includes("CONSTRAINT agent_event_contract_v2")) return;
 
   const table = existing ? "agent_events_next" : "agent_events";
   db.exec(`CREATE TABLE ${table} (
@@ -302,7 +303,7 @@ export function migrateAgentLogTable(db: DatabaseSync): void {
     run_id TEXT,
     input_id TEXT,
     detail TEXT NOT NULL,
-    CONSTRAINT agent_event_contract_v1 CHECK (${agentLogSqlCheck()})
+    CONSTRAINT agent_event_contract_v2 CHECK (${agentLogSqlCheck()})
   ) STRICT`);
   if (existing) {
     const previousSequence = db.prepare("SELECT seq FROM sqlite_sequence WHERE name = 'agent_events'").get();

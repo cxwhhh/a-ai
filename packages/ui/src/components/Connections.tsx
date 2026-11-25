@@ -1,7 +1,8 @@
 "use client";
 import { useState } from "react";
 import { api } from "../lib/client";
-import { PRESETS, isMasked, type Connection, type ModelEntry } from "../../../protocol/src/lib/settings";
+import { PRESETS, isMasked, openAIReasoningProtocol, type Connection, type ModelEntry } from "../../../protocol/src/lib/settings";
+import { MODEL_REASONING_EFFORTS } from "../../../protocol/src/lib/reasoning-effort";
 import { ICheck, IChevron, IPencil, IPlus, IX } from "./Icons";
 import "./Connections.css";
 
@@ -167,7 +168,9 @@ function ConnForm(props: { value: Connection; isNew?: boolean; onCancel(): void;
   const [saving, setSaving] = useState(false);
   const [adv, setAdv] = useState(false);
   const set = (patch: Partial<Connection>) => setC((x) => ({ ...x, ...patch }));
-  const setModel = (i: number, patch: Partial<ModelEntry>) => set({ models: c.models.map((m, j) => (j === i ? { ...m, ...patch } : m)) });
+  const setModel = (i: number, patch: Partial<ModelEntry>) => setC((current) => ({
+    ...current, models: current.models.map((m, j) => (j === i ? { ...m, ...patch } : m)),
+  }));
   const defCtx = PRESETS[c.preset].models[0]?.contextWindow ?? 128_000;
   const keyHint = PROVIDERS.find((p) => p.baseUrl && p.baseUrl === c.baseUrl)?.keyHint;
 
@@ -259,7 +262,8 @@ function ConnForm(props: { value: Connection; isNew?: boolean; onCancel(): void;
           )}
           {c.models.map((m, i) => (
             <div key={i} className="cx-mrow">
-              <input className="set-input mono" value={m.id} placeholder="如 gpt-4o-mini" onChange={(e) => setModel(i, { id: e.target.value })} />
+              <input className="set-input mono" value={m.id} placeholder="如 gpt-4o-mini"
+                onChange={(e) => setModel(i, { id: e.target.value, reasoningEfforts: undefined })} />
               <input
                 className="set-input num"
                 type="number"
@@ -287,6 +291,25 @@ function ConnForm(props: { value: Connection; isNew?: boolean; onCancel(): void;
         </button>
         {adv && (
           <div className="cx-fields">
+            {c.preset === "custom" && c.models.some((m) => m.id.trim() && !openAIReasoningProtocol(c, m.id.trim())) && (
+              <div className="cx-fetched">
+                <div className="cx-opt-label">模型思考等级</div>
+                <div className="form-note">勾选服务商明确支持的 reasoning_effort 档位。</div>
+                {c.models.map((m, i) => m.id.trim() && !openAIReasoningProtocol(c, m.id.trim()) && (
+                  <div key={i} className="cx-models" role="group" aria-label={`${m.id} 的思考等级`}>
+                    <span className="cx-ctx mono">{m.id}</span>
+                    {MODEL_REASONING_EFFORTS.map((effort) => {
+                      const chosen = m.reasoningEfforts ?? [];
+                      const active = chosen.includes(effort);
+                      return <button key={effort} type="button" className={`cx-model${active ? " on" : ""}`} aria-pressed={active}
+                        onClick={() => setModel(i, { reasoningEfforts: active ? chosen.filter((level) => level !== effort) : [...chosen, effort] })}>
+                        {effort}
+                      </button>;
+                    })}
+                  </div>
+                ))}
+              </div>
+            )}
             {c.preset === "deepseek" && (
               <div className="cx-opt">
                 <div>
