@@ -102,3 +102,5 @@ docker compose ps a-ai
 开发检查使用 `pnpm typecheck` 和 `pnpm test`。其中 `pnpm test` 会先构建，再运行行为测试。
 
 [学习笔记](./docs/学习笔记.md) · [Agent 评测方法与综合测试用例](./docs/Agent评测方法与综合测试用例.md) · [第三方组件说明](./THIRD_PARTY_NOTICES.md)
+
+<!-- Git 本地提交测试 -->
