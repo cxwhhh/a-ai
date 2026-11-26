@@ -8,6 +8,10 @@ out
 next-env.d.ts
 .DS_Store
 
+# macOS archive metadata
+__MACOSX/
+._*
+
 # 本机缓存、编辑器状态和生成结果；build/ 内是打包图标，需要保留。
 .npm-cache/
 .idea/
