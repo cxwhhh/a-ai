@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
+import type { ReactNode } from "react";
 import type { Artifact, StoredMessage } from "../../../protocol/src/lib/shared";
 import { fileChanges, originalOf } from "../lib/diff";
 import { artifactExt, extOf, iconForExt, type View } from "../../../protocol/src/lib/outputs";
@@ -21,6 +22,7 @@ export function Canvas(props: {
   /** 当前对话的消息：用来找出这个文件在本次对话里被改了哪些地方 */
   messages: StoredMessage[];
   refreshKey: unknown; // 会话消息变化时刷新文件内容（文件可能被再次写入）
+  outputSwitch?: ReactNode;
   onOpenFile(path: string): void;
   onClose(): void;
 }) {
@@ -101,7 +103,7 @@ export function Canvas(props: {
     : undefined;
 
   if (artifact?.workspaceApp) {
-    return <WorkspaceAppCanvas {...artifact.workspaceApp} title={artifact.title} onClose={props.onClose} />;
+    return <WorkspaceAppCanvas {...artifact.workspaceApp} title={artifact.title} outputSwitch={props.outputSwitch} onClose={props.onClose} />;
   }
 
   return (
@@ -161,6 +163,7 @@ export function Canvas(props: {
             )}
           </>
         )}
+        {props.outputSwitch}
         <button className="icon-btn" onClick={props.onClose} title="关闭 Esc">
           <IX />
         </button>

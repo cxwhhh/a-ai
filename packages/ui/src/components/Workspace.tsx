@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import type { AgentEvent, AgentQueueSnapshot, Groups, Project, ProjectChat, Session, SessionMeta, StoredMessage, ToolInfo } from "../../../protocol/src/lib/shared";
 import type { WorkspaceAppSummary } from "../../../protocol/src/workspace-app";
 import { api, mod, streamChat, subscribeRun } from "../lib/client";
@@ -7,6 +7,7 @@ import { createLiveStore, emptyLiveStore, LiveStoreContext } from "../lib/live";
 import { Sidebar } from "./Sidebar";
 import { ChatPane, type ConversationView } from "./ChatPane";
 import { Canvas } from "./Canvas";
+import { IFiles } from "./Icons";
 import { WorkspaceAppCanvas } from "./WorkspaceAppCanvas";
 import { OutputsCard } from "./OutputsCard";
 import { SubagentConversation } from "./SubagentConversation";
@@ -23,6 +24,7 @@ import { ArtifactsPage } from "./ArtifactsPage";
 import { ProjectApps, ProjectChats, ProjectHead } from "./ProjectHome";
 import { SkillToast } from "./SkillToast";
 import type { SettingsTab } from "./UserMenu";
+import "./OutputPreview.css";
 
 const emptySession = (): Session => ({ id: "", title: "", createdAt: 0, updatedAt: 0, messages: [], artifacts: [] });
 const noTools: Record<string, number> = {};
@@ -78,7 +80,7 @@ const store = {
  * 每个对话右侧的状态（右侧大视图打开的是哪个文件 / 产出物、右上角文件面板开没开），存在 localStorage 的 a.panels 里。
  * 切到别的对话再切回来、或者刷新页面，都恢复成离开时的样子；只有用户自己关掉才会关。
  */
-type Panels = { view: View | null; list: boolean };
+type Panels = { view: View | null; list: boolean; fromOutputs?: boolean };
 const PANELS_KEY = "a.panels";
 function loadPanels(): Record<string, Panels> {
   try {
@@ -134,6 +136,9 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
   const [projectChats, setProjectChats] = useState<ProjectChat[] | null>(null);
   /** 右侧大视图正在显示什么（null = 关闭）：产出物或工作区文件 */
   const [view, setView] = useState<View | null>(null);
+  const [fromOutputs, setFromOutputs] = useState(false);
+  const [outputPickerOpen, setOutputPickerOpen] = useState(false);
+  const outputsPanelId = useId();
   const [libraryApp, setLibraryApp] = useState<WorkspaceAppSummary | null>(null);
   const [childView, setChildView] = useState<{ sessionId: string; task: SubagentSelection } | null>(null);
   const [threadsSessionId, setThreadsSessionId] = useState<string>();
@@ -157,15 +162,21 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
   }
   const openedApp = libraryApp;
   const rightView = !openedApp && page === "chat" && !!(view || child || threadsOpen);
-  /** 任务面板（点右上角文件按钮弹出的悬浮卡片：进度 / 输出 / 已使用）是否打开 */
+  /** 宽屏的面板显示状态也保留窄屏预览期间的列表实例。 */
   const [listOpen, setListOpen] = useState(false);
   /** 右侧大视图的宽度（px，用户拖动分隔条调整，保存在浏览器里）；null = 默认宽度 */
   const [viewW, setViewW] = useState<number | null>(null);
   const [resizing, setResizing] = useState(false);
   /** 窗口宽度：面板和文件都打开时，用它判断屏幕够不够宽 */
   const [winW, setWinW] = useState(1920);
+  // 两列至少需要 272px 面板、10px 间距和 280px 预览，再给对话与侧栏留空间。
+  const compactOutputPreview = rightView && !!view && winW < 1240;
+  const showTaskPanel = compactOutputPreview ? outputPickerOpen : listOpen && (!rightView || winW >= 1240);
+  const outputPickerVisible = compactOutputPreview && showTaskPanel;
   const defaultViewWidth = Math.max(400, Math.min(940, winW * 0.46));
-  const rightWidth = rightView || openedApp ? viewW ?? defaultViewWidth : page === "chat" && listOpen ? 320 : 0;
+  const canvasWidth = viewW ?? defaultViewWidth;
+  const rightWidth = rightView && showTaskPanel && !compactOutputPreview ? Math.min(canvasWidth + 282, winW - 640)
+    : rightView || openedApp ? canvasWidth : page === "chat" && showTaskPanel ? 320 : 0;
   // 限制自定义宽度，右侧面板打开时给对话留出空间，窗口变宽后可恢复用户选的宽度。
   const sidebarLimit = Math.max(SIDEBAR_DEFAULT, Math.min(SIDEBAR_MAX, Math.floor(winW - rightWidth - 380)));
   const displayedSidebarWidth = winW > 900 ? Math.min(sidebarWidth, sidebarLimit) : SIDEBAR_DEFAULT;
@@ -173,7 +184,7 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
   const [keepLeft, setKeepLeft] = useState(false);
   // 面板 + 文件并排至少要 左栏 288 + 对话 420 + 面板 282 + 文件 480 ≈ 1540px，不够就先把左栏让出来
   // 窄屏的详情页和产出物页为内容让位，仍可手动展开左栏。
-  const crowded = (!!view && listOpen && winW < 1540)
+  const crowded = (!!view && showTaskPanel && !compactOutputPreview && winW < 1540)
     || (winW <= 900 && (page === "artifacts" || threadsOpen || (!!cur.id && conversationView !== "chat")));
   // 左栏实际是否显示：用户的设置（leftOpen，存在浏览器里）不变，只是挤的时候临时让位；面板或文件一关就自动回来
   const showLeft = leftOpen && (!crowded || keepLeft);
@@ -181,8 +192,14 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
     setLeftOpen(true);
     setKeepLeft(true);
   };
-  const uiRef = useRef({ view, child, threadsOpen, openedApp, listOpen, showLeft });
-  uiRef.current = { view, child, threadsOpen, openedApp, listOpen, showLeft };
+  const uiRef = useRef({ view, child, threadsOpen, openedApp, showTaskPanel, compactOutputPreview, outputPickerVisible, fromOutputs, showLeft });
+  uiRef.current = { view, child, threadsOpen, openedApp, showTaskPanel, compactOutputPreview, outputPickerVisible, fromOutputs, showLeft };
+  const closeOutputPreview = useCallback(() => {
+    setView(null);
+    setOutputPickerOpen(false);
+    if (uiRef.current.fromOutputs) setListOpen(true);
+    setFromOutputs(false);
+  }, []);
   /** 系统提示词、工具定义大约占多少 token（上下文环形图用） */
   const [fixedTokens, setFixedTokens] = useState({ system: 0, tools: 0 });
   const [tools, setTools] = useState<ToolInfo[]>([]);
@@ -344,6 +361,8 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
     setLibraryApp(null);
     setCur({ ...emptySession(), ...(projectId ? { projectId } : {}) });
     setView(null);
+    setFromOutputs(false);
+    setOutputPickerOpen(false);
     setChildView(null);
     setThreadsSessionId(undefined);
     setListOpen(false);
@@ -507,9 +526,11 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
     // 恢复这个对话上次离开时右侧的样子（产出物已经不存在了就不恢复那个视图）
     const p = loadPanels()[id];
     const v = p?.view;
-    setView(target ?? (v && (v.type === "file" || s.artifacts.some((a) => a.id === v.id)) ? v : null));
-    // 右侧同一时间只放一样东西：上次两个都开着的话，只恢复文件视图
-    setListOpen(!!p?.list && !(target || v));
+    const restoredView = target ?? (v && (v.type === "file" || s.artifacts.some((a) => a.id === v.id)) ? v : null);
+    setView(restoredView);
+    setFromOutputs(!target && !!restoredView && Boolean(p?.fromOutputs));
+    setOutputPickerOpen(false);
+    setListOpen(!target && Boolean(p?.list));
     if (nextView === "chat") setTimeout(() => inputRef.current?.focus());
     if (!run) void reconnect(s);
   }
@@ -777,9 +798,12 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
         e.preventDefault();
         setChildView(null);
         setListOpen(true);
+      } else if (e.key === "Escape" && uiRef.current.outputPickerVisible) {
+        e.preventDefault();
+        setOutputPickerOpen(false);
       } else if (e.key === "Escape" && uiRef.current.view && !runs.current.has(viewKey.current)) {
         e.preventDefault();
-        setView(null);
+        closeOutputPreview();
       } else if (e.key === "Escape" && runs.current.has(viewKey.current)) {
         e.preventDefault();
         stop();
@@ -790,7 +814,7 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [newChat, stop]);
+  }, [closeOutputPreview, newChat, stop]);
 
   const isArchived = !!(cur.archivedAt || projects.some((p) => p.id === cur.projectId && p.archivedAt));
   const multiAgent = !!(cur.projectId || cur.multiAgent);
@@ -844,26 +868,30 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
     const unavailable = new Set(cur.unavailableOutputKeys);
     return { ...collected, outputs: collected.outputs.filter(({ key }) => !unavailable.has(key)) };
   }, [cur.messages, cur.artifacts, cur.unavailableOutputKeys]);
-  // 打开文件时任务面板不收起：面板是“钉住”的，只有点它的 × 才关
-  // 打开一个文件 / 产出物时顺手收起任务面板（2026-10-29）：右侧只留文件视图，不再和面板并排挤在一起。
-  // 想再看面板就点对话标题栏右边的按钮
-  const openView = (v: View) => {
+  const openView = (v: View, fromList = false) => {
     setChildView(null);
     setThreadsSessionId(undefined);
     setView(v);
-    setListOpen(false);
+    setFromOutputs(fromList);
+    setOutputPickerOpen(false);
+    setListOpen(fromList);
   };
-  // 开关任务面板（标题栏按钮和 ⌘\ 共用）：打开面板时把文件视图收起，右侧同一时间只显示一个（2026-10-29）
+  const openOutput = (v: View) => openView(v, true);
+  // 预览内打开输出列表时保留当前文件，窄屏只让列表临时覆盖预览区域。
   const toggleList = () => {
-    if (!uiRef.current.listOpen) { setView(null); setChildView(null); setThreadsSessionId(undefined); }
-    setListOpen((o) => !o);
+    const { view: currentView, compactOutputPreview: compact, showTaskPanel: showing } = uiRef.current;
+    if (currentView && compact) {
+      setOutputPickerOpen(!showing);
+      if (!showing) setListOpen(true);
+      return;
+    }
+    if (!showing && !currentView) { setChildView(null); setThreadsSessionId(undefined); }
+    setListOpen(!showing);
   };
   // 右侧状态变化时记下来（按对话分开存）。切换对话时 open() 会把新对话的状态一次性设好，这里存的就是新对话自己的
   useEffect(() => {
-    if (cur.id) savePanels(cur.id, { view, list: listOpen });
-  }, [cur.id, view, listOpen]);
-
-  // 任务面板：点空白处、按 Esc 都不会关；点面板右上角的 ×、或打开文件 / 产出物时收起（快捷键 ⌘\ 仍可切换）
+    if (cur.id) savePanels(cur.id, { view, list: listOpen, fromOutputs: Boolean(view) && fromOutputs });
+  }, [cur.id, fromOutputs, view, listOpen]);
 
   const clampSidebarWidth = (width: number) => Math.max(SIDEBAR_MIN, Math.min(sidebarLimit, Math.round(width)));
   const saveSidebarWidth = (width: number) => {
@@ -1063,7 +1091,7 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
           messages={cur.messages}
           artifacts={cur.artifacts}
           outputs={outputs}
-          onOpenView={openView}
+          onOpenView={openOutput}
           running={running}
           streaming={streaming}
           archived={isArchived}
@@ -1072,7 +1100,7 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
           setDraft={setDraft}
           inputRef={inputRef}
           leftOpen={showLeft}
-          rightOpen={listOpen}
+          rightOpen={showTaskPanel}
           viewOpen={rightView}
           sendKey={settings.sendKey}
           bar={
@@ -1117,14 +1145,15 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
           onDismissError={() => setError(null)}
         />
       )}
-      {/* 右侧一列：任务面板（钉住时）和文件大视图并排放在同一列里，不再悬浮盖住对话。
-          面板在左、文件在右：从面板点文件，文件就在它旁边打开 */}
+      {/* 两个视图在宽屏并排，窄屏打开选择列表时保留原预览。 */}
       {page === "chat" && (rightView || listOpen) && (
-        <div className={`right ${listOpen ? "with-panel" : ""} ${rightView ? "" : "panel-only"}`}>
+        <div className={`right ${showTaskPanel && !outputPickerVisible ? "with-panel" : ""} ${outputPickerVisible ? "output-picker" : ""} ${rightView ? "" : "panel-only"}`}>
           {/* 分隔条：按住左右拖动调整宽度，双击恢复默认 */}
           {rightView && <div className="resize-handle" onPointerDown={startResize} onDoubleClick={() => saveViewW(null)} title="拖动调整宽度，双击恢复" />}
-          {listOpen && (
+          {(listOpen || (view && fromOutputs)) && (
             <OutputsCard
+              id={outputsPanelId}
+              key={`outputs:${cur.id}`}
               messages={cur.messages}
               artifacts={cur.artifacts}
               running={running}
@@ -1132,9 +1161,10 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
               outputs={outputs}
               used={used}
               active={view}
+              hidden={!showTaskPanel}
               subagents={multiAgent ? { sessionId: cur.id, runId, open: openSubagent } : undefined}
-              onOpen={openView}
-              onClose={() => setListOpen(false)}
+              onOpen={openOutput}
+              onClose={() => outputPickerVisible ? setOutputPickerOpen(false) : setListOpen(false)}
             />
           )}
           {threadsOpen ? <SubagentThreadOverview key={cur.id} sessionId={cur.id}
@@ -1148,8 +1178,10 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
               artifacts={cur.artifacts}
               messages={cur.messages}
               refreshKey={cur.messages.length}
-              onOpenFile={(path) => openView({ type: "file", path })}
-              onClose={() => setView(null)}
+              outputSwitch={outputs.length > 0 && <button type="button" className="icon-btn" title="切换生成物" aria-label="切换生成物"
+                aria-expanded={showTaskPanel} aria-controls={outputsPanelId} onClick={toggleList}><IFiles /></button>}
+              onOpenFile={(path) => setView({ type: "file", path })}
+              onClose={closeOutputPreview}
             />
           )}
         </div>

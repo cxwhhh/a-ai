@@ -33,6 +33,8 @@ const ICON = {
  * 原来顶部的“已完成 · N 步 · 耗时”状态行、进度条和用户原话已去掉。折叠状态存在 localStorage 的 a.panelOpen 里。
  */
 export function OutputsCard(props: {
+  id?: string;
+  hidden?: boolean;
   messages: StoredMessage[];
   /** 本对话的产出物全文：输出缩略图里要显示内容开头 */
   artifacts: Artifact[];
@@ -112,7 +114,7 @@ export function OutputsCard(props: {
 
 
   return (
-    <aside className="panel oc" aria-label="任务面板" data-panel>
+    <aside id={props.id} className="panel oc" aria-label="任务面板" data-panel hidden={props.hidden}>
       {/* 输出放在最上面（2026-10-29，仿 Claude）：标题行“输出 ×”，下面两列缩略图卡片。
           默认只显示最新的 2 个，多了点“展开全部”看其余的 */}
       <section className="oc-outs">

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import type { WorkspaceApp, WorkspaceAppReply, WorkspaceRecordCommand } from "../../../protocol/src/workspace-app";
 import { KindIcon } from "./KindIcon";
 import { IDownload, IX } from "./Icons";
@@ -11,8 +12,8 @@ interface AppMessage {
 }
 
 /** 已部署页面从服务器读取。文档只通过自己的消息端口操作应用记录。 */
-export function WorkspaceAppCanvas({ id, revision, title, onClose }: {
-  id: string; revision?: number; title: string; onClose(): void;
+export function WorkspaceAppCanvas({ id, revision, title, outputSwitch, onClose }: {
+  id: string; revision?: number; title: string; outputSwitch?: ReactNode; onClose(): void;
 }) {
   const [state, setState] = useState<{ id: string; app?: WorkspaceApp; error?: string } | null>(null);
   const [attempt, retry] = useState(0);
@@ -84,6 +85,7 @@ export function WorkspaceAppCanvas({ id, revision, title, onClose }: {
         <div className="viewer-title ellipsis">{app?.title ?? title}</div>
         <div className="spacer" />
         {app && <a className="icon-btn" href={`${url}&download=1`} download title="下载网页源码"><IDownload /></a>}
+        {outputSwitch}
         <button className="icon-btn" onClick={onClose} title="关闭 Esc"><IX /></button>
       </div>
       <div className="viewer-body">

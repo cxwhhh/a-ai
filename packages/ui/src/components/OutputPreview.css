@@ -1,0 +1,16 @@
+.app .right > .oc[hidden] {
+  display: none;
+}
+
+/* 窄屏的列表覆盖正文，预览标题栏保留关闭和再次切换的入口。 */
+.app .right.output-picker > .oc {
+  position: absolute;
+  inset: 48px 0 0 auto;
+  z-index: 4;
+  width: min(380px, 100%);
+  min-width: 0;
+  height: auto;
+  border-inline-start: 1px solid var(--edge);
+  background: var(--surface-2);
+  box-shadow: var(--shadow-md);
+}
