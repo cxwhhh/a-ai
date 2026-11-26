@@ -1,4 +1,5 @@
 import { httpHint, safeFetch, UA } from "./web-fetch";
+import { readBoundedText } from "../../sandbox/src/public-fetch";
 import type { Tool } from "../../tool-runtime/src/types";
 
 /**
@@ -101,7 +102,7 @@ export const httpRequest: Tool<Args> = {
         Accept: "application/json, text/plain, */*",
         ...h
       }
-    });
+    }, ctx.checkWebUrl);
     const type = (res.headers.get("content-type") || "").split(";")[0];
     if (m === "HEAD" || res.status === 204) return { content: JSON.stringify({
       status: res.status,
@@ -112,7 +113,7 @@ export const httpRequest: Tool<Args> = {
       await res.body?.cancel();
       throw new Error(`返回的是 ${type}（二进制文件）。下载文件请用 download_file`);
     }
-    const text = await res.text();
+    const text = await readBoundedText(res);
     let parsed: unknown = text;
     if (/json/i.test(type) || /^\s*[[{]/.test(text))
       try {

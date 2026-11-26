@@ -36,6 +36,7 @@ export function Connections(props: {
   const [isNew, setIsNew] = useState(false);
   const [picking, setPicking] = useState(false);
   const [confirmDel, setConfirmDel] = useState<string | null>(null);
+  const [removeError, setRemoveError] = useState("");
 
   const add = (p: (typeof PROVIDERS)[number]) => {
     const base = PRESETS[p.preset];
@@ -61,12 +62,18 @@ export function Connections(props: {
 
   const remove = async (id: string) => {
     setConfirmDel(null);
+    setRemoveError("");
     const next = props.connections.filter((c) => c.id !== id);
-    await props.onSave(next, props.currentModel.startsWith(id + "/") ? "mock" : undefined);
+    try {
+      await props.onSave(next, props.currentModel.startsWith(id + "/") ? "mock" : undefined);
+    } catch (error) {
+      setRemoveError(error instanceof Error ? error.message : String(error));
+    }
   };
 
   return (
     <div className="cx">
+      {removeError && <div className="cx-test err" role="alert">{removeError}</div>}
       {props.connections.map((c) =>
         editing && !isNew && editing.id === c.id ? (
           <ConnForm key={c.id} value={editing} onCancel={() => setEditing(null)} onSave={save} />
@@ -166,6 +173,7 @@ function ConnForm(props: { value: Connection; isNew?: boolean; onCancel(): void;
   const [c, setC] = useState<Connection>(props.value);
   const [test, setTest] = useState<{ state: "idle" | "testing" | "ok" | "err"; msg?: string; models?: string[] }>({ state: "idle" });
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
   const [adv, setAdv] = useState(false);
   const set = (patch: Partial<Connection>) => setC((x) => ({ ...x, ...patch }));
   const setModel = (i: number, patch: Partial<ModelEntry>) => setC((current) => ({
@@ -176,19 +184,21 @@ function ConnForm(props: { value: Connection; isNew?: boolean; onCancel(): void;
 
   const runTest = async () => {
     setTest({ state: "testing" });
-    const r = await api.testConnection({ id: c.id, baseUrl: c.baseUrl, apiKey: c.apiKey, preset: c.preset });
-    setTest(
-      r.ok
+    try {
+      const r = await api.testConnection({ id: c.id, baseUrl: c.baseUrl, apiKey: c.apiKey, preset: c.preset });
+      setTest(r.ok
         ? { state: "ok", msg: `连接成功 · ${r.ms}ms${r.models?.length ? ` · 找到 ${r.models.length} 个模型` : ""}${r.note ? `。${r.note}` : ""}`, models: r.models }
-        : { state: "err", msg: r.error },
-    );
+        : { state: "err", msg: r.error });
+    } catch (error) {
+      setTest({ state: "err", msg: error instanceof Error ? error.message : String(error) });
+    }
   };
 
   const has = (id: string) => c.models.some((m) => m.id === id);
   const toggleFetched = (id: string) =>
     set({ models: has(id) ? c.models.filter((m) => m.id !== id) : [...c.models.filter((m) => m.id.trim()), { id, contextWindow: defCtx }] });
 
-  const canSave = c.name.trim() && /^https?:\/\//.test(c.baseUrl.trim()) && c.apiKey.trim() && c.models.length > 0 && c.models.every((m) => m.id.trim());
+  const validationError = need(c);
 
   return (
     <div className="cx-form">
@@ -349,18 +359,25 @@ function ConnForm(props: { value: Connection; isNew?: boolean; onCancel(): void;
       </div>
 
       <div className="cx-foot">
-        {!canSave && <span className="cx-need">{need(c)}</span>}
+        {validationError && <span className="cx-need">{validationError}</span>}
+        {saveError && <span className="cx-test err" role="alert">{saveError}</span>}
         <div className="spacer" />
         <button className="btn ghost" onClick={props.onCancel}>
           取消
         </button>
         <button
           className="btn primary"
-          disabled={!canSave || saving}
+          disabled={!!validationError || saving}
           onClick={async () => {
             setSaving(true);
-            await props.onSave({ ...c, name: c.name.trim(), baseUrl: c.baseUrl.trim(), apiKey: c.apiKey.trim(), models: c.models.map((m) => ({ ...m, id: m.id.trim() })) });
-            setSaving(false);
+            setSaveError("");
+            try {
+              await props.onSave({ ...c, name: c.name.trim(), baseUrl: c.baseUrl.trim(), apiKey: c.apiKey.trim(), models: c.models.map((m) => ({ ...m, id: m.id.trim() })) });
+            } catch (error) {
+              setSaveError(error instanceof Error ? error.message : String(error));
+            } finally {
+              setSaving(false);
+            }
           }}
         >
           {props.isNew ? "添加" : "保存"}
@@ -376,6 +393,7 @@ function need(c: Connection) {
   if (!/^https?:\/\//.test(c.baseUrl.trim())) return "还差：接口地址（http:// 或 https:// 开头）";
   if (!c.apiKey.trim()) return "还差：API Key";
   if (!c.models.length || !c.models.every((m) => m.id.trim())) return "还差：至少一个模型名";
+  if (c.models.some(({ contextWindow }) => !Number.isSafeInteger(contextWindow) || contextWindow < 1)) return "上下文长度须为正整数";
   return "";
 }
 

@@ -124,25 +124,16 @@ test("Docker 执行并发达上限时拒绝分配，命令退出后可以继续�
   }
 });
 
-test("聊天与应用按账号工作区复用容器，应用数据只通过标准输入", async () => {
-  const { sandboxExec, runInSandbox } = load("packages/sandbox/src/sandbox.ts");
+test("工作区内的会话复用容器，命令容器不挂载服务端应用库", async () => {
+  const { sandboxExec } = load("packages/sandbox/src/sandbox.ts");
   const start = commands.length;
   const workspace = path.join(data, "account-one");
   const opts = { sessionId: "chat-one", workspace, cwd: "/workspace", script: "true", env: {} };
   await sandboxExec(opts);
   await sandboxExec({ ...opts, sessionId: "chat-two" });
   await sandboxExec({ ...opts, workspace: path.join(data, "account-two") });
-  const input = JSON.stringify({ data: "私有测试记录" });
-  const app = runInSandbox({ ...opts, sessionId: "workspace-app", input, timeoutMs: 5000, onData() {} });
-  await new Promise(setImmediate);
-  let received = "";
-  for await (const chunk of children.at(-1).stdin) received += chunk.toString();
-  children.at(-1).emit("close", 0, null);
-  assert.equal((await app).code, 0);
-  assert.equal(received, input);
-  assert.ok(execs.at(-1).includes("-i"));
-  assert.ok(!execs.at(-1).join(" ").includes("私有测试记录"));
   const created = commands.slice(start).filter((args) => args[0] === "run" && args.includes("-d"));
   assert.equal(created.length, 2);
+  assert.ok(created.every((args) => !args.some((arg) => arg.includes("workspace-apps"))));
   assert.notEqual(created[0][created[0].indexOf("--name") + 1], created[1][created[1].indexOf("--name") + 1]);
 });

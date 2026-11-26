@@ -1,4 +1,6 @@
 import type { Tool } from "../../tool-runtime/src/types";
+import { fetchPublic, httpUrl, readBoundedText } from "../../sandbox/src/public-fetch";
+export { isPrivateHost } from "../../sandbox/src/public-fetch";
 
 const MAX_CHARS = 8000;
 
@@ -38,7 +40,10 @@ export const webFetch: Tool<{
         Accept: "text/html,text/plain,*/*"
       }
     }, ctx.checkWebUrl);
-    if (!res.ok) throw new Error(`打开网页失败：HTTP ${res.status}${httpHint(res.status)}`);
+    if (!res.ok) {
+      await res.body?.cancel();
+      throw new Error(`打开网页失败：HTTP ${res.status}${httpHint(res.status)}`);
+    }
 
     const type = res.headers.get("content-type") || "";
     // PDF、Office 文档、图片、压缩包：按文本读会是一堆乱码，告诉模型换工具
@@ -46,7 +51,7 @@ export const webFetch: Tool<{
       await res.body?.cancel();
       throw new Error(`这个网址返回的是 ${type.split(";")[0]}，不是网页。请用 download_file 下载到工作区，再用 read_document（PDF/Word/Excel/PPT）或 run_python 处理`);
     }
-    const raw = await res.text();
+    const raw = await readBoundedText(res);
     const title = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(raw)?.[1]?.trim() ?? "";
     const text = type.includes("html") ? htmlToText(raw) : raw;
     const truncated = text.length > MAX_CHARS;
@@ -69,7 +74,6 @@ export function httpHint(status: number) {
   if (status >= 500) return "，对方服务器出错。稍后再试一次，或换一个来源";
   return "";
 }
-
 export const UA = "Mozilla/5.0 (compatible; A.ai/0.1; +agent)";
 
 /**
@@ -80,37 +84,41 @@ export const UA = "Mozilla/5.0 (compatible; A.ai/0.1; +agent)";
 export async function safeFetch(url: string, init: RequestInit & { signal?: AbortSignal }, checkUrl?: (url: URL) => void): Promise<Response> {
   let u: URL;
   try {
-    u = new URL(String(url ?? ""));
+    u = httpUrl(String(url ?? ""));
   } catch {
     throw new Error(`不是有效的网址：${url}。要写完整的 http(s)://… 地址；没有网址就先 web_search`);
   }
+  let headers = new Headers(init.headers);
+  headers.delete("host");
+  let method = (init.method ?? "GET").toUpperCase();
+  let body = init.body;
   for (let hop = 0; hop < 6; hop++) {
     checkUrl?.(u);
-    if (!/^https?:$/.test(u.protocol)) throw new Error(`只支持 http/https，收到的是 ${u.protocol}。本地文件用 read_file / read_document`);
-    await assertPublic(u.hostname);
-    const res = await fetch(u, {
+    const res = await fetchPublic(u, {
       ...init,
+      headers, method, body,
       redirect: "manual"
     });
     const loc = res.headers.get("location");
-    if (res.status >= 300 && res.status < 400 && loc) {
+    if ([301, 302, 303, 307, 308].includes(res.status) && loc) {
       await res.body?.cancel();
-      u = new URL(loc, u);
+      const next = httpUrl(new URL(loc, u));
+      if (next.origin !== u.origin) {
+        // 自定义头也可能携带 API Key。换源后仅保留工具生成的通用头。
+        headers = new Headers({ Accept: "*/*", "User-Agent": UA });
+        if (method !== "GET" && method !== "HEAD") throw new Error("会修改数据的 HTTP 请求不能跨站重定向");
+      }
+      if ((res.status === 303 && method !== "HEAD") || ([301, 302].includes(res.status) && method === "POST")) {
+        method = "GET";
+        body = undefined;
+        for (const name of ["content-type", "content-length", "content-encoding", "content-language", "content-location"]) headers.delete(name);
+      }
+      u = next;
       continue;
     }
     return res;
   }
   throw new Error("重定向次数太多");
-}
-
-async function assertPublic(host: string) {
-  const h = host.replace(/^\[|\]$/g, "");
-  if (isPrivateHost(h)) throw new Error("不允许访问本机或内网地址（安全限制，不要换写法绕过）。本机文件用文件工具读；确实需要内网内容时告诉用户");
-  const { lookup } = await import("node:dns/promises");
-  const addrs = await lookup(h, { all: true }).catch(() => {
-    throw new Error(`域名解析失败：${host}。检查网址是否拼错；不确定网址时用 web_search`);
-  });
-  if (addrs.some((a) => isPrivateHost(a.address))) throw new Error("不允许访问本机或内网地址（域名解析到了内网 IP）");
 }
 
 function htmlToText(html: string) {
@@ -135,25 +143,4 @@ export function decode(s: string) {
     .replace(/&#39;/g, "'")
     .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(+n))
     .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16)));
-}
-
-export function isPrivateHost(h: string) {
-  const v = h.toLowerCase();
-  return (
-    v === "localhost" ||
-    v.endsWith(".local") ||
-    v.endsWith(".internal") ||
-    /^127\./.test(v) ||
-    /^10\./.test(v) ||
-    /^192\.168\./.test(v) ||
-    /^172\.(1[6-9]|2\d|3[01])\./.test(v) ||
-    /^169\.254\./.test(v) ||
-    /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(v) || // 运营商级 NAT
-    /^0\./.test(v) ||
-    v === "::" ||
-    v === "::1" ||
-    /^f[cd][0-9a-f]{2}:/.test(v) || // IPv6 内网
-    /^fe80:/.test(v) ||
-    /^::ffff:(127|10|192\.168|169\.254)\./.test(v)
-  );
 }

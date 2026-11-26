@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import { api } from "../lib/client";
+import { useDebouncedSave } from "../lib/debounced-save";
 import { DEFAULT_SETTINGS, modelOptions, reasoningOptions, type Settings, type UsageStats } from "../../../protocol/src/lib/settings";
 import type { ToolInfo, UserMemory } from "../../../protocol/src/lib/shared";
 import { Avatar, type SettingsTab } from "./UserMenu";
@@ -39,7 +40,7 @@ export function SettingsModal(props: {
   const { settings: s, modKey } = props;
   const [saved, setSaved] = useState<"idle" | "saving" | "saved">("idle");
   const [defaultPrompt, setDefaultPrompt] = useState("");
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flashTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   useEffect(() => {
     api.settings().then((r) => setDefaultPrompt(r.defaultSystemPrompt)).catch(() => {});
@@ -58,22 +59,21 @@ export function SettingsModal(props: {
 
   const flash = () => {
     setSaved("saved");
-    setTimeout(() => setSaved("idle"), 1500);
+    clearTimeout(flashTimer.current);
+    flashTimer.current = setTimeout(() => setSaved("idle"), 1500);
   };
+
+  const settingsSave = useDebouncedSave(api.saveSettings, (next) => {
+    props.onChange(next);
+    flash();
+  }, () => setSaved("idle"));
 
   /** 本地先更新（界面立即生效），再保存到服务端；debounce 用于文本输入 */
   const update = (patch: Partial<Settings>, debounce = 0) => {
     props.onChange({ ...s, ...patch });
-    if (timer.current) clearTimeout(timer.current);
+    clearTimeout(flashTimer.current);
     setSaved("saving");
-    timer.current = setTimeout(async () => {
-      try {
-        props.onChange(await api.saveSettings(patch));
-        flash();
-      } catch {
-        setSaved("idle");
-      }
-    }, debounce);
+    settingsSave.schedule(patch, debounce);
   };
 
   return (
@@ -238,8 +238,9 @@ export function SettingsModal(props: {
                         currentModel={s.currentModel}
                         onPick={(m) => update({ currentModel: m, reasoningEffort: "default" })}
                         onSave={async (connections, currentModel) => {
-                          props.onChange(await api.saveSettings(currentModel ? { connections, currentModel, reasoningEffort: "default" } : { connections }));
-                          flash();
+                          clearTimeout(flashTimer.current);
+                          setSaved("saving");
+                          await settingsSave.save(currentModel ? { connections, currentModel, reasoningEffort: "default" } : { connections });
                         }}
                       />
                     </div>

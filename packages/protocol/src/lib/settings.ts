@@ -59,7 +59,9 @@ export const PRESETS: Record<Connection["preset"], Omit<Connection, "id" | "apiK
   custom: { name: "自定义", preset: "custom", baseUrl: "", models: [], sendReasoning: false, thinking: "default" },
 };
 
-export const MOCK_MODEL = { value: "mock", label: "Mock（演示）", contextWindow: 128_000 };
+export const DEFAULT_MODEL_CONTEXT_WINDOW = 128_000;
+const validContextWindow = (tokens: number) => Number.isSafeInteger(tokens) && tokens > 0 ? tokens : DEFAULT_MODEL_CONTEXT_WINDOW;
+export const MOCK_MODEL = { value: "mock", label: "Mock（演示）", contextWindow: DEFAULT_MODEL_CONTEXT_WINDOW };
 
 export interface ModelOption {
   value: string; // "mock" 或 "连接id/模型名"
@@ -72,7 +74,9 @@ export interface ModelOption {
 export function modelOptions(s: Pick<Settings, "connections">): ModelOption[] {
   return [
     { ...MOCK_MODEL, group: "内置" },
-    ...s.connections.flatMap((c) => c.models.map((m) => ({ value: `${c.id}/${m.id}`, label: m.id, group: c.name, contextWindow: m.contextWindow }))),
+    ...s.connections.flatMap((c) => c.models.map((m) => ({
+      value: `${c.id}/${m.id}`, label: m.id, group: c.name, contextWindow: validContextWindow(m.contextWindow),
+    }))),
   ];
 }
 
@@ -227,7 +231,7 @@ function normalizeConnection(x: unknown): Connection | null {
           const configuredEfforts = e.reasoningEfforts;
           const reasoningEfforts = preset === "custom" && Array.isArray(configuredEfforts)
             ? MODEL_REASONING_EFFORTS.filter((effort) => configuredEfforts.includes(effort)) : [];
-          const model: ModelEntry = { id: mid, contextWindow: Number.isFinite(cw) && cw > 0 ? Math.round(cw) : 128_000 };
+          const model: ModelEntry = { id: mid, contextWindow: validContextWindow(Math.round(cw)) };
           if (reasoningEfforts.length) model.reasoningEfforts = reasoningEfforts;
           return model;
         })

@@ -114,6 +114,9 @@ export function ChatPane(props: {
   const { messages, streaming, draft, inputRef, modKey, home, conversationView, onConversationView } = props;
   const scroller = useRef<HTMLDivElement>(null);
   const turns = useMemo(() => toTurns(messages), [messages]);
+  const empty = turns.length === 0;
+  const canViewTrace = !!props.sessionId && !props.loading && !props.embedded;
+  const viewingTrace = conversationView !== "chat" && canViewTrace;
   // 回答里点文件名 → 右侧打开。用 ref 拿最新的消息和产出物，函数本身保持不变，Markdown 的 memo 才有效
   const latest = useRef(props);
   latest.current = props;
@@ -156,8 +159,9 @@ export function ChatPane(props: {
     const check = () => setAtBottom(el.scrollHeight - el.scrollTop - el.clientHeight < 80);
     const ro = new ResizeObserver(check);
     ro.observe(inner);
+    ro.observe(el);
     return () => ro.disconnect();
-  }, [turns.length === 0]);
+  }, [empty, firstId, props.sessionId, viewingTrace]);
   const toBottom = () => scroller.current?.scrollTo({ top: scroller.current.scrollHeight, behavior: "smooth" });
 
   // 输入框自适应高度。新对话页和对话中的输入框最小高度不同，所以从新对话切到对话中（或反过来）时也要重新算，
@@ -170,7 +174,6 @@ export function ChatPane(props: {
     t.style.height = Math.min(t.scrollHeight, 220) + "px";
   }, [draft, inputRef, isEmpty]);
 
-  const empty = turns.length === 0;
   const greeting = useGreeting();
 
   // 附件：上传中不能发（路径还没拿到）；只有附件没写字也可以发
@@ -181,8 +184,6 @@ export function ChatPane(props: {
   const canSend = !props.archived && !props.embedded?.ended && !uploading && !props.queueBusy && (!streaming || props.queueReady) && (!!draft.trim() || ready);
   const queuedHead = props.queue.find((item) => item.target === "next-turn");
   const awaitingAnswer = !streaming && !!findAsk(turns.at(-1)?.steps ?? []);
-  const canViewTrace = !!props.sessionId && !props.loading && !props.embedded;
-  const viewingTrace = conversationView !== "chat" && canViewTrace;
   // 草稿还没创建会话时也要有标题。项目首页由项目名称标识。
   const title = props.title || (home ? "" : "新对话");
   const Surface = props.embedded ? "section" : "main";

@@ -1,9 +1,9 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import JSZip from "jszip";
-import { resolvePath } from "../../workspace/src/access";
+import { resolvePath, type Resolved } from "../../workspace/src/access";
 import { isSensitivePath, within } from "../../sandbox/src/sandbox";
-import type { Tool } from "../../tool-runtime/src/types";
+import type { Tool, ToolContext } from "../../tool-runtime/src/types";
 
 /**
  * 压缩和解压 zip。以前只能 run_command 里 unzip / zip：要 Docker，还要等用户确认。
@@ -51,10 +51,10 @@ export const archive: Tool<Args> = {
     },
   },
   async run({ action, path: p, to }, ctx) {
-    if (action === "zip") return { content: JSON.stringify(await pack(ctx.workspace, p, to)) };
-    if (action !== "unzip" && action !== "list") throw new Error(`action 只能是 unzip、zip、list，收到：${action}`);
+    if (action !== "unzip" && action !== "list" && action !== "zip") throw new Error(`action 只能是 unzip、zip、list，收到：${action}`);
 
-    const src = resolvePath(ctx.workspace, p, "read");
+    const src = ctx.readPath ? ctx.readPath(p) : resolvePath(ctx.workspace, p, "read");
+    if (action === "zip") return { content: JSON.stringify(await pack(ctx, src, to)) };
     const st = await fs.stat(/*turbopackIgnore: true*/ src.full).catch(() => null);
     if (!st) throw new Error(`文件不存在：${src.shown}。用 glob 找一下（例：*.zip），用户上传的文件在 uploads/ 下`);
     if (!/\.zip$/i.test(src.full)) throw new Error(`${src.shown} 不是 .zip。tar.gz、7z、rar 用 run_command 解压`);
@@ -128,8 +128,8 @@ function decodeFileName(bytes: string[] | Uint8Array | Buffer) {
 /** jszip 已经去掉了开头的 / 和 ../，这里再统一成 / 分隔；下面解压时还会检查一次最终路径 */
 const fixName = (e: JSZip.JSZipObject) => e.name.replace(/\\/g, "/").replace(/^\/+/, "");
 
-async function pack(workspace: string, p: string, to?: string) {
-  const src = resolvePath(workspace, p, "read");
+async function pack(ctx: ToolContext, src: Resolved, to?: string) {
+  const { workspace, readPath } = ctx;
   const st = await fs.stat(/*turbopackIgnore: true*/ src.full).catch(() => null);
   if (!st) throw new Error(`不存在：${src.shown}。用 list_files 或 glob 确认路径`);
   const base = path.basename(src.full) || "workspace";
@@ -144,6 +144,8 @@ async function pack(workspace: string, p: string, to?: string) {
     if (full === dst.full || isSensitivePath(full)) return; // 不把自己和密钥打进去
     const s = await fs.lstat(/*turbopackIgnore: true*/ full);
     if (s.isSymbolicLink()) return;
+    // 入口和每个子项使用同一读取范围，打包不会直接读走子任务范围以外的内容。
+    if (full !== src.full) readPath?.(full);
     if (s.isDirectory()) {
       for (const name of await fs.readdir(/*turbopackIgnore: true*/ full)) {
         if (name === "node_modules" || name === ".git" || name === ".runs") continue;

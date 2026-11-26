@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import { resolvePath } from "../../workspace/src/access";
+import { resolvePath, type Resolved } from "../../workspace/src/access";
 import { xlsxSheets } from "./documents";
 import type { Tool } from "../../tool-runtime/src/types";
 
@@ -70,8 +70,10 @@ export const queryData: Tool<Args> = {
     checkSql(q);
     const limit = Math.min(Math.max(1, Math.floor(Number(max_rows) || 200)), 1000);
 
+    // 多文件查询先检查每个输入，避免遇到越权文件前已经读取了前面的表。
+    const sources = list.slice(0, 10).map((file) => ctx.readPath ? ctx.readPath(file) : resolvePath(ctx.workspace, file, "read"));
     const tables: Table[] = [];
-    for (const f of list.slice(0, 10)) tables.push(...(await loadFile(ctx.workspace, f)));
+    for (const source of sources) tables.push(...(await loadFile(source)));
     // 表名重复（两个 data.csv 在不同目录）时加序号
     const seen = new Map<string, number>();
     for (const t of tables) {
@@ -110,8 +112,7 @@ function checkSql(q: string) {
 
 /* ---------------- 读文件 → 表 ---------------- */
 
-async function loadFile(workspace: string, p: string): Promise<Table[]> {
-  const { full, shown } = resolvePath(workspace, p, "read");
+async function loadFile({ full, shown }: Resolved): Promise<Table[]> {
   const st = await fs.stat(/*turbopackIgnore: true*/ full).catch(() => null);
   if (!st) throw new Error(`文件不存在：${shown}。用 glob 按文件名找（例：*.csv），用户上传的文件在 uploads/ 下`);
   if (st.isDirectory()) throw new Error(`${shown} 是目录，files 里要写具体的文件`);

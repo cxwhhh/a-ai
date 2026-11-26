@@ -24,12 +24,13 @@ services:
     environment:
       # 第一个用户注册完以后改成 "0" 关闭注册，然后 docker compose up -d 生效
       A_ALLOW_SIGNUP: "1"
+      A_PRIVATE_MODEL_ORIGINS: ${A_PRIVATE_MODEL_ORIGINS:-}
       TZ: Asia/Tokyo
       # web_search 的搜索 API Key（可选）：写在同目录的 .env 文件里，例如 TAVILY_API_KEY=tvly-xxx
       TAVILY_API_KEY: ${TAVILY_API_KEY:-}
       BRAVE_SEARCH_API_KEY: ${BRAVE_SEARCH_API_KEY:-}
       # ---- 终端沙箱（学习笔记 §7.25）----
-      # 每个账号工作区复用一个隔离容器，执行脚本和处理已部署应用的数据。
+      # 每个账号工作区复用一个隔离容器。已部署应用的数据由主服务管理。
       A_SANDBOX: docker
       A_SANDBOX_IMAGE: a-ai-sandbox:latest
       # 沙箱容器从这个数据卷里挂载用户的工作区（要和下面 volumes 的名字一致）

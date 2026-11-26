@@ -6,7 +6,9 @@ import type { TaskContract } from "./task-contract";
 import { SubagentRequestError } from "./task-contract";
 
 export const FILE_TOOLS = new Set(["read_file", "read_document", "grep", "glob", "list_files"]);
-const WEB_TOOLS = new Set(["web_search", "web_fetch"]);
+// 单 path 的工具可在执行入口预检。多输入和多操作工具需在实现里按读路径检查。
+const FILE_READ_TOOLS = new Set([...FILE_TOOLS, "query_data", "archive", "file_op"]);
+const WEB_TOOLS = new Set(["web_search", "web_fetch", "download_file", "http_request"]);
 
 /** 固定使用内置只读实现。父 Agent 的目录只用于收紧可见范围，插件无法替换这里的实现。 */
 export function capabilityScope(task: TaskContract, roleTools: readonly string[], options: {
@@ -28,7 +30,7 @@ export function capabilityScope(task: TaskContract, roleTools: readonly string[]
   }).sort();
   const specs = toolSpecs().filter(({ name }) => roleTools.includes(name) && parentTools.has(name) && !disabled[name] &&
     (task.tools === undefined || task.tools.includes(name)) &&
-    !(roots?.length === 0 && FILE_TOOLS.has(name)) &&
+    !(roots?.length === 0 && FILE_READ_TOOLS.has(name)) &&
     !(hosts && (name === "web_search" || (hosts.length === 0 && WEB_TOOLS.has(name)))));
   const granted = new Set(specs.map(({ name }) => name));
 

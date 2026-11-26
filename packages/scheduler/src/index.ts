@@ -24,10 +24,14 @@ export class ScheduledRun {
     if (this.frames.length > MAX_EVENTS) this.frames.splice(0, MAX_EVENTS / 4);
     for (const subscriber of this.subscribers) {
       // 订阅消费太慢时重连可从游标补读，执行循环不等网络写入。
-      if ((subscriber.desiredSize ?? 0) < -MAX_EVENTS) {
+      try {
+        if ((subscriber.desiredSize ?? 0) < -MAX_EVENTS) {
+          this.subscribers.delete(subscriber);
+          subscriber.error(new Error("订阅消费滞后"));
+        } else subscriber.enqueue(data);
+      } catch {
         this.subscribers.delete(subscriber);
-        subscriber.error(new Error("订阅消费滞后"));
-      } else subscriber.enqueue(data);
+      }
     }
   }
 
@@ -51,7 +55,9 @@ export class ScheduledRun {
   finish() {
     if (this.closed) return;
     this.closed = true;
-    for (const subscriber of this.subscribers) subscriber.close();
+    for (const subscriber of this.subscribers) {
+      try { subscriber.close(); } catch { /* 断开的订阅不影响其余连接收尾。 */ }
+    }
     this.subscribers.clear();
   }
 }

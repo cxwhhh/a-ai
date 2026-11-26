@@ -105,7 +105,7 @@ async function chat(sessionId, message, signal) {
       else if (ev.type === "error") out.errors.push(ev.message);
       else if (ev.type === "approval") {
         out.approvals++;
-        await api("POST", "/api/approve", { callId: ev.callId, decision: "allow" }).catch(() => {});
+        await api("POST", "/api/approve", { approvalId: ev.approvalId, decision: "allow" }).catch((error) => out.errors.push(String(error)));
       }
     }
   }

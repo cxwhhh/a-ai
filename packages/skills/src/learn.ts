@@ -77,8 +77,11 @@ export async function learnSkills(opts: {
   // 1. 记账
   const prevStart = previousTurnStart(session, turnStart);
   const corrected = CORRECTION.test(userText);
-  const prevUsed = corrected && prevStart >= 0 ? usedSkills(userId, session.messages.slice(prevStart, turnStart)) : [];
-  for (const s of prevUsed) recordUse(userId, s.id, false, true);
+  const previous = corrected && prevStart >= 0 ? session.messages.slice(prevStart, turnStart) : [];
+  const prevUsed = usedSkills(userId, previous);
+  // 只有上一轮已经记过成功，纠正才需要把成功改记为失败。
+  const previousOutcome = outcome(previous);
+  if (previousOutcome.finished && previousOutcome.ok) for (const s of prevUsed) recordUse(userId, s.id, false, true);
   if (!out.finished) return null; // 以 ask_user 结束或中途停止：还不知道结果，等下一轮
   const used = usedSkills(userId, turn);
   for (const s of used) recordUse(userId, s.id, out.ok);
@@ -238,7 +241,8 @@ function similarRequests(userId: string, sessionId: string, text: string, exclud
   const rows = db()
     .prepare(
       `SELECT m.id, m.session_id, m.data FROM messages m JOIN sessions s ON s.id = m.session_id
-       WHERE s.user_id = ? AND m.role = 'user' AND m.session_id != ? ORDER BY m.created_at DESC LIMIT 400`,
+       WHERE s.user_id = ? AND m.role = 'user' AND m.session_id != ? AND m.superseded_by IS NULL
+       ORDER BY m.created_at DESC LIMIT 400`,
     )
     .all(userId, sessionId) as {
       id: string;

@@ -77,11 +77,9 @@ export const writeDocument: Tool<Args> = {
     const info: Record<string, unknown> = {};
     if (ext === ".xlsx") {
       if (!Array.isArray(sheets) || !sheets.length) throw new Error('xlsx 需要 sheets，例：[{"name":"Sheet1","rows":[["月份","金额"],["1月",250]]}]');
-      buf = await buildXlsx(sheets, title);
-      info.sheets = sheets.map((s, i) => ({
-        name: sheetName(s.name, i),
-        rows: Array.isArray(s.rows) ? s.rows.length : 0
-      }));
+      const workbook = await buildXlsx(sheets, title);
+      buf = workbook.buffer;
+      info.sheets = workbook.sheets;
     } else {
       const md = String(content ?? "").trim();
       if (!md) throw new Error(`${ext} 需要 content（Markdown）。例：# 标题\\n- 要点一\\n- 要点二`);
@@ -478,13 +476,17 @@ function colName(i: number) {
  * 最小的 xlsx：每个单元格用 inlineStr（文字直接写在单元格里，不用 sharedStrings 表）。
  * 第一行加粗（styles.xml 里第 1 号格式）并冻结，列宽按内容估算，中文按 2 个字符宽。
  */
-async function buildXlsx(sheets: Sheet[], title?: string): Promise<Buffer> {
+async function buildXlsx(sheets: Sheet[], title?: string) {
   const zip = new JSZip();
   const names = new Set<string>();
   const list = sheets.slice(0, 50).map((s, i) => {
-    let n = sheetName(s.name, i);
-    while (names.has(n)) n = `${n.slice(0, 28)}_${i + 1}`;
-    names.add(n);
+    const base = sheetName(s.name, i);
+    let n = base;
+    for (let index = i + 1; names.has(n.toLowerCase()); index++) {
+      const suffix = `_${index}`;
+      n = `${base.slice(0, 31 - suffix.length)}${suffix}`;
+    }
+    names.add(n.toLowerCase());
     if (!Array.isArray(s.rows)) throw new Error(`第 ${i + 1} 个工作表的 rows 必须是二维数组，例：[["月份","金额"],["1月",250]]`);
     return {
       name: n,
@@ -545,8 +547,6 @@ async function buildXlsx(sheets: Sheet[], title?: string): Promise<Buffer> {
     "xl/styles.xml",
     `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`,
   );
-  return zip.generateAsync({
-    type: "nodebuffer",
-    compression: "DEFLATE"
-  });
+  const buffer = await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
+  return { buffer, sheets: list.map(({ name, rows }) => ({ name, rows: rows.length })) };
 }

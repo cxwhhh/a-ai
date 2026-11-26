@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { fetchModel } from "./provider-fetch";
 import type { ChatMessage, ChatRequest, LLMProvider, ModelRequestOptions, StreamChunk, Usage } from "../types";
 
 /**
@@ -32,7 +33,7 @@ export class AnthropicProvider implements LLMProvider {
 
   constructor(private readonly o: AnthropicOptions) {
     this.id = o.label || o.model;
-    this.client = new Anthropic({ apiKey: o.apiKey, baseURL: o.baseUrl?.replace(/\/+$/, "").replace(/\/v1$/, "") || undefined });
+    this.client = new Anthropic({ apiKey: o.apiKey, baseURL: o.baseUrl?.replace(/\/+$/, "").replace(/\/v1$/, "") || undefined, fetch: fetchModel });
   }
 
   requestOptions(req?: ChatRequest) {

@@ -49,7 +49,8 @@ export const fileOp: Tool<OpArgs> = {
     },
   },
   async run({ action, path: p, to, purpose }, ctx) {
-    await fs.mkdir(ctx.workspace, { recursive: true });
+    const { readPath } = ctx;
+    if (!readPath) await fs.mkdir(ctx.workspace, { recursive: true });
     if (action === "mkdir") {
       const d = resolvePath(ctx.workspace, p, "write");
       await fs.mkdir(/*turbopackIgnore: true*/ d.full, { recursive: true });
@@ -82,14 +83,20 @@ export const fileOp: Tool<OpArgs> = {
     }
     if (action === "move" || action === "copy") {
       if (!to) throw new Error(`${action} 需要 to（目标路径，含文件名）。例：{"action":"${action}","path":"a.txt","to":"backup/a.txt"}`);
-      const src = resolvePath(ctx.workspace, p, action === "move" ? "write" : "read");
+      const src = action === "copy" && readPath ? readPath(p) : resolvePath(ctx.workspace, p, action === "move" ? "write" : "read");
       const dst = resolvePath(ctx.workspace, to, "write");
       if (!(await exists(src.full))) throw new Error(`来源不存在：${src.shown}。用 list_files 或 glob 确认路径`);
       if (await exists(dst.full)) throw new Error(`目标已存在：${dst.shown}。换一个名字，或先删除它`);
       await fs.mkdir(/*turbopackIgnore: true*/ path.dirname(dst.full), { recursive: true });
       if (action === "copy") await fs.cp(/*turbopackIgnore: true*/ src.full, dst.full, {
         recursive: true,
-        errorOnExist: true
+        errorOnExist: true,
+        // 目录的授权不隐含链接目标的授权。受限复制逐项检查普通路径，并跳过目录内的符号链接。
+        filter: readPath && (async (from) => {
+          if ((await fs.lstat(from)).isSymbolicLink()) return false;
+          readPath(from);
+          return true;
+        }),
       });
       else
         await fs.rename(/*turbopackIgnore: true*/ src.full, dst.full).catch(async (e: NodeJS.ErrnoException) => {
@@ -151,7 +158,7 @@ export const downloadFile: Tool<{
     const res = await safeFetch(url, {
       signal,
       headers: { "User-Agent": UA }
-    });
+    }, ctx.checkWebUrl);
     if (!res.ok || !res.body) throw new Error(`下载失败：HTTP ${res.status}${httpHint(res.status)}`);
     const len = Number(res.headers.get("content-length") || 0);
     if (len > MAX_DOWNLOAD) throw new Error(`文件太大（${(len / 1048576).toFixed(1)} MB），超过 50 MB 上限。告诉用户文件太大，或者找一个更小的版本`);

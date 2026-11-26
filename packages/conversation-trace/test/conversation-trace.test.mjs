@@ -303,6 +303,8 @@ test("模型选项匹配实际请求，缺失提供方用量时读取该步骤�
   const { readSessionTrace } = load("packages/conversation-trace/src/projection.ts");
   const originalFetch = globalThis.fetch;
   const originalProvider = routeState.provider;
+  const allowed = process.env.A_PRIVATE_MODEL_ORIGINS;
+  process.env.A_PRIVATE_MODEL_ORIGINS = "http://localhost:1";
   routeState.provider = new OpenAICompatibleProvider({
     model: "fixture-model", baseUrl: "http://localhost:1", apiKey: "fixture-key", thinking: "enabled", effort: "max",
   });
@@ -332,6 +334,8 @@ test("模型选项匹配实际请求，缺失提供方用量时读取该步骤�
   } finally {
     globalThis.fetch = originalFetch;
     routeState.provider = originalProvider;
+    if (allowed === undefined) delete process.env.A_PRIVATE_MODEL_ORIGINS;
+    else process.env.A_PRIVATE_MODEL_ORIGINS = allowed;
   }
 });
 

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import dns from "node:dns/promises";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
@@ -59,6 +60,7 @@ test("模型提供独立的档位，自定义配置保留受支持的有序值",
 });
 
 test("Chat Completions 和 Claude 原样发送选择的强度", async (t) => {
+  t.mock.method(dns, "lookup", async () => [{ address: "93.184.215.14", family: 4 }]);
   const sent = [];
   t.mock.method(globalThis, "fetch", async (url, init) => {
     sent.push([String(url instanceof Request ? url.url : url), JSON.parse(init?.body ?? await url.text())]);
@@ -92,11 +94,12 @@ test("Chat Completions 和 Claude 原样发送选择的强度", async (t) => {
 });
 
 test("官方 GPT-6 发送各档位，完成后重放工具调用和加密思考并保留计量", async (t) => {
+  t.mock.method(dns, "lookup", async () => [{ address: "93.184.215.14", family: 4 }]);
   const seen = [];
   const call = { type: "function_call", call_id: "call_1", name: "inspect", arguments: "{}" };
   const reasoning = { type: "reasoning", id: "rs_1", summary: [], encrypted_content: "fixture-encrypted" };
   t.mock.method(globalThis, "fetch", async (url, init) => {
-    assert.equal(url, "https://api.openai.com/v1/responses");
+    assert.equal(String(url), "https://api.openai.com/v1/responses");
     const body = JSON.parse(init.body);
     seen.push(body);
     return sse(

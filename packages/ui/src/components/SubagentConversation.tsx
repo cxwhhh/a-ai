@@ -46,7 +46,7 @@ export function SubagentConversation({ sessionId, selected, sendKey, modKey, arc
         if (controller.signal.aborted) return;
         setTask(current);
         setLoadError(null);
-        if (current.status === "running") timer = setTimeout(refresh, 650);
+        if (current.status === "running" || current.status === "queued") timer = setTimeout(refresh, 650);
       } catch (error) {
         if (controller.signal.aborted) return;
         setLoadError(error instanceof Error ? error.message : "无法读取子 Agent 对话");

@@ -36,13 +36,17 @@ export function resolvePath(workspace: string, p: string | undefined, mode: "rea
   if (raw === "/workspace" || raw.startsWith("/workspace/")) raw = "." + raw.slice("/workspace".length);
 
   const ws = real(workspace);
-  const full = real(path.isAbsolute(raw) ? path.resolve(/*turbopackIgnore: true*/ raw) : path.resolve(/*turbopackIgnore: true*/ ws, raw));
+  const resolved = path.isAbsolute(raw) ? path.resolve(/*turbopackIgnore: true*/ raw) : path.resolve(/*turbopackIgnore: true*/ ws, raw);
+  const full = real(resolved);
+  if ([resolved, full].some((file) => /(?:^|[\\/])\.aai-apps(?:[\\/]|$)/i.test(file))) {
+    throw new Error("应用存储只能通过应用接口访问");
+  }
   if (within(full, [ws])) return { full, shown: path.relative(ws, full).split(path.sep).join("/") || ".", inWorkspace: true };
 
   if (!path.isAbsolute(raw)) throw new Error(`路径超出工作区：${p}`);
   const dir = sandboxInfo().dirs.find((d) => within(full, [d.path]));
   if (!dir) throw new Error(`${p} 不在授权范围内。可以访问的位置：${accessibleDirs()}`);
-  if (isSensitivePath(full)) throw new Error(`不允许访问密钥、凭据或 .env 这类文件：${p}`);
+  if (isSensitivePath(resolved) || isSensitivePath(full)) throw new Error(`不允许访问密钥、凭据或 .env 这类文件：${p}`);
   if (mode === "write" && dir.mode === "ro") throw new Error(`${dir.path} 是只读授权目录，不能修改。需要改的话先复制到工作区再处理`);
   // A.ai 自己跑在 Docker 里时看不到宿主机的授权目录，只有 run_command 的沙箱容器挂载了它们
   if (!existsSync(/*turbopackIgnore: true*/ dir.path)) throw new Error(`${dir.path} 只能通过 run_command 访问（A.ai 运行在容器里，文件工具看不到这个宿主机目录）`);

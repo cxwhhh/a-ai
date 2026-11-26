@@ -312,7 +312,7 @@ function finish(text: string, plan: Step[], r: R[]): { thought: string; answer: 
       "- `用 python 跑一下`",
       "- `演示终端`：命令确认 + 实时输出",
       "",
-      "接入真实模型：编辑 `src/lib/llm/providers/custom.ts`，并在 `.env.local` 设置 `A_PROVIDER=custom`。",
+      "接入真实模型：打开「设置 → 模型」，添加模型服务并选择要使用的模型。",
     ].join("\n"),
   };
 }

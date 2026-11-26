@@ -75,6 +75,8 @@ docker compose ps a-ai
 
 默认 Compose 配置将 3000 端口映射到宿主机，并挂载 Docker socket 以启动工具沙箱。用于服务器部署时，建议将端口绑定至 `127.0.0.1` 并通过 HTTPS 反向代理访问。创建账号后可在 Compose 中将 `A_ALLOW_SIGNUP` 设为 `0`，再执行 `docker compose up -d a-ai` 生效。
 
+桌面本机可直接连接回环地址上的模型。服务端如需连接内网 Ollama 等模型，由部署者在 `.env`（Compose）或 `.env.local`（直接启动）设置 `A_PRIVATE_MODEL_ORIGINS`。填写带协议和端口的完整 origin，多个用逗号隔开，例如 `http://host.docker.internal:11434`。模型设置里填最终服务地址，例如 `http://host.docker.internal:11434/v1`。
+
 ### 桌面端
 
 在 Windows 或 macOS 上，使用 `pnpm electron:dev` 启动 Electron 开发版。Windows 安装包用 `pnpm dist:win` 构建，macOS 安装包用 `pnpm dist:mac` 构建，产物写入 `release/`。

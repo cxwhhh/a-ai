@@ -42,7 +42,7 @@ interface ResultBody { summary?: unknown; checks?: unknown; unresolved?: unknown
 
 function readResultBody(text: string): ResultBody | undefined {
   try {
-    const value: unknown = JSON.parse(text.replace(/^```(?:json)?\s*|\s*```$/g, ""));
+    const value: unknown = JSON.parse(text.trim().replace(/^```(?:json)?\s*|\s*```$/gi, ""));
     if (value && typeof value === "object" && !Array.isArray(value)) return value as ResultBody;
   } catch { /* 不完整的 JSON 继续走已有的部分结果和缺口判定。 */ }
 }

@@ -1,5 +1,5 @@
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
-import { db, newId } from "../../../storage/src/db";
+import { db, newId, tx } from "../../../storage/src/db";
 import { importLegacyData } from "../../../storage/src/legacy";
 import { DEFAULT_SETTINGS } from "../../../protocol/src/lib/settings";
 import { getSettings, saveSettings } from "../../settings/src/settings";
@@ -48,18 +48,23 @@ export const USERNAME_RULE = /^[a-zA-Z0-9_.-]{2,32}$/;
 export function register(username: string, password: string): User | string {
   if (!USERNAME_RULE.test(username)) return "用户名为 2～32 位字母、数字或 _ . -";
   if (password.length < 8 || password.length > 200) return "密码至少 8 位";
-  const first = !db().prepare("SELECT 1 FROM users LIMIT 1").get();
-  if (!first && process.env.A_ALLOW_SIGNUP === "0") return "注册已关闭，请联系管理员";
-  if (db().prepare("SELECT 1 FROM users WHERE username = ?").get(username)) return "用户名已被使用";
-
-  const user: User = { id: newId("u"), username };
-  db().prepare("INSERT INTO users (id, username, password_hash, created_at) VALUES (?, ?, ?, ?)").run(
-    user.id, username, hashPassword(password), Date.now(),
-  );
-  // 第一个注册的用户继承升级前 .data 里的旧数据（对话、分组、设置、工作区）
-  if (first) importLegacyData(user.id);
-  // 显示名默认用用户名（旧设置里没填名字时也一样）
-  if (getSettings(user.id).name === DEFAULT_SETTINGS.name) saveSettings(user.id, { name: username });
+  let archiveLegacy: (() => void) | undefined;
+  const user = tx(() => {
+    // 首账号判断和创建共享写事务，多进程也只有一个请求能继承旧数据。
+    const first = !db().prepare("SELECT 1 FROM users LIMIT 1").get();
+    if (!first && process.env.A_ALLOW_SIGNUP === "0") return "注册已关闭，请联系管理员";
+    if (db().prepare("SELECT 1 FROM users WHERE username = ?").get(username)) return "用户名已被使用";
+    const account: User = { id: newId("u"), username };
+    db().prepare("INSERT INTO users (id, username, password_hash, created_at) VALUES (?, ?, ?, ?)").run(
+      account.id, username, hashPassword(password), Date.now(),
+    );
+    if (first) archiveLegacy = importLegacyData(account.id);
+    if (getSettings(account.id).name === DEFAULT_SETTINGS.name) saveSettings(account.id, { name: username });
+    return account;
+  });
+  try { archiveLegacy?.(); } catch (error) {
+    console.error("[auth] 账号已创建，旧数据文件归档或迁移失败", error);
+  }
   return user;
 }
 
@@ -74,7 +79,7 @@ export function login(username: string, password: string): User | string {
   const r = db().prepare("SELECT id, username, password_hash FROM users WHERE username = ?").get(username);
   const ok = verifyPassword(password, r ? (r.password_hash as string) : DUMMY);
   if (!ok || !r) {
-    const n = (f?.n ?? 0) + 1;
+    const n = (f && !f.until ? f.n : 0) + 1;
     fails.set(key, { n, until: n >= 5 ? Date.now() + 60_000 : 0 });
     return "用户名或密码不对";
   }
@@ -94,8 +99,11 @@ export function startLogin(req: Request, userId: string): HeadersInit {
   db().prepare("INSERT INTO auth_tokens (token_hash, user_id, expires_at) VALUES (?, ?, ?)").run(sha256(token), userId, now + TTL_MS);
 
   // 通过 https 访问时才加 Secure（本机 http://localhost 开发时加了浏览器会不存）
-  const https = new URL(req.url).protocol === "https:" || (req.headers.get("x-forwarded-proto") ?? "").split(",")[0].trim() === "https";
-  return { "Set-Cookie": sessionCookie(token, TTL_MS / 1000, https) };
+  return { "Set-Cookie": sessionCookie(token, TTL_MS / 1000, secureRequest(req)) };
+}
+
+function secureRequest(req: Request) {
+  return new URL(req.url).protocol === "https:" || (req.headers.get("x-forwarded-proto") ?? "").split(",")[0].trim() === "https";
 }
 
 function sessionCookie(token: string, ttl: number, secure = false): string {
@@ -118,7 +126,7 @@ export async function currentUser(req: Request): Promise<User | null> {
 export function logout(req: Request): HeadersInit {
   const token = readToken(req);
   if (token) db().prepare("DELETE FROM auth_tokens WHERE token_hash = ?").run(sha256(token));
-  return { "Set-Cookie": sessionCookie("", 0) };
+  return { "Set-Cookie": sessionCookie("", 0, secureRequest(req)) };
 }
 
 /** 没登录时接口统一返回 401，前端收到后跳到登录页 */

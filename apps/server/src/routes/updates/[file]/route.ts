@@ -45,6 +45,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ file: st
     headers["Content-Range"] = `bytes ${start}-${end}/${st.size}`;
     return send(start, end, 206);
   }
+  if (st.size === 0) return new Response(null, { headers: { ...headers, "Content-Length": "0" } });
   return send(0, st.size - 1, 200);
 }
 

@@ -2,7 +2,7 @@
 
 /* 整页一起滚动：标题栏贴在顶上，项目头和输入框靠上排，下面接对话列表 */
 .chat.is-proj { overflow-y: auto; }
-.chat.is-proj .chat-head { position: sticky; top: 0; z-index: 5; background: var(--bg); }
+.chat.is-proj .chat-head { position: sticky; top: 0; z-index: 5; background: var(--surface); }
 .chat.is-proj .chat-scroll { flex: none; display: block; overflow: visible; padding: 48px 24px 20px; }
 .chat.is-proj .composer-wrap { flex: none; max-width: 820px; padding-bottom: 40px; }
 

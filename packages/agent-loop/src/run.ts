@@ -424,7 +424,8 @@ async function* executeTurn(opts: {
           break; // 通过（或修复轮数用完）：交付
         }
         yield* sendFeedback(session, fb);
-        budget = Math.min(budget + STEPS_PER_FIX, maxSteps + STEPS_PER_FIX * verifier.maxRounds);
+        const fixLimit = maxSteps + Number(planned) + STEPS_PER_FIX * verifier.maxRounds;
+        budget = Math.max(budget, Math.min(budget + STEPS_PER_FIX, fixLimit));
         continue;
       }
 

@@ -1,6 +1,7 @@
 import { isUtf8 } from "node:buffer";
-import { promises as fs, readFileSync, statSync } from "node:fs";
+import { createReadStream, promises as fs, readFileSync, statSync } from "node:fs";
 import path from "node:path";
+import { Readable } from "node:stream";
 import { safePath, workspaceOf } from "../../../../../../packages/tools/src/files";
 import { currentUser, unauthorized } from "../../../../../../packages/application/users/src/auth";
 import { readDocument } from "../../../../../../packages/tools/src/documents";
@@ -43,20 +44,29 @@ export async function GET(req: Request) {
       return Response.json({ path: p, type: "dir", items });
     }
     if (!st.isFile()) return Response.json({ path: p, error: "只能读取普通文件" }, { status: 404 });
-    const buf = await fs.readFile(/*turbopackIgnore: true*/ full);
+    const streamFile = () => Readable.toWeb(createReadStream(full)) as ReadableStream<Uint8Array>;
     // ?raw=1：直接返回文件本身，给图片 <img> 和 PDF <iframe> 预览用（上传的附件点开能看到原样）
     if (q.get("raw")) {
       const type = MIME[path.extname(full).slice(1).toLowerCase()];
       if (!type) return new Response("不支持预览这种文件", { status: 415 });
-      return new Response(new Uint8Array(buf), { headers: { "Content-Type": type, "Cache-Control": "private, no-cache", "X-Content-Type-Options": "nosniff" } });
+      return new Response(streamFile(), { headers: { "Content-Type": type, "Cache-Control": "private, no-cache", "X-Content-Type-Options": "nosniff" } });
     }
     // ?download=1：原样下载（Word / Excel / PPT 这类不能直接显示的文件用）。
     // 强制 attachment + octet-stream，浏览器只会存成文件，不会在本站打开执行
     if (q.get("download")) {
       const name = encodeURIComponent(path.basename(full));
-      return new Response(new Uint8Array(buf), {
+      return new Response(streamFile(), {
         headers: { "Content-Type": "application/octet-stream", "Content-Disposition": `attachment; filename*=UTF-8''${name}`, "X-Content-Type-Options": "nosniff", "Cache-Control": "private, no-cache" },
       });
+    }
+    const file = await fs.open(full, "r");
+    let buf: Buffer;
+    try {
+      const prefix = Buffer.alloc(Math.min(st.size, MAX + 1));
+      const { bytesRead } = await file.read(prefix);
+      buf = prefix.subarray(0, bytesRead);
+    } finally {
+      await file.close();
     }
     const binary = buf.subarray(0, 8000).includes(0);
     const ext = path.extname(full).slice(1).toLowerCase();
@@ -79,7 +89,7 @@ export async function GET(req: Request) {
       mtime: st.mtimeMs,
       binary,
       content: binary ? "" : buf.toString("utf8", 0, Math.min(buf.length, MAX)),
-      truncated: buf.length > MAX,
+      truncated: st.size > MAX,
       ext,
       preview,
     });

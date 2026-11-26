@@ -546,6 +546,9 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
 
   async function remove(id: string) {
     await api.remove(id);
+    const run = runs.current.get(id);
+    runs.current.delete(id);
+    run?.controller.abort();
     setSessions((l) => l.filter((s) => s.id !== id));
     if (viewKey.current === id) newChat();
   }
@@ -744,6 +747,7 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
     } finally {
       flush();
       run.live.reset();
+      if (runs.current.get(run.key) !== run) return;
       // 服务端确认的记录决定最终视图。后台任务结束也同步列表，但只能写回同一会话。
       const savedId = run.session.id;
       if (savedId) {
@@ -760,6 +764,7 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
       } else {
         run.session = original;
       }
+      if (runs.current.get(run.key) !== run) return;
       runs.current.delete(run.key);
       if (viewKey.current === run.key) {
         setCur(run.session);

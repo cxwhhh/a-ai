@@ -1,6 +1,7 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { api } from "../lib/client";
+import { useDebouncedSave } from "../lib/debounced-save";
 import type { Skill } from "../../../protocol/src/lib/shared";
 import { IChevron, IPlus } from "./Icons";
 import "./SkillsPane.css";
@@ -123,37 +124,23 @@ function SkillItem(props: { skill: Skill; open: boolean; onToggle(): void; onCha
   const { skill: s } = props;
   const [draft, setDraft] = useState({ name: s.name, description: s.description, body: s.body });
   const [error, setError] = useState("");
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  /** 还没保存完的输入次数：大于 0 时不拿服务端的内容覆盖编辑框，免得刚打的字被旧内容冲掉 */
-  const typing = useRef(0);
+  const edits = useDebouncedSave<Partial<Pick<Skill, "name" | "description" | "body" | "status">> & { restore?: true }, Skill>(
+    ({ restore, ...patch }) => api.updateSkill(s.id, restore ? { restore } : patch),
+    (next) => { props.onChange(next); setError(""); },
+    (error) => setError(error instanceof Error ? error.message : String(error)),
+  );
 
   // 服务端的内容变了（恢复上一版、自动改进）：编辑框跟着更新
   useEffect(() => {
-    if (!typing.current) setDraft({ name: s.name, description: s.description, body: s.body });
+    if (!edits.busy()) setDraft({ name: s.name, description: s.description, body: s.body });
   }, [s.name, s.description, s.body]);
 
   const save = (patch: Partial<typeof draft>) => {
     setDraft((d) => ({ ...d, ...patch }));
-    if (timer.current) clearTimeout(timer.current);
-    const n = ++typing.current;
-    timer.current = setTimeout(async () => {
-      try {
-        const next = await api.updateSkill(s.id, patch);
-        if (n === typing.current) typing.current = 0;
-        props.onChange(next);
-        setError("");
-      } catch (e) {
-        if (n === typing.current) typing.current = 0;
-        setError(e instanceof Error ? e.message : String(e));
-      }
-    }, 600);
+    edits.schedule(patch, 600);
   };
   const act = async (patch: Parameters<typeof api.updateSkill>[1]) => {
-    try {
-      props.onChange(await api.updateSkill(s.id, patch));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
+    await edits.save(patch).catch(() => { /* 已由保存回调显示失败。 */ });
   };
 
   const meta = [

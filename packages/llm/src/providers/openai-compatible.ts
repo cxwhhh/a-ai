@@ -1,5 +1,7 @@
 import type { ChatMessage, ChatRequest, LLMProvider, ModelRequestOptions, StreamChunk, ToolCall, Usage } from "../types";
 import { ModelStreamInterrupted } from "../stream";
+import { readBoundedText } from "../../../sandbox/src/public-fetch";
+import { fetchModel } from "./provider-fetch";
 
 /**
  * OpenAI 兼容协议的模型实现。DeepSeek、OpenAI、通义、Kimi、Ollama、vLLM 等都支持这个协议，
@@ -59,7 +61,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
     if (options.thinking) body.thinking = { type: options.thinking };
     if (options.reasoningEffort) body.reasoning_effort = options.reasoningEffort;
 
-    const res = await fetch(joinUrl(this.o.baseUrl, "/chat/completions"), {
+    const res = await fetchModel(joinUrl(this.o.baseUrl, "/chat/completions"), {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.o.apiKey}` },
       body: JSON.stringify(body),
@@ -223,7 +225,7 @@ export function joinUrl(base: string, path: string) {
 export async function readError(res: Response) {
   let msg = "";
   try {
-    const t = await res.text();
+    const t = await readBoundedText(res);
     try {
       const j = JSON.parse(t);
       msg = j.error?.message || j.message || t;

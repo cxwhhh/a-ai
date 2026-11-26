@@ -36,6 +36,10 @@ async function send(outgoing: ServerResponse, method: string, response: Response
   if (signal.aborted) { await response.body?.cancel(); return; }
   outgoing.statusCode = response.status;
   for (const [name, value] of response.headers) if (name !== "set-cookie" && name !== "connection") outgoing.setHeader(name, value);
+  if (response.headers.get("connection")?.toLowerCase() === "close") {
+    outgoing.shouldKeepAlive = false;
+    outgoing.setHeader("connection", "close");
+  }
   const cookies = response.headers.getSetCookie();
   if (cookies.length) outgoing.setHeader("set-cookie", cookies);
   if (!response.body || method === "HEAD") {

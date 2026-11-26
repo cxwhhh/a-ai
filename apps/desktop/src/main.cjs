@@ -236,12 +236,11 @@ async function waitReady(url, timeoutMs) {
 
 function createWindow() {
   const partition = remoteMode ? CLOUD_PARTITION : deviceMode ? DEVICE_PARTITION : undefined;
-  if (partition) {
-    const cloudSession = session.fromPartition(partition);
-    cloudSession.setPermissionRequestHandler((_contents, _permission, respond) => respond(false));
-    cloudSession.setPermissionCheckHandler(() => false);
-  }
-  const pagePreferences = { contextIsolation: true, nodeIntegration: false, sandbox: true, partition, preload: path.join(__dirname, "preload.cjs") };
+  // 旧本机模式保留默认 session 的登录与存储。页面加载前统一安装权限拒绝钩子。
+  const pageSession = partition ? session.fromPartition(partition) : session.defaultSession;
+  pageSession.setPermissionRequestHandler((_contents, _permission, respond) => respond(false));
+  pageSession.setPermissionCheckHandler(() => false);
+  const pagePreferences = { contextIsolation: true, nodeIntegration: false, sandbox: true, session: pageSession, preload: path.join(__dirname, "preload.cjs") };
   const window = new BrowserWindow({
     width: 1400,
     height: 900,

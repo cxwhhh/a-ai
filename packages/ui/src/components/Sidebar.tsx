@@ -238,7 +238,7 @@ export function Sidebar(props: {
   function removeGroup(id: string) {
     // 删除分组不删对话：里面的对话回到“未分组”
     const assign = Object.fromEntries(Object.entries(groups.assign).filter(([, gid]) => gid !== id));
-    props.onGroupsChange({ groups: groups.groups.filter((g) => g.id !== id), assign });
+    props.onGroupsChange({ ...groups, groups: groups.groups.filter((g) => g.id !== id), assign });
   }
   const toggleFold = (id: string) =>
     setFolded((s) => {
@@ -592,7 +592,8 @@ export function Sidebar(props: {
         </div>
 
         <div className="side-list">
-          {q.trim() && !sections.some((g) => byGroup.get(g.id)?.length) && <div className="side-empty">没有找到“{q.trim()}”</div>}
+          {q.trim() && !sections.some((g) => byGroup.get(g.id)?.length) && !projects.some((p) => byProject.get(p.id)?.length) &&
+            <div className="side-empty">没有找到“{q.trim()}”</div>}
           {sections.map((g) => {
             const items = byGroup.get(g.id) ?? [];
             if (q && !items.length) return null;

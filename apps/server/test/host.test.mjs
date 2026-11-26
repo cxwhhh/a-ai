@@ -94,13 +94,22 @@ test("桌面更新文件名只解码一次，支持带空格的文件名和断�
   assert.equal(partial.status, 206);
   assert.equal(await partial.text(), "23");
   assert.equal((await fetch(`${origin}/updates/A.ai%2520Setup.exe`)).status, 404);
+  writeFileSync(path.join(data, "empty.exe"), "");
+  const empty = await fetch(`${origin}/updates/empty.exe`);
+  assert.equal(empty.status, 200);
+  assert.equal(empty.headers.get("content-length"), "0");
+  assert.equal(await empty.text(), "");
+  assert.equal((await fetch(`${origin}/updates/empty.exe`, { method: "HEAD" })).status, 200);
+  const range = await fetch(`${origin}/updates/empty.exe`, { headers: { range: "bytes=0-" } });
+  assert.equal(range.status, 416);
+  assert.equal(range.headers.get("content-range"), "bytes */0");
 });
 
 test("任务勾选保存到账号自己的 Markdown 文件，冲突时保留新版本", async () => {
   const text = "# 同名计划\r\n\r\n- [ ] 上线\r\n  - [ ] 复核\r\n";
-  async function upload(cookie) {
+  async function upload(cookie, content = text, name = "plan.md") {
     const form = new FormData();
-    form.append("file", new Blob([text]), "plan.md");
+    form.append("file", new Blob([content]), name);
     const res = await request("/api/upload", cookie, { method: "POST", body: form });
     assert.equal(res.status, 200);
     return (await res.json()).files[0];
@@ -125,6 +134,17 @@ test("任务勾选保存到账号自己的 Markdown 文件，冲突时保留新�
   assert.equal(changed, text.replace("- [ ] 上线", "- [x] 上线"));
   assert.equal((await toggle(owner, original.revision, text.indexOf("- [ ] 复核"))).status, 409);
   assert.equal(await (await request(`${endpoint}&download=1`)).text(), changed);
+  const large = "%PDF-1.4\n" + "fixture".repeat(80_000);
+  const pdf = await upload(owner, large, "large.pdf");
+  const raw = await request(`/api/files?id=${pdf.id}&raw=1`);
+  assert.equal(raw.headers.get("content-type"), "application/pdf");
+  assert.equal(await raw.text(), large);
+  const download = await request(`/api/files?id=${pdf.id}&download=1`);
+  assert.match(download.headers.get("content-disposition"), /attachment.*large\.pdf/);
+  assert.equal(await download.text(), large);
+  const preview = await (await request(`/api/files?id=${pdf.id}`)).json();
+  assert.equal(preview.truncated, true);
+  assert.equal(preview.content.length, 200_000);
   assert.equal((await (await request(`/api/files?id=${b.id}`, visitor)).json()).content, text);
 });
 
@@ -153,7 +173,10 @@ test("聊天部署的饮食应用可跨登录读取，数据和页面按账号�
   assert.equal((await command({ action: "list" }, visitor)).status, 404);
   assert.deepEqual((await (await request("/api/workspace-apps", visitor)).json()).apps, []);
   assert.equal((await command(null)).status, 400);
-  assert.equal((await command({ action: "create", data: { food: "x".repeat(18_000) } })).status, 413);
+  const oversized = await command({ action: "create", data: { food: "x".repeat(18_000) } });
+  assert.equal(oversized.status, 413);
+  assert.equal(oversized.headers.get("connection"), "close");
+  await oversized.text();
   const deployed = await request(endpoint);
   assert.match(deployed.headers.get("content-type"), /application\/json/);
   assert.match((await deployed.json()).app.html, /aai\.records\.create/);

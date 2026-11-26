@@ -53,12 +53,14 @@ export function importLegacyData(userId: string) {
   const settings = read<object>(p("settings.json"));
   if (settings) saveSettings(userId, settings);
 
-  // 导入成功后再改名，避免中途出错丢数据
-  for (const n of ["sessions", "groups.json", "settings.json"]) if (existsSync(p(n))) renameSync(p(n), p(n + ".imported"));
-  const oldWs = p("workspace");
-  const newWs = workspaceOf(userId);
-  if (existsSync(oldWs) && !existsSync(newWs)) {
-    mkdirSync(path.dirname(newWs), { recursive: true });
-    renameSync(oldWs, newWs);
-  }
+  // 由注册入口在外层提交后调用。事务回滚时，原文件仍在原位。
+  return () => {
+    const oldWs = p("workspace");
+    const newWs = workspaceOf(userId);
+    if (existsSync(oldWs) && !existsSync(newWs)) {
+      mkdirSync(path.dirname(newWs), { recursive: true });
+      renameSync(oldWs, newWs);
+    }
+    for (const n of ["sessions", "groups.json", "settings.json"]) if (existsSync(p(n))) renameSync(p(n), p(n + ".imported"));
+  };
 }

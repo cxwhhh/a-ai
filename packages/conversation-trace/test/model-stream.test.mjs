@@ -10,12 +10,16 @@ const toolFrame = sse({ choices: [{ delta: { tool_calls: [{
 
 /** 在真实聊天路由中使用兼容适配器，只有 HTTP 响应由测试接管。 */
 function mockSse(t, respond) {
+  const allowed = process.env.A_PRIVATE_MODEL_ORIGINS;
+  process.env.A_PRIVATE_MODEL_ORIGINS = "http://localhost:1";
   const originalFetch = globalThis.fetch;
   const originalProvider = routeState.provider;
   const { OpenAICompatibleProvider } = load("packages/llm/src/providers/openai-compatible.ts");
   routeState.provider = new OpenAICompatibleProvider({ model: "fixture", baseUrl: "http://localhost:1", apiKey: "fixture" });
   globalThis.fetch = respond;
   t.after(() => {
+    if (allowed === undefined) delete process.env.A_PRIVATE_MODEL_ORIGINS;
+    else process.env.A_PRIVATE_MODEL_ORIGINS = allowed;
     globalThis.fetch = originalFetch;
     routeState.provider = originalProvider;
   });

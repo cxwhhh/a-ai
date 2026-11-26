@@ -23,31 +23,21 @@ const PAGE = 50;
 type Row = Record<string, SQLOutputValue>;
 const missing = { status: 404, error: "应用不存在" } as const;
 
-export function workspaceAppsPath(workspace: string) {
-  return path.join(workspace, ".aai-apps", "apps.sqlite");
-}
-
 /**
- * 每个账号的应用和数据放在自己的工作区。Docker 驱动在容器内打开同一个挂载卷。
- * 重建容器时重新打开数据库即可。更新页面只替换该应用的 HTML，不触碰记录。
+ * 主服务在账号独立的数据库中处理部署和记录。更新页面只替换对应应用的 HTML。
  */
-export function executeWorkspaceApp(workspace: string, request: WorkspaceAppCommand): WorkspaceAppReply {
-  const filename = workspaceAppsPath(workspace);
+export function executeWorkspaceApp(filename: string, request: WorkspaceAppCommand): WorkspaceAppReply {
   const current = lstatSync(filename, { throwIfNoEntry: false });
   if (!current && request.type === "list-apps") return { apps: [] };
   if (!current && request.type !== "deploy-app") return missing;
 
   const directory = path.dirname(filename);
   mkdirSync(directory, { recursive: true, mode: 0o700 });
-  if (!lstatSync(directory).isDirectory() ||
-      [filename, filename + "-wal", filename + "-shm", filename + "-journal"].some((file) => {
-        const info = lstatSync(file, { throwIfNoEntry: false });
-        return info && !info.isFile();
-      })) throw new Error("应用存储必须位于账号工作区");
+  assertRegularDatabase(filename);
 
   const db = new DatabaseSync(filename);
   try {
-    db.exec("PRAGMA busy_timeout=4000; PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;");
+    db.exec("PRAGMA busy_timeout=4000; PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA trusted_schema=OFF;");
     db.exec(TABLES);
     if (!hasProjectColumn(db)) {
       // 来自旧版本的工作区首次打开时升级。加锁后重查，避免两个请求同时修改表。
@@ -69,6 +59,14 @@ export function executeWorkspaceApp(workspace: string, request: WorkspaceAppComm
   } finally {
     db.close();
   }
+}
+
+export function assertRegularDatabase(filename: string) {
+  if (!lstatSync(path.dirname(filename)).isDirectory() ||
+      ["", "-wal", "-shm", "-journal"].some((suffix) => {
+        const info = lstatSync(filename + suffix, { throwIfNoEntry: false });
+        return info && !info.isFile();
+      })) throw new Error("应用存储必须使用普通目录和文件");
 }
 
 function hasProjectColumn(db: DatabaseSync) {

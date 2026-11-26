@@ -42,13 +42,13 @@ export interface SandboxInfo {
 
 /** 授权目录里也永远不让碰的东西：密钥、凭据、环境变量文件 */
 const SENSITIVE_DIRS = [".ssh", ".gnupg", ".aws", ".kube", ".docker", ".azure", ".config/gcloud", "Library/Keychains"];
-const SENSITIVE_RE = /(^|\/)(\.ssh|\.gnupg|\.aws|\.kube|\.docker|\.azure|\.config\/gcloud|Library\/Keychains)(\/|$)|(^|\/)\.env(\.[\w.-]+)?$|(^|\/)\.netrc$|(^|\/)id_(rsa|dsa|ecdsa|ed25519)(\.pub)?$|\.(pem|key|p12|pfx)$/;
+const SENSITIVE_RE = /(^|\/)(\.ssh|\.gnupg|\.aws|\.kube|\.docker|\.azure|\.config\/gcloud|Library\/Keychains|\.aai-apps)(\/|$)|(^|\/)\.env(\.[\w.-]+)?$|(^|\/)\.netrc$|(^|\/)id_(rsa|dsa|ecdsa|ed25519)(\.pub)?$|\.(pem|key|p12|pfx)$/i;
 
 /** 这些目录下是“用户的个人文件”：没授权就不能访问。系统目录（/usr、/bin、/opt…）可以读，命令才能正常运行 */
 const PRIVATE_ROOTS = ["/Users", "/home", "/root", "/Volumes", "/mnt", "/media", "/srv", "/private/var/root"];
 
 /** 密钥、凭据、.env 这类文件：授权目录里也不让碰（文件工具和 run_command 共用这条规则） */
-export const isSensitivePath = (p: string) => SENSITIVE_RE.test(p);
+export const isSensitivePath = (p: string) => SENSITIVE_RE.test(p.replace(/\\/g, "/"));
 
 /* ---------------- 配置 ---------------- */
 
@@ -73,6 +73,11 @@ export function sandboxInfo(): SandboxInfo {
     if (existsSync(/*turbopackIgnore: true*/ p)) p = realpathSync(/*turbopackIgnore: true*/ p);
     if (p === "/" || p === os.homedir()) {
       warnings.push(`不能把整个磁盘或整个家目录设为授权目录，请具体到子目录：${p}`);
+      continue;
+    }
+    const managed = [DATA_DIR, ...(existsSync(DATA_DIR) ? [realpathSync(DATA_DIR)] : [])];
+    if (managed.some((root) => within(root, [p]) || within(p, [root]))) {
+      warnings.push(`授权目录与 A.ai 数据目录重叠，已忽略：${p}`);
       continue;
     }
     dirs.push({ path: p, mode: m[2] === "rw" ? "rw" : "ro" });
@@ -102,11 +107,11 @@ export function checkCommand(command: string, root: string, cwd: string): string
   const info = sandboxInfo();
   const allowed = [root, ...info.dirs.map((d) => d.path)];
   // 引号里或空白分隔的“像路径”的片段：以 / 或 ~ 开头，或者包含 ..
-  const tokens = command.match(/(?<=^|[\s'"=:(<>|;&,])(~?\/[^\s'"`;|&<>()]*|[^\s'"`;|&<>()]*\.\.[^\s'"`;|&<>()]*)/g) ?? [];
+  const tokens = command.match(/(?<=^|[\s'"=:(<>|;&,])(~?\/[^\s'"`;|&<>()]*|[a-z]:[\\/][^\s'"`;|&<>()]*|[^\s'"`;|&<>()]*\.\.[^\s'"`;|&<>()]*|[^\s'"`;|&<>()]*\.aai-apps[^\s'"`;|&<>()]*)/gi) ?? [];
   for (const t of tokens) {
     if (/^\/\//.test(t) || /:\/\//.test(t)) continue; // URL
     const abs = t.startsWith("~") ? path.join(os.homedir(), t.slice(1)) : path.resolve(cwd, t);
-    if (SENSITIVE_RE.test(abs)) return `不允许访问密钥、凭据类文件：${t}`;
+    if (isSensitivePath(t) || isSensitivePath(abs)) return `不允许访问密钥、凭据类文件或应用存储：${t}`;
     if (within(abs, allowed)) continue;
     if (PRIVATE_ROOTS.some((r) => within(abs, [r])) || within(abs, [DATA_DIR])) {
       return `${t} 不在授权范围内。可以访问的目录：${allowed.map((p) => (p === root ? `${p}（工作区）` : p)).join("、")}`;
@@ -138,12 +143,20 @@ export const within = (p: string, roots: string[]) => {
  * HOME 设成工作区：pip install --user 装的包、git 配置都留在用户自己的工作区里。
  * TERM/NO_COLOR/CI/PAGER：让各种工具别输出颜色、别开分页器、别弹交互提示。
  */
-export function sandboxEnv(root: string): Record<string, string | undefined> {
-  const docker = sandboxInfo().mode === "docker";
+export function sandboxEnv(root: string, readonly = false): Record<string, string | undefined> {
+  const info = sandboxInfo();
+  const docker = info.mode === "docker";
+  const systemPath = docker ? "/usr/local/bin:/usr/bin:/bin" : process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin";
+  // 自动放行的命令只从可信 PATH 查找程序。工作区安装的同名程序仍可经普通确认执行。
+  const allowedPath = readonly && !docker ? systemPath.split(path.delimiter)
+    .filter((dir) => path.isAbsolute(dir) && !within(dir, [root, DATA_DIR, ...info.dirs.map((entry) => entry.path)]))
+    .join(path.delimiter) : systemPath;
+  const localBin = docker ? `${root}/.local/bin` : path.join(root, ".local", "bin");
   return {
     ...(docker ? {} : windowsEnv()),
     // PATH 的分隔符：Linux/macOS 是 :，Windows 是 ;（docker 里永远是 Linux）
-    PATH: docker ? `${root}/.local/bin:/usr/local/bin:/usr/bin:/bin` : [path.join(root, ".local", "bin"), process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin"].join(path.delimiter),
+    PATH: readonly ? allowedPath || (process.platform === "win32" ? (process.env.SystemRoot ?? "C:\\Windows") + "\\System32" : "/usr/bin:/bin")
+      : [localBin, systemPath].join(docker ? ":" : path.delimiter),
     HOME: root,
     LANG: docker ? "C.UTF-8" : process.env.LANG || "C.UTF-8",
     TZ: process.env.TZ,
@@ -284,6 +297,7 @@ const NO_BASH = "Windows 上 run_command 需要 bash：请安装 Git for Windows
 const SEATBELT_SECRET_RE = [
   "/\\.(ssh|gnupg|aws|kube|docker|azure)(/|$)",
   "/\\.config/gcloud(/|$)",
+  "/\\.aai-apps(/|$)",
   "/Library/Keychains(/|$)",
   "/\\.env(\\.[A-Za-z0-9_.-]+)?$",
   "/\\.netrc$",
@@ -316,9 +330,13 @@ export function seatbeltProfile(workspace: string, info: SandboxInfo) {
     "(allow default)",
     info.network ? "" : "(deny network*)",
     "(deny file-write*)",
-    `(allow file-write* ${sub([ws, ...tmp, ...rw])} (literal "/dev/null") (literal "/dev/zero") (regex #"^/dev/(tty|fd/)"))`,
-    `(deny file-read* ${sub([...privateRoots, real(DATA_DIR)])})`,
-    `(allow file-read* ${sub([ws, ...readable, ...toolchain])})`,
+    `(allow file-write* ${sub([...tmp, ...rw])} (literal "/dev/null") (literal "/dev/zero") (regex #"^/dev/(tty|fd/)"))`,
+    `(deny file-write* ${sub([real(DATA_DIR)])})`,
+    `(allow file-write* ${sub([ws])})`,
+    `(deny file-read* ${sub(privateRoots)})`,
+    ...(readable.length || toolchain.size ? [`(allow file-read* ${sub([...readable, ...toolchain])})`] : []),
+    `(deny file-read* ${sub([real(DATA_DIR)])})`,
+    `(allow file-read* ${sub([ws])})`,
     "(allow file-read-metadata)", // 只是看文件属性（stat），不读内容；没有它连进入授权目录的上级路径都会失败
     `(deny file-read* file-write* ${SEATBELT_SECRET_RE.map((r) => `(regex #"${r}")`).join(" ")})`,
   ]

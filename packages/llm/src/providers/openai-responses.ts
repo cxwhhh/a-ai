@@ -1,6 +1,7 @@
 import type { ChatMessage, ChatRequest, LLMProvider, ModelRequestOptions, StreamChunk, Usage } from "../types";
 import { ModelStreamInterrupted } from "../stream";
 import { joinUrl, readError, sseData } from "./openai-compatible";
+import { fetchModel } from "./provider-fetch";
 
 interface ResponsesOptions {
   baseUrl: string;
@@ -66,7 +67,7 @@ export class OpenAIResponsesProvider implements LLMProvider {
       store: false,
       stream: true,
     };
-    const res = await fetch(joinUrl(this.o.baseUrl, "/responses"), {
+    const res = await fetchModel(joinUrl(this.o.baseUrl, "/responses"), {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.o.apiKey}` },
       body: JSON.stringify(body),

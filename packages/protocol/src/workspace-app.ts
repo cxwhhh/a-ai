@@ -43,7 +43,6 @@ export type WorkspaceAppReply =
 export const APP_RECORD_BYTES = 16_384;
 export const APP_HTML_BYTES = 524_288;
 // JSON 可以用最长六字符编码一个字符，工具入参和容器回复要留出转义空间。
-export const APP_WORKER_JSON_CHARS = APP_HTML_BYTES * 6 + 4096;
 
 export function isWorkspaceAppId(value: unknown): value is string {
   return typeof value === "string" && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value);

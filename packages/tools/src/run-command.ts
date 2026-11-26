@@ -140,7 +140,7 @@ export const runCommand: Tool<{
       workspace: ctx.workspace,
       cwd,
       script,
-      env: sandboxEnv(root),
+      env: sandboxEnv(root, level.readonly),
       timeoutMs: timeout,
       signal: ctx.signal,
       onData(s, d) {
@@ -200,9 +200,9 @@ const DENY: [RegExp, string][] = [
   [/\b(shutdown|reboot|halt|poweroff|mkfs(\.\w+)?)\b|\bdd\s+if=/, "系统级危险命令"],
 ];
 
-/** 第一个词是这些、而且没有重定向 / 分号 / 子命令的，算只读 */
-const READONLY =
-  /^(ls|pwd|cat|head|tail|wc|grep|rg|find|fd|fdfind|tree|du|df|file|stat|which|whoami|uname|date|echo|env|printenv|sort|uniq|cut|jq|realpath|readlink|basename|dirname|md5sum|sha256sum|shasum|strings|nl|pdftotext \S+ -|pdfinfo|python3? (--version|-V)|pip3? (list|show|--version)|node (-v|--version)|npm (-v|--version|ls)|git (status|log|diff|show|branch|remote))\b/;
+// 只为单条、参数语义明确的查询自动放行。支持执行外部程序或输出到文件的命令走确认。
+const READONLY = /^(ls|pwd|cat|head|tail|wc|grep|du|df|stat|which|whoami|uname|echo|printenv|cut|jq|realpath|readlink|basename|dirname|md5sum|sha256sum|shasum|strings|nl|pdfinfo)(?:[ \t]|$)/;
+const VERSION_ONLY = /^(?:python3? (?:--version|-V)|(?:node|npm) (?:-v|--version)|pip3? --version)$/;
 
 function classify(cmd: string): {
   deny?: string;
@@ -212,9 +212,9 @@ function classify(cmd: string): {
     deny: why,
     readonly: false
   };
-  // find 带 -delete / -exec 也会改东西
-  const sideEffect = /[;&>`]|\$\(|\|\s*(sh|bash|xargs|tee)\b|-delete\b|-exec\b/.test(cmd);
-  return { readonly: READONLY.test(cmd) && !sideEffect };
+  // 审批前不解释 shell 语法。管道、换行、展开和重定向统一按可能有副作用处理。
+  const shellSyntax = /[\r\n;&|<>()$`\\]/.test(cmd);
+  return { readonly: !shellSyntax && (READONLY.test(cmd) || VERSION_ONLY.test(cmd)) };
 }
 
 /* ---------------- 当前目录 ---------------- */

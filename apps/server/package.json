@@ -9,6 +9,7 @@
     "jszip": "3.10.2",
     "mammoth": "1.13.0",
     "pdfjs-dist": "6.4.299",
-    "pptxgenjs": "4.0.1"
+    "pptxgenjs": "4.0.1",
+    "undici": "7.30.2"
   }
 }
