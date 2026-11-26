@@ -19,6 +19,29 @@ function items<T>(value: unknown, parse: (item: unknown) => T) {
   return value.map(parse);
 }
 
+/** 将换行与连续空白折成单空格，用于在不放松文字/数字核对的前提下容忍排版差异。 */
+function normalizeWhitespace(text: string) {
+  return text.replace(/\r\n?/g, "\n").replace(/\s+/g, " ").trim();
+}
+
+/**
+ * 核对摘要引语是否确实来自对应消息：
+ * - 先做精确子串匹配；
+ * - 若只是换行/缩进/多空格差异，做空白归一化匹配（所有文字、数字、标点仍须一致）；
+ * - 若来源是已卸载的大型工具结果，transcript() 提供给摘要模型的是 toolResult.fields，回检时同样允许命中该结构化字段。
+ */
+function quoteMatchesSource(source: StoredMessage, quote: string) {
+  if (source.content.includes(quote)) return true;
+  const normalizedQuote = normalizeWhitespace(quote);
+  if (!normalizedQuote) return false;
+  if (normalizeWhitespace(source.content).includes(normalizedQuote)) return true;
+  if (source.toolResult) {
+    const serializedFields = JSON.stringify(source.toolResult.fields);
+    if (serializedFields.includes(quote) || normalizeWhitespace(serializedFields).includes(normalizedQuote)) return true;
+  }
+  return false;
+}
+
 /** 原文引语和工具状态按保存的消息回检，再以固定 JSON 形状交给下一次模型请求。 */
 export function validateSummary(text: string, sources: ReadonlyMap<string, StoredMessage>) {
   const state = object(JSON.parse(text.replace(/^\s*```(?:json)?\s*\r?\n([\s\S]*?)\r?\n?```\s*$/i, "$1")));
@@ -35,7 +58,7 @@ export function validateSummary(text: string, sources: ReadonlyMap<string, Store
       const item = object(value);
       const source = sourceOf(item);
       const quote = summaryText(item.quote);
-      if (!source.content.includes(quote)) throw new Error("摘要引语和来源原文不一致");
+      if (!quoteMatchesSource(source, quote)) throw new Error("摘要引语和来源原文不一致");
       return { sourceId: source.id, quote };
     }),
     progress: items(state.progress, (value) => {

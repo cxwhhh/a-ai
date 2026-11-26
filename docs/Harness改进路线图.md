@@ -219,6 +219,8 @@ M2 与 M3 在共享契约稳定后可以分开推进。优先交付小规模 PPT
 
 **进度（2026-11-26）：** 主、子 Agent 已使用同一个模型上下文配置。子任务的执行和复核已移除 16k 固定上限，默认累计额度随窗口增长。受控模型验证了父子请求轨迹中的窗口一致、子任务可发送超过 16k 的输入、较小模型窗口和显式累计预算仍能约束请求。子 Agent 独立摘要仍待实现。
 
+**进度（2026-11-27）：** 已完成主 Agent 上下文核心改造：（1）`planCompact()`、`lastCompact()` 与 `buildContext()` 支持三层切分（保留最近 2 轮 → 少轮长前文保留最新 1 轮 → 单轮多步/超长输入按完整协议块切分并补回有界用户锚点）；（2）软/硬两道预算水位（大窗口默认 64k、按窗口预留输出空间）、上轮真实 `usage.inputTokens` 保守校准、全量装配后硬预算护栏与 `maxOutputTokens` 收紧；（3）移除正常模式下 `slim()` 的 `slice(-6)` 滑动截断以保护 Prompt Cache，大结果指针直接展示关键字段，将大型委派结果纳入落库卸载并支持 `read_tool_result` 关键词 `query` 回读；（4）`summary.ts` 增加空白归一化与大结果字段回检，`summarize()` 支持带错因纠错重试 1 次。受控模型全量回归 186 项通过。跨会话检索、结构化任务工作态（M2-01）与子 Agent 独立摘要仍待实现。
+
 **涉及：** `packages/context-engine/src/context.ts`、`packages/agent-loop/src/run.ts`、`packages/storage/src/history-index.ts`、`history.ts`、`tool-results.ts`、`packages/tools/src/history.ts`。
 
 **验收：** 压缩后能继续调用工具；并行结果乱序、用户补充和取消后的历史仍合法；长日志中的关键报错能按引用取回。
