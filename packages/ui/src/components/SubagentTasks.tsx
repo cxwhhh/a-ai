@@ -9,7 +9,7 @@ import { TraceMarkdown, TraceSection } from "./TraceDetailContent";
 import "./SessionTrace.css";
 
 export const subagentStatusLabels: Record<TaskRecord["status"], string> = {
-  queued: "排队中", running: "运行中", completed: "已完成", partial: "部分完成",
+  queued: "等待上游", running: "运行中", completed: "已完成", partial: "部分完成",
   blocked: "受阻", failed: "失败", "timed-out": "已超时", cancelled: "已取消", interrupted: "已中断",
 };
 export const subagentRoleLabels: Record<SubagentRole, string> = { research: "调研", review: "审阅", analysis: "分析" };

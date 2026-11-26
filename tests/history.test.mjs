@@ -1,6 +1,7 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, writeFileSync, rmSync, readdirSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync, readdirSync } from "node:fs";
+import { createTestDirectory } from "../packages/storage-manager/src/index.ts";
 import path from "node:path";
 import clientPaths from "../apps/desktop/src/client-paths.cjs";
 import { createRequire } from "node:module";
@@ -16,13 +17,14 @@ import { spawnSync } from "node:child_process";
  * 调整临时编译目录中的模块引用，执行实际存储逻辑。
  * 除了正确结果，还通过故障注入验证：写入和迁移中途失败时，数据库与内存都不留下半份状态。
  */
-const dir = mkdtempSync(path.join(clientPaths.temporaryDirectory("tests"), "aai-history-test-"));
+const dir = createTestDirectory(clientPaths.temporaryDirectory("tests"), "aai-history");
 process.env.A_DATA_DIR = dir;
 for (const name of ["storage/src/db", "storage/src/store", "storage/src/history-index", "application/projects/src/projects", "memory/src/memory",
-  "protocol/src/lib/attachments", "protocol/src/lib/agentIcons", "protocol/src/lib/shared", "protocol/src/lib/reasoning-effort", "session/src/log", "storage/src/log-schema"]) {
+  "protocol/src/lib/attachments", "protocol/src/lib/agentIcons", "protocol/src/lib/shared", "protocol/src/lib/message-tags",
+  "protocol/src/lib/task-requirements", "protocol/src/lib/reasoning-effort", "session/src/log", "storage/src/log-schema"]) {
   const source = readFileSync(new URL("../packages/" + name + ".ts", import.meta.url), "utf8");
   writeFileSync(path.join(dir, path.basename(name) + ".cjs"), ts.transpileModule(
-    source.replace(/from "(?:(?:\.\.?\/)+(?:[^"\/]+\/)*)(db|memory|attachments|agentIcons|shared|reasoning-effort|log|log-schema|history-index)"/g, 'from "./$1.cjs"'),
+    source.replace(/from "(?:(?:\.\.?\/)+(?:[^"\/]+\/)*)(db|memory|attachments|agentIcons|shared|message-tags|task-requirements|reasoning-effort|log|log-schema|history-index)"/g, 'from "./$1.cjs"'),
     { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } },
   ).outputText);
 }
@@ -104,7 +106,7 @@ test("项目列表隔离用户，编辑后只统计当前回答、产出和去�
   assert.equal(list[0].preview, "新回答 内容");
   assert.equal(list[0].files, 2);
 });
-after(() => { globalThis.__aDb?.close(); delete globalThis.__aDb; rmSync(dir, { recursive: true, force: true }); });
+after(() => { globalThis.__aDb?.close(); delete globalThis.__aDb; });
 
 test("旧库迁移保留原文，重复打开不重复迁移", () => {
   assert.equal(store.getSession("legacy", "u").messages[0].content, "old");

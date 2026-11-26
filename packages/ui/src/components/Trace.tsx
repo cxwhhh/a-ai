@@ -5,10 +5,10 @@ import { STATUS_LABEL, toolStatus, type Artifact, type StoredMessage, type ToolS
 import type { ToolCall } from "../../../llm/src/types";
 import { Markdown } from "./Markdown";
 import { PLAN_MARK } from "../../../protocol/src/plan";
-import { CodeBlock, DiffBlock, diffStat } from "./Code";
+import { CodeBlock, diffStat } from "./Code";
 import { join } from "./FileDrawer";
 import { IChevron } from "./Icons";
-import { DotSpinner } from "./DotSpinner";
+import { RingSpinner } from "./RingSpinner";
 import { TraceIcon } from "./TraceIcon";
 import "./Trace.css";
 import { useApprovals, useLiveOutput, type OutputChunk } from "../lib/live";
@@ -28,8 +28,8 @@ import { useApprovals, useLiveOutput, type OutputChunk } from "../lib/live";
    ===================================================================== */
 
 /** 每个工具的动词（完成 / 进行中）和“目标”怎么显示。新增工具在这里加一项 */
-type Ctx = { a: R; r: R | null; openFile(p: string): void; openArtifact?: () => void };
-const TOOLS: Record<string, { done: string; run: string; label: string; target(c: Ctx): ReactNode }> = {
+type Ctx = { a: R; r: R | null; openFile(p: string): void };
+const TOOLS: Record<string, { done: string; run: string; label: string; opensFile?: boolean; target(c: Ctx): ReactNode }> = {
   current_time: { done: "已获取时间", run: "正在获取时间", label: "获取时间", target: ({ a, r }) => (r ? str(r.text) : str(a.timezone) || "本地时区") },
   calculator: {
     done: "已计算", run: "正在计算", label: "计算",
@@ -64,12 +64,12 @@ const TOOLS: Record<string, { done: string; run: string; label: string; target(c
     ),
   },
   edit_file: {
-    done: "已修改", run: "正在修改", label: "修改文件",
-    target: ({ a, r, openFile }) => (
+    done: "已修改", run: "正在修改", label: "修改文件", opensFile: true,
+    target: ({ a, r }) => (
       <>
-        <FileLink path={str(a.path)} openFile={openFile} />
+        <code>{str(r?.path) || str(a.path)}</code>
         {r && <span className="tr-dim"> · {Number(r.replacements) > 1 ? `替换了 ${str(r.replacements)} 处` : `第 ${str(r.line)} 行`}</span>}
-        <EditStat a={a} />
+        {r && <EditStat a={a} />}
       </>
     ),
   },
@@ -127,10 +127,10 @@ const TOOLS: Record<string, { done: string; run: string; label: string; target(c
     ),
   },
   write_file: {
-    done: "已写入", run: "正在写入", label: "写入文件",
-    target: ({ a, r, openFile }) => (
+    done: "已写入", run: "正在写入", label: "写入文件", opensFile: true,
+    target: ({ a, r }) => (
       <>
-        <FileLink path={str(a.path)} openFile={openFile} />
+        <code>{str(r?.path) || str(a.path)}</code>
         {r && <span className="tr-dim"> · {fmtBytes(Number(r.bytes))}</span>}
       </>
     ),
@@ -168,8 +168,8 @@ const TOOLS: Record<string, { done: string; run: string; label: string; target(c
     ),
   },
   write_document: {
-    done: "已生成文件", run: "正在生成文件", label: "生成文件",
-    target: ({ a, r, openFile }) => (r ? <FileLink path={str(r.path)} openFile={openFile} /> : <code>{str(a.path)}</code>),
+    done: "已生成文件", run: "正在生成文件", label: "生成文件", opensFile: true,
+    target: ({ a, r }) => <code>{str(r?.path) || str(a.path)}</code>,
   },
   query_data: {
     done: "已查询数据", run: "正在查询数据", label: "查询数据",
@@ -243,14 +243,7 @@ const TOOLS: Record<string, { done: string; run: string; label: string; target(c
   },
   create_artifact: {
     done: "已生成", run: "正在生成", label: "生成产出",
-    target: ({ a, openArtifact }) =>
-      openArtifact ? (
-        <button className="tr-link" onClick={(e) => (e.stopPropagation(), openArtifact())}>
-          {str(a.title)}
-        </button>
-      ) : (
-        str(a.title)
-      ),
+    target: ({ a }) => str(a.title),
   },
 };
 
@@ -259,6 +252,7 @@ export function Trace(props: {
   live: boolean;
   running: Record<string, number>; // 正在执行的工具 callId → 开始时间
   artifacts: Artifact[];
+  namesOnly?: boolean;
   onOpenArtifact(id: string): void;
   onOpenFile(path: string): void;
 }) {
@@ -298,7 +292,7 @@ export function Trace(props: {
   const waitingCall = calls.find((c) => approvals[c.id] && !results.has(c.id));
 
   // 本地模型很快时，标题每秒会变几十次而闪烁；运行中最多每 400ms 换一次
-  const phase = useThrottled(live ? currentPhase(assistants, calls, results, running) : "", 400);
+  const phase = useThrottled(live ? props.namesOnly ? "子 Agent 运行中" : currentPhase(assistants, calls, results, running) : "", 400);
   const liveHeadline = waitingCall ? `等待你确认：$ ${firstLine(approvals[waitingCall.id].command)}` : phase;
   const fixes = steps.filter((x) => x.feedback?.kind === "retry").length;
   const headline = live ? liveHeadline : summarize(assistants, calls, failed) + (fixes ? `，自动修复 ${fixes} 轮` : "");
@@ -313,7 +307,7 @@ export function Trace(props: {
       <button className="trace-sum" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
         <TraceIcon name={summaryIcon} />
         <span className={`trace-sum-text ${live ? "shimmer" : ""}`}>{headline}</span>
-        {live && <DotSpinner size={12} label="运行中" />}
+        {live && <RingSpinner label="运行中" />}
         <span className="trace-sum-time">{elapsed.toFixed(1)}s</span>
         <IChevron className="trace-chev" width={11} height={11} />
       </button>
@@ -326,6 +320,27 @@ export function Trace(props: {
 
             {/* 按时间顺序：模型的每一步，以及 agent 自动发回的检查反馈（运行报错 → 让模型修复） */}
             {steps.filter((x) => x.role === "assistant" || x.feedback).map((a) => {
+              if (props.namesOnly) {
+                const actions = a.toolCalls ?? a.drafts ?? [];
+                if (!actions.length) return a.reasoning || a.feedback || isPlan(a.content)
+                  ? <Row key={a.id} state="done" target={a.feedback ? "自动检查" : isPlan(a.content) ? "规划" : "思考"} /> : null;
+                return actions.map((action, index) => {
+                  const result = "id" in action && typeof action.id === "string" ? results.get(action.id) : undefined;
+                  const state = result ? rowState(toolStatus(result)) : live ? "run" : "skip";
+                  const tool = TOOLS[action.name];
+                  const args = parsePartial(action.arguments);
+                  const resultData = result && state === "done" ? parse(result.content.replace(/^\[E\d+\.\d+\]\n/, "")) : null;
+                  const path = str(resultData?.path) || str(args.path);
+                  const file = ["read_file", "read_document", "edit_file", "write_file", "make_chart"].includes(action.name);
+                  const artifact = props.artifacts.find(({ id }) => id === result?.artifactId);
+                  const name = path.split(/[/\\]/).pop() || "工作区";
+                  return <Row key={`${a.id}:${index}`} iconName={action.name} state={state}
+                    verb={state === "run" ? tool?.run ?? action.name : tool?.label ?? action.name}
+                    target={file && path ? state === "done"
+                      ? <FileLink path={path} openFile={props.onOpenFile} label={name} /> : name
+                      : artifact ? <button className="tr-link" onClick={() => props.onOpenArtifact(artifact.id)}>{artifact.title}</button> : undefined} />;
+                });
+              }
               if (a.feedback)
                 return (
                   <Row
@@ -349,19 +364,21 @@ export function Trace(props: {
               const i = assistants.indexOf(a);
               const aLive = live && i === assistants.length - 1 && a.durationMs === undefined;
               const thinking = aLive && !a.content && !a.toolCalls && !a.drafts?.length; // 已经开始写工具参数，就不再算“正在思考”
+              const reasoning = a.reasoning ?? "";
+              const hasReasoning = !!reasoning.trim();
               return (
                 <Fragment key={a.id}>
-                  {(a.reasoning || thinking) && (
+                  {(hasReasoning || thinking) && (
                     <Row
                       state={thinking ? "run" : "done"}
                       verb={thinking ? "正在思考" : undefined}
-                      target={<span className="tr-thought">{thoughtLine(a.reasoning ?? "", thinking) || "…"}</span>}
+                      target={<span className="tr-thought">{thoughtLine(reasoning, thinking) || "…"}</span>}
                       meta={a.reasoningMs !== undefined ? sec(a.reasoningMs) : undefined}
                     >
-                      {/* 思考只有一句、标题行已经完整显示时，不再展开重复一遍 */}
-                      {a.reasoning && !thinking && !fitsHeadline(a.reasoning) && (
+                      {/* 预览可能随窗口宽度截断，展开后始终显示已收到的全文，包括首行。 */}
+                      {hasReasoning && (
                         <div className="tr-think">
-                          <Markdown text={restOfThought(a.reasoning)} />
+                          <Markdown text={reasoning} />
                         </div>
                       )}
                     </Row>
@@ -444,6 +461,11 @@ function ToolRow(props: {
   const status = result ? toolStatus(result) : null;
   const state: RowState = status ? rowState(status) : startedAt || live ? "run" : "err";
   const artifact = result?.artifactId ? props.artifacts.find((x) => x.id === result.artifactId) : undefined;
+  const path = t?.opensFile ? str(r?.path) || str(a.path) : "";
+  // 只在工具确认成功后打开实际文件。生成中仍只有路径，失败时可展开看报错。
+  const openPreview = state !== "done" ? undefined : path
+    ? () => props.onOpenFile(path)
+    : call.name === "create_artifact" && artifact ? () => props.onOpenArtifact(artifact.id) : undefined;
 
   const verb =
     state === "run" ? t?.run ?? `正在调用 ${call.name}` : status && status !== "ok" ? `${t?.label ?? call.name}${STATUS_LABEL[status]}` : state === "err" ? `${t?.label ?? call.name}失败` : t?.done ?? `已调用 ${call.name}`;
@@ -453,10 +475,10 @@ function ToolRow(props: {
     status && status !== "ok" && result ? (
       // 工具抛错：显示错误第一行；正常返回但失败（run_python 退出码 1）：显示退出码
       <span className={state === "err" ? "tr-err" : "tr-dim"}>{purpose ? `${purpose} · ` : ""}{result.isError ? firstLine(result.content.replace(/^(工具执行失败|未执行（[^）]+）)：/, "")) : r ? cmdStatus(r) : ""}</span>
-    ) : purpose ? (
+    ) : purpose && !t?.opensFile && call.name !== "create_artifact" ? (
       <span className="tr-purpose">{purpose}</span>
     ) : t ? (
-      t.target({ a, r, openFile: props.onOpenFile, openArtifact: artifact ? () => props.onOpenArtifact(artifact.id) : undefined })
+      t.target({ a, r, openFile: props.onOpenFile })
     ) : (
       <code>{firstLine(JSON.stringify(a))}</code>
     );
@@ -465,7 +487,7 @@ function ToolRow(props: {
   // 先算出展开内容：没有内容（null）时这一行不能点开
   const body = toolBody({ call, a, r, result, onOpenFile: props.onOpenFile });
   return (
-    <Row iconName={call.name} state={state} verb={verb} target={target} meta={meta} open={props.open} onToggle={props.onToggle}>
+    <Row iconName={call.name} state={state} verb={verb} target={target} meta={meta} open={props.open} onToggle={props.onToggle} onOpenPreview={openPreview}>
       {body}
     </Row>
   );
@@ -473,7 +495,8 @@ function ToolRow(props: {
 
 /**
  * 展开后的内容（仿 Claude）：只放“用户想看的那一块”，不列出参数名和原始 JSON。
- *   代码类：代码框（运行 Python 再加一个输出框）     文件类：文件内容 / 改动对比
+ *   运行 Python：脚本和输出       读文件：读取到的内容
+ *   写入、修改、生成文件：成功后由操作行打开右侧预览
  *   网页类：标题链接 + 摘要                           列表类：可点的文件名
  * 标题行已经说清楚的工具（计算、时间、文件操作……）没有展开内容，返回 null，行也就不能点开。
  */
@@ -491,9 +514,8 @@ function toolBody({ call, a, r, result, onOpenFile }: { call: ToolCall; a: R; r:
   if (result?.isError) return <pre className="io-code err">{result.content.replace(/^工具执行失败：/, "")}</pre>;
   switch (call.name) {
     case "edit_file":
-      return typeof a.old_string === "string" ? <DiffBlock before={str(a.old_string)} after={str(a.new_string)} lang={str(a.path)} startLine={Number(r?.line) || 1} /> : null;
     case "write_file":
-      return a.content ? <CodeBlock className="io-code" code={str(a.content).replace(/\n$/, "")} lang={str(a.path)} /> : null;
+    case "write_document":
     case "create_artifact":
       // 产出物在右侧面板里看（标题行的名字可以点），这里不再重复一遍源码
       return null;
@@ -691,8 +713,7 @@ function EditStat({ a }: { a: Record<string, unknown> }) {
 function codeLang(name: string, a: Record<string, unknown>) {
   if (name === "run_python") return "python";
   if (name === "run_command") return "bash";
-  if (name === "create_artifact") return str(a.language) || (a.kind === "html" ? "html" : a.kind === "markdown" ? "markdown" : "");
-  return str(a.path); // write_file / edit_file / read_file：按文件扩展名
+  return str(a.path);
 }
 
 /** 参数里某个字段的语言：stdout / stderr / 报错是纯文本，其余的跟着工具的语言走 */
@@ -703,7 +724,7 @@ function fieldLang(key: string, lang?: string) {
 }
 
 /** 这些工具的参数里有一大段正文，生成时实时显示出来 */
-const LIVE_FIELD: Record<string, string> = { write_file: "content", edit_file: "new_string", create_artifact: "content", run_python: "code", run_command: "command" };
+const LIVE_FIELD: Record<string, string> = { run_python: "code", run_command: "command" };
 
 function DraftRow({ draft, onOpenFile, open, onToggle }: { draft: { name: string; arguments: string }; onOpenFile(p: string): void; open: boolean; onToggle(): void }) {
   const t = TOOLS[draft.name];
@@ -712,6 +733,9 @@ function DraftRow({ draft, onOpenFile, open, onToggle }: { draft: { name: string
   const body = field ? str(a[field]) : "";
   const verb = t?.run ?? (draft.name ? `正在调用 ${draft.name}` : "正在准备工具");
   const target = t ? t.target({ a, r: null, openFile: onOpenFile }) : null;
+  if (t?.opensFile || draft.name === "create_artifact") {
+    return <Row iconName={draft.name} state="run" verb={verb} target={target} />;
+  }
   const meta = body ? `${body.split("\n").length} 行` : undefined;
   return (
     // 代码默认收起，只显示“正在运行 Python · 12 行”；写的过程中随时可以点开、再点收起
@@ -742,32 +766,37 @@ function Row(props: {
   /** 传了 open/onToggle 就由父组件控制展开状态，否则行自己记 */
   open?: boolean;
   onToggle?(): void;
+  /** 文件类操作直接打开右侧；只有有详情的行才提供展开状态。 */
+  onOpenPreview?(): void;
   /** 内容还没出来时也允许点开（写代码的行一开始参数是空的） */
   canToggle?: boolean;
 }) {
   // 每一行也默认收起，点击才展开参数和结果
   const [own, setOwn] = useState(false);
-  const open = props.open ?? own;
-  const can = !!props.children || !!props.canToggle;
+  const can = !props.onOpenPreview && (!!props.children || !!props.canToggle);
+  const open = can && (props.open ?? own);
   const toggle = () => can && (props.onToggle ? props.onToggle() : setOwn((v) => !v));
+  const RowElement = props.onOpenPreview ? "button" : "div";
   return (
-    <div className={`tr s-${props.state} ${open ? "open" : ""} ${can ? "can" : ""}`}>
-      <div
+    <div className={`tr s-${props.state} ${open ? "open" : ""} ${can || props.onOpenPreview ? "can" : ""}`}>
+      <RowElement
         className="tr-row"
+        type={props.onOpenPreview ? "button" : undefined}
+        title={props.onOpenPreview ? "在右侧打开" : undefined}
         role={can ? "button" : undefined}
         tabIndex={can ? 0 : undefined}
         aria-expanded={can ? open : undefined}
-        onClick={toggle}
-        onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), toggle())}
+        onClick={props.onOpenPreview ?? toggle}
+        onKeyDown={can ? (e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), toggle()) : undefined}
       >
         <TraceIcon name={props.iconName} />
         {props.verb && <span className="tr-verb">{props.verb}</span>}
         <span className="tr-target">{props.target}</span>
         {/* 动画放在内容后；结束时只移除动画，不让行首的类型提示消失。 */}
-        {props.state === "run" && <DotSpinner size={12} />}
+        {props.state === "run" && <RingSpinner />}
         {props.meta && <span className="tr-meta">{props.meta}</span>}
         {can && <IChevron className="tr-chev" width={11} height={11} />}
-      </div>
+      </RowElement>
       {can && (
         <div className="ti-panel">
           <div className="ti-inner">
@@ -779,10 +808,10 @@ function Row(props: {
   );
 }
 
-function FileLink({ path, openFile }: { path: string; openFile(p: string): void }) {
+function FileLink({ path, openFile, label }: { path: string; openFile(p: string): void; label?: string }) {
   return (
-    <button className="tr-link mono" onClick={(e) => (e.stopPropagation(), openFile(path))} title="在右侧打开">
-      {path === "." ? "工作区" : path}
+    <button className="tr-link mono" onClick={(e) => (e.stopPropagation(), openFile(path))} title={label ? "打开子 Agent 产出物" : "在右侧打开"}>
+      {label ?? (path === "." ? "工作区" : path)}
     </button>
   );
 }
@@ -836,20 +865,7 @@ function waitingModel(assistants: StoredMessage[], calls: ToolCall[], results: M
   return a.toolCalls.every((c) => results.has(c.id)) && !calls.some((c) => running[c.id] && !results.has(c.id));
 }
 
-/** 思考行显示一句：运行中显示最新一句，完成后显示第一句 */
-/** 展开后的思考：标题行已经显示了第一行，这里从第二行开始，避免同一句话出现两次 */
-function restOfThought(s: string) {
-  const first = thoughtLine(s, false);
-  const i = s.indexOf(first);
-  return i >= 0 && first.length <= 60 ? s.slice(i + first.length).replace(/^\s+/, "") : s;
-}
-
-/** 思考内容只有一行而且不长：标题行就能完整显示 */
-function fitsHeadline(s: string) {
-  const lines = s.split("\n").filter((l) => l.trim());
-  return lines.length <= 1 && (lines[0]?.trim().length ?? 0) <= 60;
-}
-
+/** 思考行的单行预览：思考中显示最新一行，完成后显示第一行。 */
 function thoughtLine(s: string, live: boolean) {
   const lines = s.split("\n").map((l) => l.trim()).filter(Boolean);
   return (live ? lines[lines.length - 1] : lines[0]) ?? "";

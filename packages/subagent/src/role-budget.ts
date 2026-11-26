@@ -33,10 +33,11 @@ export interface BudgetLimits {
   toolCalls: number;
 }
 
-export function budgetLimits(role: SubagentRole, input: Partial<BudgetLimits>): BudgetLimits {
+export function budgetLimits(role: SubagentRole, input: Partial<BudgetLimits>, contextWindow: number): BudgetLimits {
   return {
     steps: Math.min(input.steps ?? ROLES[role].steps, ROLES[role].steps),
-    tokens: Math.min(input.tokens ?? DEFAULT_TASK_TOKENS, MAX_TASK_TOKENS),
+    // 显式预算可以缩小额度。默认至少容纳一次完整模型窗口，避免大窗口仍被固定累计额卡住。
+    tokens: input.tokens === undefined ? Math.max(DEFAULT_TASK_TOKENS, contextWindow) : Math.min(input.tokens, MAX_TASK_TOKENS),
     timeoutMs: Math.max(MIN_TASK_TIMEOUT_MS, Math.min(input.timeoutMs ?? MIN_TASK_TIMEOUT_MS, MAX_TASK_TIMEOUT_MS)),
     toolCalls: Math.min(input.toolCalls ?? 16, 24),
     idleTimeoutMs: input.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS,

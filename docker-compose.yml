@@ -43,6 +43,8 @@ services:
       A_SANDBOX_MEMORY: ${A_SANDBOX_MEMORY:-1g}
       A_SANDBOX_CPUS: ${A_SANDBOX_CPUS:-1}
       A_SANDBOX_MAX_CONCURRENT: ${A_SANDBOX_MAX_CONCURRENT:-2}
+      # 有临时文件的轮次可以跨多次工具调用。限制同时保留的独立临时容器数。
+      A_STORAGE_MAX_RUN_CONTAINERS: ${A_STORAGE_MAX_RUN_CONTAINERS:-4}
       A_UPDATES_DIR: /app/updates
     # 访问 docker.sock 需要宿主机 docker 组的 GID：Linux 上用 `getent group docker | cut -d: -f3` 查，写进 .env 的 DOCKER_GID；
     # Docker Desktop（Mac）用默认的 0 就行

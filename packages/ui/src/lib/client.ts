@@ -21,8 +21,16 @@ async function call(url: string, init?: RequestInit) {
 }
 const json = { "Content-Type": "application/json" };
 const subagentUrl = (id: string) => `/api/sessions/${encodeURIComponent(id)}/agent/subagents`;
+export const filesUrl = (sessionId: string, params: Record<string, string> = {}) => `/api/files?${new URLSearchParams({ ...params, sessionId })}`;
+const uploadUrl = (sessionId: string) => `/api/upload?${new URLSearchParams({ sessionId })}`;
 
 export const api = {
+  /** 仅在打开产出源码时读取已保存的对比版本。 */
+  async artifactSource(sessionId: string, artifactId: string, signal: AbortSignal): Promise<{ before: string | null; after: string }> {
+    const r = await call(`/api/artifacts?${new URLSearchParams({ sessionId, artifactId })}`, { signal });
+    if (!r.ok) throw new Error("无法读取产出版本");
+    return r.json();
+  },
   async archive(target: "session" | "project", id: string, archived: boolean) {
     const resource = target === "session" ? "sessions" : "projects";
     const r = await call(`/api/${resource}/${encodeURIComponent(id)}`, { method: "PATCH", headers: json, body: JSON.stringify({ archived }) });
@@ -84,7 +92,7 @@ export const api = {
     if (!r.ok) throw new Error(data.error || "无法发送消息");
     return data;
   },
-  async submitSubagentTask(id: string, input: TaskContract | { retryTaskId: string }) {
+  async submitSubagentTask(id: string, input: TaskContract | { retryTaskId: string } | { continueTaskId: string; message: string; path?: string }) {
     const r = await call(subagentUrl(id), { method: "POST", headers: json, body: JSON.stringify(input) });
     const data = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(data.error || "无法提交子任务");
@@ -92,7 +100,13 @@ export const api = {
   },
   async stopSubagentTask(id: string, taskId: string) {
     const r = await call(`${subagentUrl(id)}?taskId=${encodeURIComponent(taskId)}`, { method: "DELETE" });
-    if (!r.ok) throw new Error("无法停止子任务");
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || "无法停止子任务");
+  },
+  async resumeSubagentConversation(id: string, taskId: string): Promise<{ task: TaskRecord }> {
+    const r = await call(`${subagentUrl(id)}?${new URLSearchParams({ taskId })}`, { method: "PATCH", headers: json, body: JSON.stringify({ active: true }) });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error || "无法恢复子 Agent 对话");
+    return data;
   },
   async list(): Promise<SessionMeta[]> {
     return (await call("/api/sessions")).json();
@@ -100,6 +114,12 @@ export const api = {
   async get(id: string): Promise<Session | null> {
     const r = await call(`/api/sessions/${id}`);
     return r.ok ? r.json() : null;
+  },
+  async createSession(projectId?: string): Promise<Session> {
+    const r = await call("/api/sessions", { method: "POST", headers: json, body: JSON.stringify({ projectId }) });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error || "无法创建对话");
+    return data;
   },
   async rename(id: string, title: string) {
     await call(`/api/sessions/${id}`, { method: "PATCH", headers: json, body: JSON.stringify({ title }) });
@@ -112,13 +132,19 @@ export const api = {
     return r.json();
   },
   /** 上传附件到工作区 uploads/，返回每个文件在工作区里的路径 */
-  async upload(files: File[]): Promise<{ name: string; path: string; size: number }[]> {
+  async upload(sessionId: string, files: File[]): Promise<{ name: string; path: string; size: number }[]> {
     const fd = new FormData();
     for (const f of files) fd.append("file", f);
-    const r = await call("/api/upload", { method: "POST", body: fd });
+    const r = await call(uploadUrl(sessionId), { method: "POST", body: fd });
     const d = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(d.error || `上传失败（${r.status}）`);
     return d.files;
+  },
+  async importLegacyFile(sessionId: string, path: string): Promise<void> {
+    const fd = new FormData();
+    fd.append("legacyPath", path);
+    const r = await call(uploadUrl(sessionId), { method: "POST", body: fd });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || "无法导入旧工作区文件");
   },
   async queue(sessionId: string): Promise<AgentQueueSnapshot> {
     const r = await call(`/api/chat/queue?sessionId=${encodeURIComponent(sessionId)}`);
@@ -235,6 +261,9 @@ export const api = {
   },
 };
 
+/** 服务端拒绝过期历史版本，调用方应先同步当前会话。 */
+export class ChatHistoryConflict extends Error {}
+
 /** 发送消息并逐个回调 AgentEvent；返回在 signal 中止或流结束时 resolve */
 export async function streamChat(
   body: { sessionId?: string; message?: string; truncateFrom?: string; projectId?: string; revision?: number; queuedId?: string; modelSelection?: AgentModelSelection; multiAgent?: boolean },
@@ -242,6 +271,10 @@ export async function streamChat(
   signal: AbortSignal,
 ) {
   const res = await call("/api/chat", { method: "POST", headers: json, body: JSON.stringify(body), signal });
+  if (res.status === 409) {
+    const details = await res.clone().json().catch(() => null);
+    if (details?.code === "history_conflict") throw new ChatHistoryConflict(details.error);
+  }
   await followEvents(res, onEvent, signal);
 }
 

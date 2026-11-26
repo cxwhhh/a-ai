@@ -35,7 +35,7 @@ export const RESEARCH_SPEC: ToolSpec = withPurpose({
       acceptance: strings("可分别核对的验收项。子 Agent 按顺序用实际证据逐项报告。"),
       plan: strings("给子 Agent 的有序执行计划。"),
       factKeys: strings("归本子任务发布的事实键，例如 weather:tokyo:2026-11-20:temp:c。"),
-      tools: strings("允许的工具名。省略时用角色默认清单，空列表表示不开放工具。"),
+      tools: strings("执行本项所需的工具名。列出的工具须在当前会话启用，并符合角色与资源范围。省略时用角色默认清单，空列表表示不开放工具。"),
       paths: strings("允许读取的文件或目录，仅限当前用户的已有授权。空列表禁用文件访问。"),
       hosts: strings("允许直接访问的网页主机名，包含重定向检查。指定后关闭通用网页搜索。"),
       contextMessages: strings("当前会话中要交给子 Agent 的有效消息 ID。"),
@@ -45,7 +45,7 @@ export const RESEARCH_SPEC: ToolSpec = withPurpose({
         type: "object",
         properties: {
           steps: { type: "integer" }, toolCalls: { type: "integer" },
-          tokens: { type: "integer", description: `整项累计输入和输出额度。省略时使用 ${DEFAULT_TASK_TOKENS}，上限 ${MAX_TASK_TOKENS}。材料较多时优先省略。` },
+          tokens: { type: "integer", description: `整项累计输入和输出额度。省略时使用模型上下文长度与 ${DEFAULT_TASK_TOKENS} 中的较大值。仅需主动收紧预算时填写，手动值上限 ${MAX_TASK_TOKENS}。` },
           timeoutMs: { type: "integer", description: `单项总时限，单位为毫秒，范围 ${MIN_TASK_TIMEOUT_MS}–${MAX_TASK_TIMEOUT_MS}，省略时用 ${MIN_TASK_TIMEOUT_MS}。` },
           idleTimeoutMs: { type: "integer", description: "单个子任务持续无有效进展的毫秒数。默认 30000。" },
         },
@@ -133,16 +133,21 @@ export function normalizeFactKey(key: string) {
 
 export const DELEGATE_SPEC: ToolSpec = withPurpose({
   name: "delegate_tasks",
-  description: "复杂任务可拆成多个独立工作项时提交完整计划。按实际项目范围决定数量，每个事实指定唯一负责人。一次查询、天气和可直接回答的问题直接处理。",
+  description: "复杂任务可拆成多个工作项时提交完整计划。能独立执行的并行，有前置输入的声明 dependsOn。每个事实指定唯一负责人。一次查询、天气和可直接回答的问题直接处理。",
   parameters: {
     type: "object",
     properties: {
       objective: { type: "string", description: "父 Agent 的整体目标。" },
-      reason: { type: "string", description: "必须说明为什么需要并行分工。" },
+      reason: { type: "string", description: "说明为什么需要分工，以及哪些工作可以并行。" },
       synthesis: { type: "string", description: "返回后如何按用户目标整合结果和缺口。" },
       assignments: {
         type: "array", items: {
           ...RESEARCH_SPEC.parameters,
+          properties: {
+            ...RESEARCH_SPEC.parameters.properties,
+            taskKey: { type: "string", description: "本次分工内唯一的任务标识，例如 requirements。被其它项依赖时必填。" },
+            dependsOn: strings("写最多 8 个直接上游的 taskKey。所有上游交付已核验结果后才启动，独立分工省略。"),
+          },
           required: ["task", "role", "plan", "acceptance", "factKeys"],
         },
       },

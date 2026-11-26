@@ -23,7 +23,8 @@
 }
 
 /* 左栏顶部：收起按钮放最左边，logo + “A.ai” 紧跟其后；字号和球都比以前大一点 */
-.side .side-head { justify-content: flex-start; gap: 6px; padding: 0 4px 10px 2px; }
+.side .side-head { justify-content: space-between; gap: 6px; padding: 0 4px 10px 2px; }
+.side .side-head .side-collapse { flex: none; }
 .side .side-head .brand { gap: 10px; font-size: 23px; }
 .side .brand-text { font-family: var(--font-brand), var(--sans, system-ui), sans-serif; font-weight: 700; letter-spacing: -0.035em; line-height: 1; }
 
@@ -95,6 +96,19 @@
 .side .grp-head.proj-head { color: var(--fg); }
 .side .side-item.session { color: color-mix(in srgb, var(--fg) 80%, var(--fg-2)); }
 .side .side-item.session:hover, .side .side-item.session.active { color: var(--fg); }
+.side .side-item.session .session-run-indicator {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  display: grid;
+  place-items: center;
+}
+.session-completed-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ok);
+}
 .side .row-end .has-file { color: var(--fg-2); }
 
 /* 分组内拖拽排序：插入位置画一条 2px 的线（行的上沿或下沿） */

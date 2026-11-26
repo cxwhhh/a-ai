@@ -9,8 +9,9 @@
 }
 .usage .bar-axis { color: var(--fg-2); }
 
-/* 圆环保持独立的占用预警色，背景轨道和构成条以细描边标出范围。 */
-.ring-btn .ctx-track { stroke: var(--fg-2); stroke-width: 1px; }
-.ring-btn .ctx-fill { stroke: var(--fg); stroke-width: 1.25px; }
-.ctx-pop .ctx-bar { border: 1px solid var(--fg); border-radius: 2px; }
+/* 淡色轨道让小占比的进度段也能看清，预警颜色继续由各状态提供。 */
+.ring-btn .ctx-track { stroke: color-mix(in srgb, var(--fg-2) 35%, var(--surface)); stroke-width: 1.3px; }
+.ring-btn .ctx-fill { stroke: var(--fg); stroke-width: 1.7px; }
+.ctx-pop .ctx-bar { gap: 0; border: 1px solid var(--edge); }
+.ctx-pop .ctx-bar span { flex: none; }
 .ctx-pop .ctx-legend i { border: 1px solid var(--fg); }

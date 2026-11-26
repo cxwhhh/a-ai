@@ -30,8 +30,8 @@
   padding: 10px; border: 1px solid color-mix(in srgb, var(--fg) 26%, transparent);
   border-radius: 8px; background: var(--surface);
 }
-.subagent-thread-open:is(:hover, :focus-visible),
-.subagent-thread-entries[data-layout="cards"] .subagent-thread-open:is(:hover, :focus-visible) {
+.subagent-thread-open:hover, .subagent-thread-open:focus-visible,
+.subagent-thread-entries[data-layout="cards"] .subagent-thread-open:hover {
   background: var(--hover);
 }
 .subagent-thread-entry-head {
@@ -51,8 +51,6 @@
 .subagent-thread-entries[data-layout="cards"] .subagent-thread-glyph svg { width: 22px; height: 22px; }
 .subagent-thread-entries[data-layout="cards"] .out-name { max-width: 100%; }
 .subagent-thread-status { flex: none; white-space: nowrap; color: var(--fg-2); font-size: 12px; }
-/* 长标题在自己的位置省略，横向条目的状态始终右对齐。 */
-.subagent-thread-entries:not([data-layout="cards"]) .subagent-thread-status { margin-inline-start: auto; }
 .subagent-thread-metrics {
   display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; padding: 4px 0 8px;
   font-variant-numeric: tabular-nums;

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { mkdtemp, mkdir, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
+import { createTestDirectory } from "../../../packages/storage-manager/src/index.ts";
 import path from "node:path";
 import { test } from "node:test";
 import desktopUpdates from "../src/updates.cjs";
@@ -106,14 +107,8 @@ test("Windows 更新在启动安装器前传入用户确认的目录，取消后
   assert.deepEqual(calls.at(-1), [destination, true, true]);
 });
 
-test("安装位置沿用现有目录或创建独立目录，拒绝写进原目录内部或占用目录", async (t) => {
-  const tempRoot = await realpath(clientPaths.temporaryDirectory("tests"));
-  const fixtureRoot = await mkdtemp(path.join(tempRoot, "aai-install-dir-test-"));
-  t.after(async () => {
-    const resolved = await realpath(fixtureRoot);
-    assert.equal(path.dirname(resolved), tempRoot);
-    await rm(resolved, { recursive: true, force: true });
-  });
+test("安装位置沿用现有目录或创建独立目录，拒绝写进原目录内部或占用目录", async () => {
+  const fixtureRoot = createTestDirectory(clientPaths.temporaryDirectory("tests"), "aai-install-dir");
   const current = path.join(fixtureRoot, "A.ai");
   const other = path.join(fixtureRoot, "other");
   await mkdir(current);

@@ -1,5 +1,5 @@
-# electron-builder 打包配置（npm run dist:win / dist:mac）
-# 产物在 release/ 目录：安装包 + latest.yml / latest-mac.yml（更新用的版本清单）+ .blockmap（差量更新用）
+# electron-builder 打包配置（pnpm dist:win / dist:mac）
+# 配置 A_UPDATE_URL 时输出到 release/，本地安装包输出到 release/local/。
 appId: ai.a.desktop
 productName: A.ai
 copyright: A.ai
@@ -20,12 +20,9 @@ afterPack: scripts/electron-after-pack.cjs
 # 服务的生产依赖由工作区部署单独安装，app.asar 里只包含主进程入口。
 npmRebuild: false
 
-# 更新源：你自己的服务器上一个能用浏览器访问的目录，把 release/ 里的文件传上去
-# 打包前设置环境变量 A_UPDATE_URL，例：https://你的域名/a-ai-updates/
-publish:
-  provider: generic
-  url: ${env.A_UPDATE_URL}
-  useMultipleRangeRequest: false # A.ai 更新接口支持单段 Range
+# 显式关闭默认发布配置，避免从 GitHub 仓库信息推断更新源。
+# 有 A_UPDATE_URL 时由 package-desktop.mjs 启用 generic 更新源。
+publish: null
 
 win:
   target:

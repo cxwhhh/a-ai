@@ -6,7 +6,7 @@ import { setArchive } from "../../../../../../../packages/session/src/archive-ad
 import { parseModelSelection, setModelSelection } from "../../../../../../../packages/session/src/model-selection";
 import { getSettings } from "../../../../../../../packages/application/settings/src/settings";
 import { collectOutputs } from "../../../../../../../packages/protocol/src/lib/outputs";
-import { workspaceOf } from "../../../../../../../packages/tools/src/files";
+import { openSessionWorkspace } from "../../../../../../../packages/workspace/src/session-workspace";
 import { statWorkspaceOutput } from "../../../../../../../packages/workspace/src/output-files";
 
 
@@ -21,12 +21,12 @@ export async function GET(req: Request, { params, runtime }: Ctx) {
   if (!user) return unauthorized();
   const s = getSession((await params).id, user.id);
   if (!s) return notFound();
-  const workspace = workspaceOf(user.id);
-  const files = new Map(s.artifacts.map((a) => [a.id, a.file]));
+  const scope = openSessionWorkspace(user.id, s.id);
+  if (!scope) return notFound();
   const { outputs } = collectOutputs(s.messages, s.artifacts);
   const unavailable = await Promise.all(outputs.map(async ({ key, view }) => {
-    const file = view.type === "file" ? view.path : files.get(view.id);
-    return file && !(await statWorkspaceOutput(workspace, file)) ? key : undefined;
+    // 成品有独立的会话快照。只有依赖磁盘的文件入口要因缺失而隐藏。
+    return view.type === "file" && !(await statWorkspaceOutput(scope.workspace, view.path)) ? key : undefined;
   }));
   s.unavailableOutputKeys = unavailable.filter((key) => key !== undefined);
   return Response.json(s);

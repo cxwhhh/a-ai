@@ -122,9 +122,9 @@ export function Connections(props: {
                 const v = `${c.id}/${m.id}`;
                 const on = props.currentModel === v;
                 return (
-                  <button key={m.id} className={`cx-model ${on ? "on" : ""}`} title={on ? "当前模型" : "设为当前模型"} onClick={() => !on && props.onPick(v)}>
+                  <button key={m.id} className={`cx-model ${on ? "on" : ""}`} title={m.id} onClick={() => !on && props.onPick(v)}>
                     {on && <ICheck width={12} height={12} />}
-                    <span className="mono">{m.id}</span>
+                    <span className="ellipsis">{m.displayName || m.id}</span>
                     <span className="cx-ctx">{fmtK(m.contextWindow)}</span>
                   </button>
                 );
@@ -263,25 +263,24 @@ function ConnForm(props: { value: Connection; isNew?: boolean; onCancel(): void;
           </div>
         )}
         <div className="cx-mtable">
-          {c.models.length > 0 && (
-            <div className="cx-mrow cx-mhead">
-              <span>模型名</span>
-              <span>上下文（tokens）</span>
-              <span />
-            </div>
-          )}
           {c.models.map((m, i) => (
             <div key={i} className="cx-mrow">
-              <input className="set-input mono" value={m.id} placeholder="如 gpt-4o-mini"
-                onChange={(e) => setModel(i, { id: e.target.value, reasoningEfforts: undefined })} />
-              <input
-                className="set-input num"
-                type="number"
-                min={1}
-                value={m.contextWindow}
-                onChange={(e) => setModel(i, { contextWindow: Number(e.target.value) })}
-              />
-              <button className="icon-btn" onClick={() => set({ models: c.models.filter((_, j) => j !== i) })} title="移除">
+              <label className="cx-mfield cx-mfield-id">
+                <span>模型 ID</span>
+                <input className="set-input mono" value={m.id} placeholder="如 gpt-4o-mini"
+                  onChange={(e) => setModel(i, { id: e.target.value, reasoningEfforts: undefined })} />
+              </label>
+              <label className="cx-mfield">
+                <span>显示名称</span>
+                <input className="set-input" value={m.displayName ?? ""} placeholder="可选，留空显示模型 ID"
+                  onChange={(e) => setModel(i, { displayName: e.target.value })} />
+              </label>
+              <label className="cx-mfield">
+                <span>上下文（tokens）</span>
+                <input className="set-input num" type="number" min={1} value={m.contextWindow}
+                  onChange={(e) => setModel(i, { contextWindow: Number(e.target.value) })} />
+              </label>
+              <button className="icon-btn cx-mremove" onClick={() => set({ models: c.models.filter((_, j) => j !== i) })} title="移除">
                 <IX width={13} height={13} />
               </button>
             </div>

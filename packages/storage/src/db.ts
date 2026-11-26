@@ -77,6 +77,14 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 CREATE INDEX IF NOT EXISTS sessions_user ON sessions(user_id, updated_at DESC);
 
+-- 文件 ID 绑定对话。旧账号级索引保留供旧版本读取，新的文件接口只查此表。
+CREATE TABLE IF NOT EXISTS session_workspace_files (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  relative_path TEXT NOT NULL,
+  UNIQUE (session_id, relative_path)
+);
+
 -- 子任务状态归属会话。重试单独留痕，删除会话时一起清理。
 CREATE TABLE IF NOT EXISTS subagent_tasks (
   id TEXT PRIMARY KEY,
@@ -90,6 +98,7 @@ CREATE TABLE IF NOT EXISTS subagent_tasks (
   executor TEXT NOT NULL,
   role TEXT NOT NULL,
   status TEXT NOT NULL CHECK(status IN ('queued','running','completed','partial','blocked','failed','timed-out','cancelled','interrupted')),
+  chat_active INTEGER CHECK(chat_active IN (0,1)),
   contract TEXT NOT NULL,
   limits TEXT NOT NULL,
   snapshot TEXT NOT NULL,
@@ -231,7 +240,10 @@ function migrate(d: DatabaseSync) {
     if (!has("sessions", "group_sort")) d.exec("ALTER TABLE sessions ADD COLUMN group_sort INTEGER");
     // 内容版本用于拒绝过期写入，与标题、分组等展示设置分开。
     if (!has("sessions", "history_revision")) d.exec("ALTER TABLE sessions ADD COLUMN history_revision INTEGER NOT NULL DEFAULT 0");
+    // 旧会话在首次打开文件或执行时复制有可靠归属的产出，新会话创建时直接使用独立目录。
+    if (!has("sessions", "workspace_ready_at")) d.exec("ALTER TABLE sessions ADD COLUMN workspace_ready_at INTEGER");
     if (!has("sessions", "multi_agent")) d.exec("ALTER TABLE sessions ADD COLUMN multi_agent INTEGER NOT NULL DEFAULT 0 CHECK(multi_agent IN (0,1))");
+    if (!has("subagent_tasks", "chat_active")) d.exec("ALTER TABLE subagent_tasks ADD COLUMN chat_active INTEGER CHECK(chat_active IN (0,1))");
     for (const table of ["sessions", "projects"]) {
       if (!has(table, "archived_at")) d.exec(`ALTER TABLE ${table} ADD COLUMN archived_at INTEGER`);
     }
@@ -251,11 +263,13 @@ function migrate(d: DatabaseSync) {
       path TEXT NOT NULL,
       before_hash TEXT,
       expected_hash TEXT NOT NULL,
+      session_workspace INTEGER NOT NULL DEFAULT 0,
       checked_hash TEXT,
       checked_at INTEGER,
       verification TEXT CHECK (verification IN ('matches-expected', 'matches-before', 'changed', 'unreadable')),
       PRIMARY KEY (session_id, assistant_id, call_id)
     ) STRICT;`);
+    if (!has("agent_file_writes", "session_workspace")) d.exec("ALTER TABLE agent_file_writes ADD COLUMN session_workspace INTEGER NOT NULL DEFAULT 0");
     // 轨迹正文与轻量运行日志分开，旧库只新增表。删除会话时级联清理请求和子调用。
     d.exec(`CREATE TABLE IF NOT EXISTS conversation_trace_entries (
       id TEXT PRIMARY KEY,

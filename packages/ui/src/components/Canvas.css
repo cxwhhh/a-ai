@@ -1,0 +1,31 @@
+/* 文件树属于当前文件预览，切换树中的文件时保留已展开的目录。 */
+.canvas-content { position: relative; display: flex; flex: 1; min-height: 0; container-type: inline-size; }
+.canvas-content > .viewer-body { min-width: 0; }
+.canvas-tree-toggle[aria-expanded="true"] { color: var(--fg); background: var(--hover); }
+.canvas-file-tree {
+  flex: 0 0 min(38%, 220px); width: min(38%, 220px); min-width: 0; padding: 6px;
+  overflow: auto; border-inline-end: 1px solid var(--edge); background: var(--surface-2);
+}
+.canvas-file-tree-head { display: flex; justify-content: space-between; align-items: center; padding-inline-start: 8px; font-size: 12px; font-weight: 560; }
+.canvas-file-tree-head .icon-btn { width: 26px; height: 26px; }
+.canvas-source-note { padding: 8px 14px; color: var(--fg-2); font-size: 12px; }
+
+.workspace-tree-list { margin: 0; padding: 0; list-style: none; }
+.workspace-tree-children { margin-inline-start: 13px; padding-inline-start: 4px; border-inline-start: 1px solid var(--edge); }
+.workspace-tree-row {
+  display: flex; align-items: center; gap: 6px; min-width: 0; width: 100%; min-height: 29px;
+  padding: 3px 8px; border-radius: 8px; color: var(--fg); font-size: 13px; text-align: start;
+}
+.workspace-tree-row:hover, .workspace-tree-row.active { background: var(--hover); }
+.workspace-tree-row:focus-visible { outline: 2px solid var(--color-border-focus-ring); outline-offset: -2px; }
+.workspace-tree-row .ellipsis { min-width: 0; }
+.workspace-tree-row .kind-ico, .workspace-tree-chevron { flex: none; }
+.workspace-tree-chevron { color: var(--fg-3); }
+.workspace-tree-row[aria-expanded="true"] .workspace-tree-chevron { transform: rotate(90deg); }
+.workspace-tree-file { padding-inline-start: 27px; }
+.workspace-tree-import { margin-top: 8px; padding-top: 4px; border-top: 1px solid var(--edge); }
+
+/* 窄预览内暂时覆盖一部分正文，避免把网页和代码挤到无法阅读。 */
+@container (max-width: 420px) {
+  .canvas-file-tree { position: absolute; inset: 0 auto 0 0; z-index: 2; width: min(75%, 220px); }
+}

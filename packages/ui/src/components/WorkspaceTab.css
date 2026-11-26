@@ -1,0 +1,24 @@
+.workspace-tab-body { padding: 18px; }
+.workspace-tab-back svg { transform: rotate(-90deg); }
+.workspace-tab-start { display: flex; flex-direction: column; justify-content: safe center; }
+.workspace-tab-launcher { width: min(100%, 490px); margin-inline: auto; }
+.workspace-tab-address {
+  display: flex; align-items: center; gap: 10px; padding: 3px 7px 3px 14px;
+  background: var(--surface); border: 1px solid var(--edge); border-radius: 12px;
+}
+.workspace-tab-address:focus-within { border-color: var(--color-border-focus-ring); }
+.workspace-tab-address > svg { flex: none; color: var(--fg-2); }
+.workspace-tab-address input {
+  min-width: 0; min-height: 35px; flex: 1; border: 0; outline: 0;
+  color: var(--fg); font: inherit; background: transparent;
+}
+.workspace-tab-submit svg { transform: rotate(90deg); }
+.workspace-tab-error { padding: 6px 3px 0; color: var(--danger); font-size: 12px; }
+.workspace-tab-links { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 16px; }
+.workspace-tab-links button {
+  display: flex; align-items: center; gap: 8px; min-height: 42px; padding: 8px 10px;
+  background: var(--soft); border: 1px solid var(--edge); border-radius: 8px; color: var(--fg); text-align: start;
+}
+.workspace-tab-links button svg { width: 16px; height: 16px; flex: none; }
+.workspace-tab-links button:hover:not(:disabled) { background: var(--hover); }
+.workspace-tab-links button:disabled, .workspace-tab-submit:disabled { opacity: .45; cursor: default; }

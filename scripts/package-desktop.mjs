@@ -31,9 +31,23 @@ try {
   run(manager, ["--config.node-linker=hoisted", "--filter", "@a-ai/server", "deploy", "--prod", "--legacy", dependencies], {
     ...buildEnv, pnpm_config_verify_deps_before_run: "false",
   });
+  const config = [];
+  const updateUrl = buildEnv.A_UPDATE_URL?.trim();
+  if (updateUrl) {
+    // 只有发布包才需要解析更新源。never 只关闭上传，仍可生成更新清单。
+    buildEnv.A_UPDATE_URL = updateUrl;
+    config.push(
+      "--config.publish.provider=generic",
+      "--config.publish.url=${env.A_UPDATE_URL}",
+      "--config.publish.useMultipleRangeRequest=false", // A.ai 更新接口支持单段 Range。
+    );
+  } else {
+    // 本地包和发布包同版本时文件名相同，分开输出以免安装包与旧清单混用。
+    config.push("--config.directories.output=release/local");
+  }
   // 下载受限的构建机可以传入经过校验的本地 Electron 压缩包。
   const runtime = process.env.A_ELECTRON_DIST;
-  const config = runtime ? [`--config.electronDist=${path.resolve(runtime)}`] : [];
+  if (runtime) config.push(`--config.electronDist=${path.resolve(runtime)}`);
   run(require.resolve("electron-builder/cli.js"), [target, "--publish", "never", ...config], { ...buildEnv, A_AI_SERVER_DEPLOY_DIR: dependencies });
 } finally {
   const resolved = realpathSync(staged);

@@ -6,7 +6,7 @@ import { describeToolResult } from "../../storage/src/tool-results";
 import { searchHistory } from "../../storage/src/history";
 import { historyReaders } from "../../storage/src/history-index";
 import { allowSession, isSessionAllowed, waitApproval } from "../../permissions/src/approvals";
-import type { Settings } from "../../protocol/src/lib/settings";
+import { DEFAULT_MODEL_CONTEXT_WINDOW, type Settings } from "../../protocol/src/lib/settings";
 import { DELEGATION_PROMPT, SYSTEM_PROMPT } from "../../system-prompt/src/prompt";
 import { deferredCatalog, findTool, toolSpecs, toolsFor } from "../../tool-runtime/src/index";
 import type { ApprovalRequest, ToolRegistry } from "../../tool-runtime/src/types";
@@ -98,6 +98,7 @@ async function* executeTurn(opts: {
   session: Session;
   /** 当前用户的工作区目录，文件工具只能在这里读写 */
   workspace: string;
+  sessionWorkspace?: boolean;
   /** 当前用户 id：确认请求按用户隔离，别人不能替你点“允许” */
   userId: string;
   /** 终端命令什么时候要用户确认（设置页“命令确认”） */
@@ -105,6 +106,8 @@ async function* executeTurn(opts: {
   signal?: AbortSignal;
   /** 来自设置页：自定义系统提示词（空 = 用内置）和最大步数 */
   systemPrompt?: string;
+  /** 用户绑定的项目规则在每轮开始时读取，也传给本轮派出的子 Agent。 */
+  projectRules?: string;
   maxSteps?: number;
   /** 反馈闭环最多自动修复几轮，0 = 关闭 */
   maxFixRounds?: number;
@@ -142,13 +145,13 @@ async function* executeTurn(opts: {
     : "";
   const custom = opts.systemPrompt?.trim();
   const prompt = (custom || SYSTEM_PROMPT) + (disabled.research ? "" : `\n\n子任务规则\n${DELEGATION_PROMPT}`);
-  const system = prompt + (catalog ? `\n\n${catalog}` : "") + (env ? `\n\n${env}` : "") + (opts.memory ? `\n\n${opts.memory}` : "") + disabledNote(disabled) + recoveryHint;
+  const system = [prompt, opts.projectRules, catalog, env, opts.memory].filter(Boolean).join("\n\n") + disabledNote(disabled) + recoveryHint;
   /** 这一步发给模型的工具：每一步重新从历史里算（上一步刚调用了 load_tools，这一步就带上新加载的说明书） */
   const delegationSpecs = disabled.research ? [] : [RESEARCH_SPEC, ...(!disabled.delegate_tasks ? [DELEGATE_SPEC] : [])];
   const toolsNow = () => [...registry.toolsFor(session.messages, disabled).filter(({ name }) => !isDelegation(name)), ...delegationSpecs];
   // 本轮的环境快照只取一次：同一轮的每一步都一样，请求前缀不变，缓存才能命中
   const snapshot = await turnEnv(opts.workspace).catch(() => "");
-  const contextWindow = opts.contextWindow ?? 128_000;
+  const contextWindow = opts.contextWindow ?? DEFAULT_MODEL_CONTEXT_WINDOW;
   const threshold = compactThreshold(contextWindow);
   const maxSteps = opts.maxSteps ?? DEFAULT_MAX_STEPS;
   const currentInputId = opts.execution?.inputId ??
@@ -463,7 +466,7 @@ async function* executeTurn(opts: {
             assistantId: assistant.id,
             step: step + 1,
             callId
-          }, path, before, expected);
+          }, path, before, expected, opts.sessionWorkspace);
         }),
         disabled,
         provider
@@ -510,6 +513,7 @@ async function* executeTurn(opts: {
           const exec = isDelegation(call.name)
             ? executeDelegation(call, ctx, session, {
               orchestrator: opts.subagents, parent: parentDelegation, contextWindow,
+              projectRules: opts.projectRules,
               origin: { ...subagentOrigin, parentCallId: `${assistant.id}:${call.id}` },
               trace: opts.conversationTrace && { recorder: opts.conversationTrace, step: step + 1 },
             })
@@ -804,7 +808,7 @@ interface ExecCtx {
 
 /** 委派结果沿用主工具消息格式；实时进度归属发起委派的工具调用。 */
 async function executeDelegation(call: ToolCall, ctx: ExecCtx, session: Session, options: Pick<Parameters<typeof runSubagentTool>[1],
-  "orchestrator" | "parent" | "origin" | "trace" | "contextWindow">): Promise<StoredMessage> {
+  "orchestrator" | "parent" | "origin" | "trace" | "contextWindow" | "projectRules">): Promise<StoredMessage> {
   const startedAt = Date.now();
   const r = await runSubagentTool(call, {
     ...options,
@@ -949,14 +953,18 @@ async function execTool(call: ToolCall, session: Session, ctx: ExecCtx): Promise
         art.sourceToolCallId = call.id;
         // 同时存一份到工作区 output/ 下，在文件夹里也能找到、下载（和 write_document 生成的文件放在一起）
         if (!art.workspaceApp) art.file = prev?.file ?? saveArtifactFile(ctx.workspace, session.id, art);
+        if (art.file && !prev?.file) art.fileCreated = true;
         if (art.file && prev?.file && art.kind === "markdown") {
           const { full } = resolvePath(ctx.workspace, art.file, "write");
           // 用户勾选过的原文件可能比产出快照更新。这时让模型回读后局部修改。
           if (existsSync(full) && !replaceWorkspaceFile(full, Buffer.from(prev.content), Buffer.from(art.content))) {
             throw new Error(`计划文件已更新：${art.file}。请用 read_file 读取并用 edit_file 局部修改。`);
           }
-          if (!existsSync(full)) writeArtifactFile(ctx.workspace, art.file, art.content);
-        } else if (art.file) writeArtifactFile(ctx.workspace, art.file, art.content);
+          if (!existsSync(full) && !writeArtifactFile(ctx.workspace, art.file, art.content, true)) art.file = undefined;
+        } else if (art.file && prev?.file && !writeArtifactFile(ctx.workspace, art.file, art.content)) {
+          // 写入失败时仍保存正文，预览和下载可以使用会话快照。
+          art.file = undefined;
+        }
         if (prev) replaceArtifact(session, art);
         else addArtifact(session, art);
         ctx.made.set(key, art.id);
@@ -995,7 +1003,10 @@ function saveArtifactFile(workspace: string, sessionId: string, a: Artifact): st
     const scope = /^[a-zA-Z0-9_-]+$/.test(sessionId) ? sessionId : Buffer.from(sessionId).toString("base64url");
     for (let i = 1; i < 100; i++) {
       const rel = `output/${scope}/${base}${i > 1 ? ` (${i})` : ""}.${ext}`;
-      if (!existsSync(/*turbopackIgnore: true*/ resolvePath(workspace, rel, "write").full)) return rel;
+      const { full } = resolvePath(workspace, rel, "write");
+      if (existsSync(full)) continue;
+      if (writeArtifactFile(workspace, rel, a.content, true)) return rel;
+      return;
     }
   } catch {
     /* 工作区不可写就只放在面板里 */
@@ -1004,12 +1015,13 @@ function saveArtifactFile(workspace: string, sessionId: string, a: Artifact): st
 }
 
 /** 尝试同步产出到工作区文件。写入失败时，执行方仍可把正文保存到会话产出面板。 */
-function writeArtifactFile(workspace: string, rel: string, content: string) {
+function writeArtifactFile(workspace: string, rel: string, content: string, exclusive = false) {
   try {
     const { full } = resolvePath(workspace, rel, "write");
     mkdirSync(/*turbopackIgnore: true*/ nodePath.dirname(full), { recursive: true });
-    writeFileSync(/*turbopackIgnore: true*/ full, content, "utf8");
+    writeFileSync(/*turbopackIgnore: true*/ full, content, { encoding: "utf8", flag: exclusive ? "wx" : "w" });
+    return true;
   } catch {
-    /* 写失败不影响产出物本身 */
+    return false;
   }
 }

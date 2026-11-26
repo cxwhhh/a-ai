@@ -1,10 +1,10 @@
-import { test } from "node:test";
+import { afterEach, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, symlink } from "node:fs/promises";
+import { mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { agents, createRegistry, data, db, load, readRun, routeFixture, routeState, runAgent, store, tool } from "../../../tests/fixtures/agent-runtime.mjs";
+import { agents, createRegistry, data, db, load, overrides, readRun, routeFixture, routeState, runAgent, store, tool } from "../../../tests/fixtures/agent-runtime.mjs";
 
 const { runSubagentTool, SubagentOrchestrator } = load("packages/subagent/src/subagent.ts");
 const { ParentDelegation } = load("packages/subagent/src/delegation-policy.ts");
@@ -21,6 +21,11 @@ const stop = { type: "done", finishReason: "stop" };
 const toolEnd = { type: "done", finishReason: "tool_calls" };
 const weather = "weather:tokyo:2026-11-20:temp:c";
 const costs = "project:operating-cost";
+
+// 生产 Host 的监听会让进程保持运行。测试中的模型和工具故意悬停时，也要让 unref 的期限有机会触发。
+let hostTimer;
+beforeEach(() => { hostTimer = setInterval(() => {}, 30_000); });
+afterEach(() => { clearInterval(hostTimer); });
 
 function makeOrigin(parentCallId) {
   return { runId: crypto.randomUUID(), inputId: crypto.randomUUID(), parentCallId };
@@ -223,7 +228,12 @@ test("复杂任务经实际聊天入口分工，分别执行计划，再将独�
     assert.equal(records.length, 2);
     assert.equal(new Set(records.map(({ parentCallId }) => parentCallId)).size, 1);
     const readTrace = load("packages/conversation-trace/src/store.ts");
-    const requests = readTrace.listTraceEntries(run.sessionId, "u").filter(({ meta }) => meta.phase === "research");
+    const entries = readTrace.listTraceEntries(run.sessionId, "u");
+    const requests = entries.filter(({ meta }) => meta.phase === "research");
+    const parentRequest = entries.find(({ meta }) => meta.phase === "chat");
+    const parentWindow = readTrace.readTraceEntry(run.sessionId, "u", parentRequest.id).request.agent.contextWindow;
+    assert.equal(parentWindow, 128_000);
+    for (const { id } of requests) assert.equal(readTrace.readTraceEntry(run.sessionId, "u", id).request.agent.contextWindow, parentWindow);
     for (const second of requests.filter(({ meta }) => meta.childStep === 2)) {
       const comparison = readTrace.readTraceEntry(run.sessionId, "u", second.id, true);
       const first = requests.find(({ id }) => id === comparison.context.previous.id);
@@ -244,8 +254,80 @@ test("计划验收前拒绝规范化后的重复事实及不完整分工，登�
   assert.throws(() => service.startPlan(plan(a, b), ctx, makeOrigin("parent"), parent), /重复分工/);
   assert.throws(() => service.startPlan(plan(a, { ...b, plan: [] }), ctx, makeOrigin("parent"), parent), /角色、步骤/);
   assert.throws(() => service.startPlan(plan(a, { ...b, factKeys: [costs], tools: ["write_file"] }), ctx, makeOrigin("parent"), parent), /角色范围/);
+  const search = { ...a, task: "搜索公开资料", tools: ["web_search"], hosts: ["example.org"] };
+  assert.throws(() => service.startPlan(plan({ ...b, factKeys: [costs] }, search), ctx, makeOrigin("parent"), parent), /搜索公开资料.*web_search.*省略 hosts/);
+  assert.throws(() => service.start({ ...a, paths: [], tools: ["read_file"] }, ctx, makeOrigin()), /查温度.*read_file.*材料范围/);
+  assert.throws(() => service.start({ ...a, tools: ["read_file"] }, { ...ctx, disabled: { read_file: "停用" } }, makeOrigin()), /查温度.*read_file/);
   assert.deepEqual(listSubagentTasks(ctx), []);
   await service.close();
+});
+
+test("同源分工分别核对事实，部分失败时父轮只补缺项", async () => {
+  const service = new SubagentOrchestrator();
+  const fixture = routeFixture({ agents, agentSessions, subagents: service });
+  const catalog = load("packages/tool-runtime/src/index.ts");
+  const previous = { ...catalog };
+  const reads = [];
+  const web = { spec: { name: "web_fetch", parameters: { type: "object", properties: { url: { type: "string" } }, required: ["url"] } },
+    async run({ url }) {
+      reads.push(url);
+      return url.endsWith("/unavailable") ? { content: "示例网页请求超时", status: "timeout" }
+        : { content: JSON.stringify({ url, content: "工作组位于东京，核对周期为每月。" }) };
+    } };
+  catalog.findTool = (name) => name === "web_fetch" ? web : previous.findTool(name);
+  catalog.toolSpecs = () => [...previous.toolSpecs(), web.spec];
+  const a = { ...assignment("核对工作组地点", "research", "office:city", "."), hosts: ["example.org"] };
+  const b = { ...assignment("核对核验周期", "research", "office:review-cycle", "."), hosts: ["example.org"] };
+  const c = { ...assignment("核对资金来源", "research", "office:funding", "."), hosts: ["example.org"] };
+  const commonUrl = "https://example.org/description";
+  const unavailable = "https://example.org/unavailable";
+  const originalRead = tool.run;
+  let fallbackReads = 0;
+  tool.run = async () => { fallbackReads++; return { content: "补充材料：资金来自委托方。" }; };
+  routeState.provider = model(async function* ({ messages }) {
+    const role = [a, b, c].find(({ task }) => task === messages[1]?.content);
+    const toolMessages = messages.filter(({ role }) => role === "tool");
+    if (role) {
+      if (!toolMessages.length) {
+        yield toolCall("web_fetch", { url: role === c ? unavailable : commonUrl, factKey: role.factKeys[0] });
+        yield toolEnd;
+      } else {
+        yield response(role === c ? [] : [{ key: role.factKeys[0], value: role === a ? "东京" : "每月",
+          quote: role === a ? "工作组位于东京" : "核对周期为每月", evidenceIds: ["E1.1"] }]);
+        yield stop;
+      }
+      return;
+    }
+    if (!toolMessages.length) {
+      yield toolCall("delegate_tasks", { ...plan(a, b), assignments: [a, b, c] }, "initial-batch");
+      yield toolEnd;
+    } else if (toolMessages.length === 1) {
+      const result = published(toolMessages[0].content);
+      assert.equal(result.batchStatus, "partial");
+      assert.deepEqual(result.results.map(({ name, facts, status, missingFactKeys }) => ({ name, value: facts[0]?.value, status, missingFactKeys })), [
+        { name: a.task, value: "东京", status: "completed", missingFactKeys: [] },
+        { name: b.task, value: "每月", status: "completed", missingFactKeys: [] },
+        { name: c.task, value: undefined, status: "partial", missingFactKeys: c.factKeys },
+      ]);
+      yield toolCall("read_file", { path: "backup-funding.txt" }, "missing-only");
+      yield toolEnd;
+    } else {
+      assert.match(toolMessages[1].content, /资金来自委托方/);
+      yield { type: "text", delta: "已汇总地点、核对周期与资金来源。" };
+      yield stop;
+    }
+  });
+  try {
+    const run = await readRun(await fixture.request({ message: "分别核对三个工作组事项并汇总。", multiAgent: true }));
+    const events = await run.rest();
+    const batch = events.find(({ message }) => message?.toolCallId === "initial-batch").message;
+    assert.equal(batch.status, "ok");
+    assert.equal(batch.isError, false);
+    assert.ok(events.some(({ message }) => message?.content === "已汇总地点、核对周期与资金来源。"));
+    assert.equal(listSubagentTasks({ sessionId: run.sessionId, userId: "u" }).length, 3);
+    assert.deepEqual(reads.sort(), [commonUrl, commonUrl, unavailable].sort());
+    assert.equal(fallbackReads, 1);
+  } finally { Object.assign(catalog, previous); tool.run = originalRead; await service.close(); }
 });
 
 test("父轮在批次内逐项收到持久结算，全部分支结束后才向模型交付汇总输入", { timeout: 3000 }, async () => {
@@ -363,10 +445,18 @@ for (const action of ["revise", "accept"]) {
         yield stop;
       }
     }));
+    ctx.contextWindow = 128_000;
+    const origin = makeOrigin();
+    const { createConversationTrace } = load("packages/conversation-trace/src/recorder.ts");
+    ctx.trace = { recorder: createConversationTrace({ ...ctx, ...origin, model: "mock", effort: "default" }), step: 1 };
     try {
-      const task = await service.start({ ...assignment("核对温度口径", "review", weather, "a.txt"), paths: ["a.txt", "b.txt"] }, ctx, makeOrigin()).finished;
+      const task = await service.start({ ...assignment("核对温度口径", "review", weather, "a.txt"), paths: ["a.txt", "b.txt"] }, ctx, origin).finished;
       assert.equal(reviews, 1);
       assert.equal(task.progress.steps, childSteps + reviews);
+      const { listTraceEntries, readTraceEntry } = load("packages/conversation-trace/src/store.ts");
+      const records = listTraceEntries(ctx.sessionId, ctx.userId).filter(({ meta }) => meta.kind === "request");
+      assert.equal(records.length, childSteps + reviews);
+      for (const { id } of records) assert.equal(readTraceEntry(ctx.sessionId, ctx.userId, id).request.agent.contextWindow, 128_000);
       if (action === "revise") {
         assert.deepEqual(read, ["a.txt", "b.txt"]);
         assert.equal(task.status, "completed");
@@ -617,7 +707,7 @@ test("子任务总时限默认 10 分钟，只接受 10 至 30 分钟的配置",
   const ctx = setup(model(async function* () {
     yield { type: "text", delta: "已读取" };
     yield stop;
-  }));
+  }), { contextWindow: 32_000 });
   try {
     for (const timeoutMs of [599_999, 1_800_001]) {
       assert.throws(() => service.start({ task: "检查非法时限", budget: { timeoutMs } }, ctx, makeOrigin()), /600000 至 1800000/);
@@ -631,6 +721,36 @@ test("子任务总时限默认 10 分钟，只接受 10 至 30 分钟的配置",
       assert.equal(task.limits.timeoutMs, timeoutMs);
     }
     assert.equal(listSubagentTasks(ctx).length, 4);
+  } finally { await service.close(); }
+});
+
+test("子任务使用模型配置的大窗口，显式累计预算仍能收紧", async () => {
+  const service = new SubagentOrchestrator();
+  const { estimateRequest } = load("packages/context-engine/src/context.ts");
+  const inputs = [];
+  const ctx = setup(model(async function* ({ messages, tools, maxOutputTokens }) {
+    inputs.push({ tokens: estimateRequest(messages, tools), maxOutputTokens });
+    yield { type: "text", delta: "材料已核对" };
+    yield stop;
+  }), { contextWindow: 128_000, projectRules: "项目约定".repeat(1_125) });
+  ctx.session = { ...ctx.session, messages: Array.from({ length: 8 }, (_, i) => ({
+    id: `material-${i}`, role: "user", content: "任务材料".repeat(375), createdAt: i,
+  })) };
+  const task = { task: "核对八份材料", contextMessages: ctx.session.messages.map(({ id }) => id) };
+  try {
+    const wide = await service.start(task, ctx, makeOrigin()).finished;
+    assert.equal(wide.limits.tokens, 128_000);
+    assert.equal(wide.status, "completed");
+    assert.ok(inputs[0].tokens > 16_000);
+    assert.ok(inputs[0].tokens + inputs[0].maxOutputTokens <= ctx.contextWindow);
+    for (const [input, context] of [
+      [task, { ...ctx, contextWindow: 12_000 }],
+      [{ ...task, budget: { tokens: 12_000 } }, ctx],
+    ]) {
+      const restricted = await service.start(input, context, makeOrigin()).finished;
+      assert.equal(restricted.progress.blockers[0].code, "budget");
+    }
+    assert.equal(inputs.length, 1);
   } finally { await service.close(); }
 });
 
@@ -713,7 +833,7 @@ test("升级预算后旧提交保持幂等，旧短时限任务可按新下限�
   }));
   const seedLegacyTask = (contract, dedupeKey) => {
     const scope = capabilityScope(contract, ROLES.research.tools, ctx);
-    const limits = { ...budgetLimits("research", {}), tokens: 24_000, timeoutMs: contract.budget?.timeoutMs ?? 120_000 };
+    const limits = { ...budgetLimits("research", {}, 128_000), tokens: 24_000, timeoutMs: contract.budget?.timeoutMs ?? 120_000 };
     const { idleTimeoutMs: _omitted, ...oldLimits } = limits;
     const fingerprint = createHash("sha256").update(JSON.stringify([contract, oldLimits, scope.identity, "", ctx.provider.id])).digest("hex");
     const { record } = registerTask(ctx, makeOrigin(), contract, "research", limits, dedupeKey, fingerprint);
@@ -1112,16 +1232,18 @@ test("独立任务 API 支持隔离、去重、取消、读取和重试，旧进
   const sessions = store.createSession("u", undefined, undefined, true);
   const params = Promise.resolve({ id: sessions.id });
   let modelInvocations = 0;
+  let lastInput;
   let hold = true;
   let released;
-  const provider = model(async function* ({ signal }) {
+  const provider = model(async function* ({ signal, messages }) {
     modelInvocations++;
+    lastInput = messages[1].content;
     if (hold) await new Promise((resolve) => { released = resolve; signal.addEventListener("abort", resolve, { once: true }); });
     yield { type: "text", delta: "独立任务结果" };
     yield stop;
   });
   const runtime = { agents, agentSessions, subagents: service, models: () => provider };
-  const { GET, POST, DELETE } = load("apps/server/src/routes/api/sessions/[id]/agent/subagents/route.ts");
+  const { GET, POST, PATCH, DELETE } = load("apps/server/src/routes/api/sessions/[id]/agent/subagents/route.ts");
   const sessionRoute = load("apps/server/src/routes/api/sessions/[id]/route.ts");
   const req = (method = "GET", query = "", body, signal) => new Request(`http://localhost/${query}`, {
     method, body: body === undefined ? undefined : JSON.stringify(body), signal,
@@ -1153,6 +1275,19 @@ test("独立任务 API 支持隔离、去重、取消、读取和重试，旧进
     assert.equal((await POST(req("POST", `?taskId=${task.id}`, { message: "请核对附件原文" }), context)).status, 202);
     assert.equal((await DELETE(req("DELETE", `?taskId=${task.id}`), context)).status, 204);
     await waitFor(() => getSubagentTask(owner, task.id).status === "cancelled");
+    const paused = getSubagentTask(owner, task.id);
+    assert.equal(paused.chatActive, false);
+    assert.equal((await POST(req("POST", "", { continueTaskId: task.id, message: "自定义消息" }), context)).status, 409);
+    routeState.caller = "other";
+    assert.equal((await PATCH(req("PATCH", `?taskId=${task.id}`, { active: true }), context)).status, 404);
+    routeState.caller = "u";
+    const activation = await PATCH(req("PATCH", `?taskId=${task.id}`, { active: true }), context);
+    assert.equal(activation.status, 200);
+    const { task: activated } = await activation.json();
+    assert.deepEqual(activated, JSON.parse(JSON.stringify({ ...paused, chatActive: true })));
+    assert.deepEqual(listSubagentTasks(owner).map(({ id }) => id), [task.id]);
+    assert.equal(getSubagentTask(owner, task.id).chatActive, true);
+    assert.equal(modelInvocations, 1);
     hold = false;
     const retry = await POST(req("POST", "", { retryTaskId: task.id }), context);
     const { task: retried } = await retry.json();
@@ -1167,7 +1302,7 @@ test("独立任务 API 支持隔离、去重、取消、读取和重试，旧进
     assert.deepEqual((await (await GET(req("GET", "?threads=active"), context)).json()).tasks, []);
     const transcript = getSubagentTask(owner, retried.id).messages;
     assert.ok(transcript.some(({ content }) => content === payload.task));
-    assert.ok(transcript.some(({ content }) => content === "恢复任务"));
+    assert.ok(transcript.every(({ content }) => content !== "恢复任务"));
     assert.ok(transcript.some(({ content }) => content === "独立任务结果"));
     const continued = await POST(req("POST", "", { retryTaskId: retried.id }), context);
     assert.equal(continued.status, 202);
@@ -1177,6 +1312,16 @@ test("独立任务 API 支持隔离、去重、取消、读取和重试，旧进
     const latestThread = (await (await GET(req("GET", "?threads=1"), context)).json()).tasks[0];
     assert.equal(latestThread.metrics.attempts, 3);
     assert.deepEqual(latestThread.metrics.dialogue, { user: 1, agent: 2 });
+    const message = "请直接说明结论";
+    const followupResponse = await POST(req("POST", "", { continueTaskId: continuedTask.id, message }), context);
+    assert.equal(followupResponse.status, 202);
+    const { task: followup } = await followupResponse.json();
+    await waitFor(() => getSubagentTask(owner, followup.id).status === "completed");
+    const savedFollowup = getSubagentTask(owner, followup.id);
+    assert.equal(lastInput, message);
+    assert.equal(savedFollowup.chatActive, true);
+    assert.equal(savedFollowup.messages.at(-2).content, message);
+    assert.equal((await PATCH(req("PATCH", `?taskId=${continuedTask.id}`, { active: true }), context)).status, 409);
     assert.equal((await GET(req("GET", `?taskId=${retried.id}`), context)).headers.get("cache-control"), "private, no-store");
     assert.equal(store.getSession(sessions.id, "u").messages.length, 0);
     db().prepare("UPDATE subagent_tasks SET executor='previous-process', status='running' WHERE id=?").run(task.id);
@@ -1193,6 +1338,82 @@ async function waitFor(condition) {
   }
   assert.fail("子任务没有在限定时间结算");
 }
+
+test("子线程单文件微调沿用历史，对其它文件和父对话没有写入权限", async () => {
+  routeFixture();
+  const session = store.createSession("u", undefined, undefined, true);
+  const owner = { sessionId: session.id, userId: "u" };
+  const { workspace } = load("packages/workspace/src/session-workspace.ts").openSessionWorkspace("u", session.id);
+  await writeFile(path.join(workspace, "report.md"), "# Original\n");
+  await writeFile(path.join(workspace, "other.md"), "# Other\n");
+  const service = new SubagentOrchestrator();
+  const fixtureFiles = overrides["packages/tools/src/files.ts"];
+  delete overrides["packages/tools/src/files.ts"];
+  const { readFile: readTool, editFile: editTool } = load("packages/tools/src/files.ts");
+  overrides["packages/tools/src/files.ts"] = fixtureFiles;
+  const catalog = load("packages/tool-runtime/src/index.ts");
+  const old = { ...catalog };
+  catalog.findTool = (name) => name === "edit_file" ? editTool : name === "read_file" ? readTool : old.findTool(name);
+  catalog.toolSpecs = () => [readTool.spec, editTool.spec];
+  const input = "把标题改为 Revised";
+  const provider = model(async function* ({ messages, tools }) {
+    const revised = messages[1].content === input;
+    const results = messages.filter(({ role }) => role === "tool");
+    if (!revised) {
+      assert.ok(!tools?.some(({ name }) => name === "edit_file"));
+      if (!results.length) { yield toolCall("read_file", { path: "report.md" }, "initial-read"); yield toolEnd; return; }
+      yield { type: "text", delta: "报告原始标题是 Original" };
+      yield stop;
+      return;
+    }
+    assert.match(messages[0].content, /唯一可读写的文件是 "report.md"/);
+    assert.deepEqual(tools.map(({ name }) => name).sort(), ["edit_file", "read_file"]);
+    if (!results.length) {
+      assert.ok(messages.some(({ content }) => content.includes("报告原始标题是 Original")));
+      yield toolCall("read_file", { path: "report.md" }, "revision-read");
+      yield toolEnd;
+    } else if (results.length === 1) {
+      yield toolCall("edit_file", { path: "other.md", old_string: "Other", new_string: "Wrong" }, "wrong-edit");
+      yield toolCall("edit_file", { path: "report.md", old_string: "Original", new_string: "Revised" }, "revision-edit");
+      yield toolEnd;
+    } else {
+      assert.match(results[1].content, /只能读取所选微调文件/);
+      assert.match(results[2].content, /Revised/);
+      yield { type: "text", delta: "已更新报告标题" };
+      yield stop;
+    }
+  });
+  const runtime = { agents, agentSessions, subagents: service, models: () => provider };
+  const { GET, POST } = load("apps/server/src/routes/api/sessions/[id]/agent/subagents/route.ts");
+  const context = { params: Promise.resolve({ id: session.id }), runtime };
+  const post = (body) => POST(new Request("http://localhost/subagents", { method: "POST", body: JSON.stringify(body) }), context);
+  try {
+    const initial = await post({ task: "读取报告", name: "报告核对", paths: ["report.md"] });
+    assert.equal(initial.status, 202);
+    const { task } = await initial.json();
+    await waitFor(() => getSubagentTask(owner, task.id).status === "completed");
+    const previous = getSubagentTask(owner, task.id);
+    const payload = { continueTaskId: task.id, message: input, path: "other.md" };
+    assert.equal((await post(payload)).status, 403);
+    const next = await post({ ...payload, path: "report.md" });
+    assert.equal(next.status, 202);
+    const { task: revision } = await next.json();
+    await waitFor(() => getSubagentTask(owner, revision.id).status !== "running");
+    const revised = getSubagentTask(owner, revision.id);
+    assert.equal(revised.retryOf, task.id);
+    assert.equal(revised.parentCallId, undefined);
+    assert.equal(revised.status, "partial"); // 越界调用被拒绝，允许的修改仍然结算并保留。
+    assert.equal(revised.result.summary, "已更新报告标题");
+    assert.ok(revised.messages.some(({ content }) => content === input));
+    assert.deepEqual(revised.messages.slice(0, previous.messages.length), previous.messages);
+    assert.equal(await readFile(path.join(workspace, "report.md"), "utf8"), "# Revised\n");
+    assert.equal(await readFile(path.join(workspace, "other.md"), "utf8"), "# Other\n");
+    assert.deepEqual(store.getSession(session.id, "u").messages, []);
+    const refreshed = await (await GET(new Request("http://localhost/subagents?threads=1"), context)).json();
+    assert.deepEqual(refreshed.tasks.map(({ id, name }) => ({ id, name })), [{ id: revision.id, name: "报告核对" }]);
+    assert.equal(refreshed.tasks[0].metrics.dialogue.user, 1);
+  } finally { Object.assign(catalog, old); await service.close(); }
+});
 
 function gate() {
   let open;

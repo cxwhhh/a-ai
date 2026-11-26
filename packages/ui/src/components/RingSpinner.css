@@ -1,0 +1,11 @@
+.chat-run-ring { flex: none; align-self: center; }
+.chat-run-ring circle { fill: none; stroke-width: 1.8; }
+.chat-run-ring-track { stroke: color-mix(in srgb, var(--fg-3) 42%, transparent); }
+.chat-run-ring-arc {
+  stroke: var(--fg-3); stroke-linecap: round; transform-origin: center; transform: rotate(135deg);
+  animation: chat-run-spin 0.9s linear infinite;
+}
+@keyframes chat-run-spin { to { transform: rotate(495deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .chat-run-ring-arc { animation: none; }
+}

@@ -4,6 +4,7 @@ import type { ArtifactMeta, Project } from "../../../protocol/src/lib/shared";
 import type { WorkspaceAppSummary } from "../../../protocol/src/workspace-app";
 import { api } from "../lib/client";
 import { AgentIcon, ICode, IDoc, IFolder, IGlobe, IMore, IPanelLeft, IPlus, ISearch, IX } from "./Icons";
+import { WebThumbnail } from "./WebThumbnail";
 import "./ArtifactsPage.css";
 
 /** 每种产出物：名字、小图标（卡片底部）。颜色在 CSS 里按 c-html / c-markdown / c-code 区分 */
@@ -14,6 +15,10 @@ const KIND: Record<ArtifactMeta["kind"], { label: string; icon: React.ReactNode 
 };
 
 type SavedCategory = "chart" | ArtifactMeta["kind"];
+type LibraryEntry = Omit<ArtifactMeta, "sessionId" | "sessionTitle" | "size"> & (
+  | { app?: undefined; sessionId: string; sessionTitle: string }
+  | { app: WorkspaceAppSummary; sessionId?: undefined; sessionTitle?: undefined }
+);
 type CreationKey = SavedCategory | "spreadsheet" | "slides" | "flow";
 
 /** 创建入口按用途组织，用草稿指定现有生成工具支持的格式。 */
@@ -47,10 +52,10 @@ const IListView = () => (
 );
 
 /** 产出物属于哪个色系：SVG 算“图表”（粉），其余按类型（网页蓝 / 文档黄 / 代码绿） */
-function tone(a: ArtifactMeta): SavedCategory {
+function tone(a: Pick<ArtifactMeta, "svg" | "kind">): SavedCategory {
   return a.svg ? "chart" : a.kind;
 }
-function toneIcon(a: ArtifactMeta) {
+function toneIcon(a: Pick<ArtifactMeta, "svg" | "kind">) {
   return a.svg ? <CatIcon k="chart" size={18} /> : KIND[a.kind].icon;
 }
 
@@ -294,9 +299,8 @@ function OfficeCreationCard({ onCreate }: { onCreate(text: string): void }) {
 }
 
 /**
- * “产出物”页面：所有对话里 create_artifact 生成过的网页、文档、代码，集中在一处。
- * 列表只拿概要（/api/artifacts），点卡片 = 打开它所在的对话，并在右侧直接显示这个产出物，
- * 预览、复制、下载都复用对话里已有的右侧视图，不用再写一套。
+ * “产出物”页面集中展示当前账号保存的文件、会话产出和已部署应用。
+ * 文件和快照回到原对话打开，已部署应用直接进入账号应用预览。
  */
 export function ArtifactsPage(props: {
   projects: Project[];
@@ -311,7 +315,7 @@ export function ArtifactsPage(props: {
   onCreate(text: string): void;
 }) {
   const [list, setList] = useState<ArtifactMeta[] | null>(null);
-  const [apps, setApps] = useState<WorkspaceAppSummary[]>([]);
+  const [apps, setApps] = useState<WorkspaceAppSummary[] | null>(null);
   const [appsError, setAppsError] = useState("");
   const [err, setErr] = useState("");
   const [q, setQ] = useState("");
@@ -358,25 +362,34 @@ export function ArtifactsPage(props: {
     return () => controller.abort();
   }, [props.libraryVersion]);
 
-  const inProj = (a: ArtifactMeta) => !proj || (proj === "none" ? !a.projectId : proj === "any" ? !!a.projectId : a.projectId === proj);
+  const entries = useMemo<LibraryEntry[]>(() => {
+    const deployed: LibraryEntry[] = (apps ?? []).map((app) => ({
+      id: `app:${app.id}`, kind: "html", title: app.title, snippet: "", createdAt: app.updatedAt, projectId: app.projectId, app,
+    }));
+    return [...(list ?? []), ...deployed].sort((a, b) => b.createdAt - a.createdAt);
+  }, [list, apps]);
   const shown = useMemo(() => {
     const kw = q.trim().toLowerCase();
-    return (list ?? []).filter(
+    const inProj = (a: LibraryEntry) => !proj || (proj === "none" ? !a.projectId : proj === "any" ? !!a.projectId : a.projectId === proj);
+    return entries.filter(
       (a) =>
         inProj(a) &&
-        (!kw || a.title.toLowerCase().includes(kw) || a.sessionTitle.toLowerCase().includes(kw)),
+        (!kw || a.title.toLowerCase().includes(kw) || a.sessionTitle?.toLowerCase().includes(kw)),
     );
-  }, [list, q, proj]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [entries, q, proj]);
 
   // 三个标签后面的数量（不受搜索影响，表示这一类一共有多少）
   const counts = useMemo(() => {
-    const l = list ?? [];
-    const inProj = l.filter((a) => a.projectId).length;
-    return { all: l.length, inProj, none: l.length - inProj };
-  }, [list]);
+    const inProj = entries.filter((a) => a.projectId).length;
+    return { all: entries.length, inProj, none: entries.length - inProj };
+  }, [entries]);
 
   const projName = (id?: string) => props.projects.find((p) => p.id === id)?.name;
-  const total = (list?.length ?? 0) + apps.length;
+  const openEntry = (entry: LibraryEntry) => {
+    if (entry.app) props.onOpenApp(entry.app);
+    else props.onOpen(entry.sessionId, entry.file ? undefined : entry.id, entry.file);
+  };
+  const description = (entry: LibraryEntry) => [entry.title, projName(entry.projectId), entry.sessionTitle].filter(Boolean).join(" · ");
 
   return (
     <main className="chat arts">
@@ -392,26 +405,12 @@ export function ArtifactsPage(props: {
           {/* 标题（2026-10-29 重做）：大一号、加粗、字距收紧，右边灰色写总数；下面一行小字说明这页放的是什么 */}
           <div className="arts-top">
             <h1>产出物</h1>
-            {total > 0 && <span className="arts-total">{total} 个</span>}
+            {entries.length > 0 && <span className="arts-total">{entries.length} 个</span>}
           </div>
-          <p className="arts-desc">对话里生成的网页、文档、代码和图表都收在这里</p>
+          <p className="arts-desc">对话里生成的文件、网页和已部署应用</p>
 
-          {(apps.length > 0 || appsError) && (
-            <section aria-label="已部署应用">
-              <div className="arts-new-title">应用</div>
-              {appsError ? <p className="arts-desc" role="status">{appsError}</p> : (
-                <div className="arts-list">
-                  {apps.map((app) => (
-                    <button key={app.id} className="arts-row" onClick={() => props.onOpenApp(app)} type="button">
-                      <span className="arts-row-ico c-html"><IGlobe /></span>
-                      <span className="arts-row-title ellipsis">{app.title}</span>
-                      <span className="arts-when">更新于 {ago(app.updatedAt)}</span>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </section>
-          )}
+          {appsError && <p className="arts-desc" role="status">云端应用读取失败：{appsError}</p>}
+          {err && <p className="arts-desc" role="status">本地产出读取失败：{err}</p>}
 
           <div className="arts-new-title">创建新内容</div>
           <div className="arts-cats">
@@ -499,13 +498,11 @@ export function ArtifactsPage(props: {
           )}
 
 
-          {err ? (
-            <div className="arts-empty">读取失败：{err}</div>
-          ) : !list ? (
+          {!entries.length && ((!list && !err) || (!apps && !appsError)) ? (
             <div className="arts-empty">读取中…</div>
           ) : !shown.length ? (
             <div className="arts-empty">
-              {list.length ? "没有符合条件的产出物。" : apps.length ? "还没有文件产出物。" : "还没有产出物。在对话里让 A.ai 做网页、写文档或代码，做好的成品会自动收集到这里。"}
+              {entries.length ? "没有符合条件的产出物。" : err || appsError ? "暂时无法显示产出物。" : "还没有产出物。在对话里让 A.ai 做网页、写文档或代码，做好的成品会自动收集到这里。"}
             </div>
             ) : view === "list" ? (
             // 列表视图：像 Finder 的列表，一行一个文件；表头固定，列 = 名称 / 类型 / 来源 / 创建时间
@@ -518,21 +515,22 @@ export function ArtifactsPage(props: {
                   className={`arts-row ${rowMenu === a.id ? "menu-open" : ""}`}
                   role="button"
                   tabIndex={0}
-                  onClick={() => props.onOpen(a.sessionId, a.file ? undefined : a.id, a.file)}
-                  onKeyDown={(e) => e.key === "Enter" && props.onOpen(a.sessionId, a.file ? undefined : a.id, a.file)}
-                  title={`${a.title}\n来自：${projName(a.projectId) ? `${projName(a.projectId)} · ` : ""}${a.sessionTitle}`}
+                  onClick={() => openEntry(a)}
+                  onKeyDown={(e) => { if (e.key === "Enter" && e.target === e.currentTarget) openEntry(a); }}
+                  title={description(a)}
                 >
                   <span className={`arts-row-ico c-${tone(a)}`}>{toneIcon(a)}</span>
                   <span className="arts-row-title ellipsis">{a.title}</span>
-                  <span className="arts-when">创建于 {ago(a.createdAt)}</span>
+                  {a.app && <span className="art-cloud">云端</span>}
+                  <span className="arts-when">{a.snapshotOnly ? "会话快照 · " : ""}{a.app ? "更新于" : "创建于"} {ago(a.createdAt)}</span>
                   <div className="arts-more-wrap" ref={rowMenu === a.id ? rowMenuRef : undefined} onClick={(e) => e.stopPropagation()}>
                     <button className="icon-btn arts-more" title="更多" onClick={() => setRowMenu((m) => (m === a.id ? null : a.id))}>
                       <IMore width={16} height={16} />
                     </button>
                     {rowMenu === a.id && (
                       <div className="row-menu">
-                        <button className="pop-item" onClick={() => (setRowMenu(null), props.onOpen(a.sessionId, a.file ? undefined : a.id, a.file))}>打开</button>
-                        <button className="pop-item" onClick={() => (setRowMenu(null), props.onOpen(a.sessionId))}>打开所在对话</button>
+                        <button className="pop-item" onClick={() => { setRowMenu(null); openEntry(a); }}>打开</button>
+                        {a.sessionId && <button className="pop-item" onClick={() => { setRowMenu(null); if (a.sessionId) props.onOpen(a.sessionId); }}>打开所在对话</button>}
                         <button
                           className="pop-item"
                           onClick={() => {
@@ -551,7 +549,7 @@ export function ArtifactsPage(props: {
           ) : (
             <div className="arts-grid">
               {shown.map((a) => (
-                <button key={a.id} className="art-card" onClick={() => props.onOpen(a.sessionId, a.file ? undefined : a.id, a.file)} title={`打开：${a.title}\n来自：${projName(a.projectId) ? `${projName(a.projectId)} · ` : ""}${a.sessionTitle}`}>
+                <button key={a.id} className="art-card" onClick={() => openEntry(a)} title={description(a)}>
                   {/* 仿 Claude 的产出物卡片：底板上“立着”一张小页面，只露出上半截。
                       2026-10-29：四种类型的小页面长得不一样，一眼能分开——
                       文档 = 白纸（衬线标题 + 正文）；代码 = 深色编辑器（文件名标签 + 行号 + 等宽字）；
@@ -559,7 +557,7 @@ export function ArtifactsPage(props: {
                       底板和下面的图标块都带上这一类的颜色（和顶部新建卡片同一套：网页蓝、文档黄、代码绿、图表粉） */}
                   <div className={`art-preview p-${tone(a)} c-${tone(a)}`}>
                     <div className="art-page">
-                      {a.svg ? (
+                      {a.app ? <WebThumbnail appId={a.app.id} revision={a.app.revision} /> : a.svg ? (
                         // SVG 用 <img> 画：图片里的脚本不会执行，比直接插进页面安全
                         // eslint-disable-next-line @next/next/no-img-element
                         <img src={`data:image/svg+xml;charset=utf-8,${encodeURIComponent(a.svg)}`} alt="" />
@@ -605,9 +603,9 @@ export function ArtifactsPage(props: {
                   <div className="art-meta">
                     <span className={`art-meta-ico c-${tone(a)}`}>{toneIcon(a)}</span>
                     <div className="art-meta-text">
-                      <div className="art-title ellipsis">{a.title}</div>
+                      <div className="art-title-line"><div className="art-title ellipsis">{a.title}</div>{a.app && <span className="art-cloud">云端</span>}</div>
                       <div className="art-sub ellipsis">
-                        {a.svg ? "SVG" : a.file ? a.file.split(".").pop()!.toUpperCase() : a.kind === "code" && a.language ? a.language : KIND[a.kind].label} · 创建于 {ago(a.createdAt)}
+                        {a.svg ? "SVG" : a.file ? a.file.split(".").pop()!.toUpperCase() : a.kind === "code" && a.language ? a.language : KIND[a.kind].label}{a.snapshotOnly ? " · 会话快照" : ""} · {a.app ? "更新于" : "创建于"} {ago(a.createdAt)}
                       </div>
                     </div>
                   </div>

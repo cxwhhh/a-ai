@@ -17,6 +17,8 @@ export interface Artifact {
   createdAt: number;
   /** 同时保存到工作区的文件路径（例：output/周报模板.html）。2026-10-29 以前的产出物没有 */
   file?: string;
+  /** 本次产出首次创建了工作区副本，旧记录缺少此字段。 */
+  fileCreated?: boolean;
   /** 已部署应用的入口，产出卡引用它，应用源码和记录保存在账号工作区。 */
   workspaceApp?: { id: string; revision: number };
 }
@@ -39,6 +41,8 @@ export interface ArtifactMeta {
   svg?: string;
   /** 不是 create_artifact 的产出物，而是生成的文件（Word / Excel / PPT）：工作区里的路径。打开时按文件打开 */
   file?: string;
+  /** 工作区副本缺失时，产出物库仍可以打开已保存的正文。 */
+  snapshotOnly?: boolean;
 }
 
 export interface StoredMessage extends ChatMessage {
@@ -55,6 +59,8 @@ export interface StoredMessage extends ChatMessage {
   artifactId?: string;
   /** 大型工具结果的可回读信息。正文仍在这条消息上，请求视图只发送消息 ID。 */
   toolResult?: { name: string; fields: Record<string, string | number | boolean | null | string[]> };
+  /** 用户显式替换的任务要求。空字符串表示清除，旧消息没有此字段。随当前会话分支生效。 */
+  taskRequirements?: string;
   /**
    * role=tool 时：工具没能正常执行（参数不对、抛错、被拦截、被跳过）。
    * 发给模型的内容不变；CallGuard 靠它拦“同样的调用失败两次”。
@@ -178,6 +184,8 @@ export interface Project {
   name: string;
   /** 项目说明：每次对话都会告诉 agent（项目背景、要求、约定） */
   description: string;
+  /** 用户绑定的 AGENTS.md 路径。空路径解除绑定，旧项目缺省。 */
+  rulesFile?: string;
   memory: ProjectMemoryMode;
   share: boolean;
   /** 项目图标：图标库（src/lib/agentIcons.ts）里的名字，比如 "code"。没设时显示文件夹 */
@@ -242,7 +250,7 @@ export type AgentEvent = { scope?: AgentEventScope } & (
   | { type: "approval_end"; callId: string; allowed: boolean } // 确认结束（用户点了、超时或停止），收起卡片
   | { type: "artifact"; artifact: Artifact }
   | { type: "error"; message: string }
-  | { type: "done"; awaitingUser?: boolean; interrupted?: boolean });
+  | { type: "done"; awaitingUser?: boolean; interrupted?: boolean; outputTruncated?: boolean });
 
 /**
  * 工具调用的最终状态（见 src/lib/agent/status.ts）：

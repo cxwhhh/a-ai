@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import type { Artifact, StoredMessage } from "../../../protocol/src/lib/shared";
 import { fileChanges, originalOf } from "../lib/diff";
@@ -10,38 +10,54 @@ import { WorkspaceAppCanvas } from "./WorkspaceAppCanvas";
 import { CodeLines, FileBody, fmtSize, useFile } from "./FileDrawer";
 import { SvgFrame } from "./SvgFrame";
 import { FileDiff, diffStat } from "./Code";
-import { ICheck, ICode, ICopy, IDownload, IEye, IX } from "./Icons";
+import { ICheck, ICode, ICopy, IDownload, IEye, IFolder, IRetry, IX } from "./Icons";
+import { api, filesUrl } from "../lib/client";
+import { FileTree } from "./FileTree";
+import "./Canvas.css";
 
 /**
  * 右侧大视图（嵌入式卡片）：代码、Markdown、网页、工作区文件都在这里“大”显示。
  * 由 Workspace 的 view 状态驱动：{type:"artifact", id} 或 {type:"file", path}。
  */
 export function Canvas(props: {
+  sessionId: string;
   view: View;
   artifacts: Artifact[];
   /** 当前对话的消息：用来找出这个文件在本次对话里被改了哪些地方 */
   messages: StoredMessage[];
   refreshKey: unknown; // 会话消息变化时刷新文件内容（文件可能被再次写入）
+  splitSource?: boolean;
+  canImport?: boolean;
+  onRevisionAvailability?(available: boolean | null): void;
   outputSwitch?: ReactNode;
   onOpenFile(path: string): void;
   onClose(): void;
 }) {
   const { view } = props;
-  const [raw, setRaw] = useState(false);
+  const [raw, setRaw] = useState(Boolean(view.source));
   const [copied, setCopied] = useState(false);
+  const [treeOpen, setTreeOpen] = useState(false);
+  const [treeRefresh, setTreeRefresh] = useState(0);
+  const treeId = useId();
   // 文件在本次对话里的改动（edit_file / write_file）。有“修改”时打开文件默认显示改动，没有就显示内容
   const changes = useMemo(() => (view.type === "file" ? fileChanges(props.messages, view.path) : []), [view, props.messages]);
 
   const [tab, setTab] = useState<"content" | "diff">("content");
   const viewKey = JSON.stringify(view);
-  useEffect(() => setRaw(false), [view]);
-  useEffect(() => setTab(changes.some((c) => !c.isNew) ? "diff" : "content"), [viewKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => setRaw(Boolean(view.source)), [view]);
+  const previewableFile = view.type === "file" && isPreviewable(extOf(view.path));
+  useEffect(() => setTab(!previewableFile && !props.splitSource && changes.some((c) => view.source || !c.isNew) ? "diff" : "content"), [viewKey, previewableFile, props.splitSource]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const artifact = view.type === "artifact" ? props.artifacts.find((a) => a.id === view.id) : undefined;
+  const selectedArtifact = view.type === "artifact" ? props.artifacts.find((a) => a.id === view.id) : undefined;
   // Markdown 产出的聊天快照还能用于回看，右侧可编辑视图以工作区文件为准。
-  const filePath = view.type === "file" ? view.path : artifact?.kind === "markdown" ? artifact.file ?? "" : "";
-  const { res: fileRes, setRes: setFileRes, reload } = useFile(filePath, props.refreshKey);
+  const sourcePath = view.type === "file" ? view.path : selectedArtifact?.file ?? "";
+  const { res: fileRes, setRes: setFileRes, reload } = useFile(props.sessionId, sourcePath, props.refreshKey, props.splitSource);
   const file = fileRes && "type" in fileRes ? fileRes : null;
+  const missingFile = !!fileRes && "error" in fileRes && fileRes.error === "文件不存在";
+  // 历史变更卡和旧的预览状态可能依旧保存文件路径。仅用本对话中完全匹配的快照恢复预览。
+  const artifact = selectedArtifact ?? (view.type === "file" && missingFile
+    ? props.artifacts.find((item) => item.file === view.path && !item.workspaceApp) : undefined);
+  const filePath = view.type === "file" ? view.path : artifact?.kind === "markdown" ? sourcePath : "";
   const [saving, setSaving] = useState(false);
   const [taskError, setTaskError] = useState<{ id: string; text: string } | null>(null);
   const taskFile = file?.type === "file" && file.id && file.revision ? file : undefined;
@@ -50,11 +66,18 @@ export function Canvas(props: {
   const title = artifact ? artifact.title : view.type === "file" ? (view.path === "." ? "工作区" : view.path) : "";
   const ext = artifact ? artifactExt(artifact) : view.type === "file" ? (file?.type === "dir" ? "dir" : extOf(view.path)) : "";
   const loadingMarkdown = artifact?.kind === "markdown" && Boolean(filePath) && !fileRes;
-  const content = loadingMarkdown ? "" : file?.type === "file" ? file.content : artifact?.content ?? "";
+  const content = loadingMarkdown ? ""
+    : file?.type === "file" && (!artifact || (!file.binary && !file.truncated)) ? file.content : artifact?.content ?? "";
   // 整体改动：对话开始前 → 现在（现在的内容来自刚读到的文件）
-  const original = useMemo(() => (changes.length && file?.type === "file" ? originalOf(file.content, changes) : ""), [changes, file]);
-  const total = useMemo(() => (changes.length && file?.type === "file" ? diffStat(original, file.content) : { add: 0, del: 0 }), [changes, file, original]);
-  const canToggle = ["md", "markdown", "html", "htm", "svg"].includes(ext);
+  const comparableFile = changes.length > 0 && file?.type === "file" && !file.binary && !file.truncated ? file : null;
+  const original = useMemo(() => comparableFile ? originalOf(comparableFile.content, changes) : "", [changes, comparableFile]);
+  const total = useMemo(() => comparableFile ? diffStat(original, comparableFile.content) : null, [comparableFile, original]);
+  const canToggle = isPreviewable(ext) || artifact?.kind === "code";
+  const split = props.splitSource && isPreviewable(ext) && (file?.type === "file" && !file.binary || !!artifact && !loadingMarkdown);
+  const canRevise = view.type === "file" && !fileRes ? null
+    : view.type === "file" && file?.type === "file" && !file.binary && file.size <= 1024 * 1024;
+  const { onRevisionAvailability } = props;
+  useEffect(() => onRevisionAvailability?.(canRevise), [canRevise, onRevisionAvailability, viewKey]);
   const isDir = file?.type === "dir";
 
   const copy = async () => {
@@ -79,7 +102,7 @@ export function Canvas(props: {
     setSaving(true);
     setTaskError(null);
     try {
-      const response = await fetch("/api/files", {
+      const response = await fetch(filesUrl(props.sessionId), {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id, revision: taskFile.revision, itemStart, checked }),
@@ -99,12 +122,19 @@ export function Canvas(props: {
   };
   const tasks = taskFile ? { toggle: toggleTask, disabled: saving } : undefined;
   const markdownDownload = file?.type === "file" && file.id && /^(md|markdown)$/.test(ext)
-    ? `/api/files?download=1&id=${encodeURIComponent(file.id)}`
+    ? filesUrl(props.sessionId, { id: file.id, download: "1" })
     : undefined;
 
   if (artifact?.workspaceApp) {
     return <WorkspaceAppCanvas {...artifact.workspaceApp} title={artifact.title} outputSwitch={props.outputSwitch} onClose={props.onClose} />;
   }
+  // 成品导出后仍可能直接编辑保存的文件。已有新文件内容时，用导出快照作这次差异的基线。
+  const sourceContent = file?.type === "file" && !file.binary && !file.truncated ? file.content : artifact?.content ?? "";
+  const source = (raw || split) && (artifact
+    ? sourcePath && !fileRes
+      ? <div className="view-empty" role="status">读取源码…</div>
+      : <ArtifactSource sessionId={props.sessionId} artifact={artifact} content={sourceContent} lang={artifact.language || ext} />
+    : comparableFile && <FileDiff before={original} after={comparableFile.content} lang={filePath} />);
 
   return (
     <section className="viewer">
@@ -112,7 +142,8 @@ export function Canvas(props: {
         <KindIcon kind={isDir ? "folder" : iconForExt(ext)} tile className="viewer-icon" />
         <div className="viewer-title">
           <div className={`ellipsis ${view.type === "file" ? "mono" : ""}`}>{title}</div>
-          {artifact?.file && <div className="viewer-sub">已保存到 {artifact.file}</div>}
+          {artifact?.file && file?.type === "file" && <div className="viewer-sub ellipsis" title={artifact.file}>已保存到 {artifact.file}</div>}
+          {artifact && (!artifact.file || (fileRes && !file)) && <div className="viewer-sub">会话快照 · 可下载</div>}
           {file?.type === "file" && (
             <div className="viewer-sub">
               {fmtSize(file.size)} · {new Date(file.mtime).toLocaleString()}
@@ -122,7 +153,7 @@ export function Canvas(props: {
         </div>
         {ext && !isDir && <span className="tag">{ext.toUpperCase()}</span>}
         <div className="spacer" />
-        {changes.length > 0 && (
+        {!canToggle && total && (
           <div className="seg text">
             <button className={tab === "content" ? "on" : ""} onClick={() => setTab("content")}>
               内容
@@ -136,7 +167,7 @@ export function Canvas(props: {
             </button>
           </div>
         )}
-        {canToggle && tab === "content" && (
+        {canToggle && !split && tab === "content" && (
           <div className="seg">
             <button className={!raw ? "on" : ""} onClick={() => setRaw(false)} title="预览">
               <IEye />
@@ -147,7 +178,7 @@ export function Canvas(props: {
           </div>
         )}
         {file?.type === "file" && file.binary && (
-          <a className="icon-btn" href={`/api/files?download=1&path=${encodeURIComponent(file.path)}`} download title="下载">
+          <a className="icon-btn" href={filesUrl(props.sessionId, { path: file.path, download: "1" })} download title="下载">
             <IDownload />
           </a>
         )}
@@ -163,21 +194,53 @@ export function Canvas(props: {
             )}
           </>
         )}
+        {props.sessionId && (
+          <button type="button" className="icon-btn canvas-tree-toggle" onClick={() => setTreeOpen((open) => !open)}
+            aria-expanded={treeOpen} aria-controls={treeId} aria-label={treeOpen ? "收起文件树" : "显示文件树"}
+            title={treeOpen ? "收起文件树" : "显示文件树"}>
+            <IFolder />
+          </button>
+        )}
         {props.outputSwitch}
         <button className="icon-btn" onClick={props.onClose} title="关闭 Esc">
           <IX />
         </button>
       </div>
 
-      <div className="viewer-body" key={JSON.stringify(view)}>
+      <div className="canvas-content">
+        <aside className="canvas-file-tree" id={treeId} aria-label="当前对话文件树" hidden={!treeOpen}>
+          {treeOpen && <>
+            <div className="canvas-file-tree-head">
+              <span>当前对话文件</span>
+              <button type="button" className="icon-btn" title="刷新文件树" aria-label="刷新文件树" onClick={() => setTreeRefresh((count) => count + 1)}>
+                <IRetry width={14} height={14} aria-hidden />
+              </button>
+            </div>
+            <FileTree key={props.sessionId} sessionId={props.sessionId} activePath={view.type === "file" ? view.path : artifact?.file}
+              canImport={Boolean(props.canImport)} refreshKey={`${props.refreshKey}:${treeRefresh}`} onOpen={props.onOpenFile} />
+          </>}
+        </aside>
+      <div className={split && tab === "content" ? "viewer-body subagent-output-split" : "viewer-body"} key={viewKey}>
         {taskError?.id === taskFile?.id && taskError && <div className="set-hint" role="status">{taskError.text}</div>}
-        {loadingMarkdown ? (
+        {split && tab === "content" ? <>
+          <section aria-label="产出物预览">
+            <div className="subagent-output-label">预览</div>
+            {filePath && !artifact ? <FileBody sessionId={props.sessionId} path={filePath} res={fileRes} raw={false} onOpen={props.onOpenFile} />
+              : ext === "svg" ? <SvgFrame svg={content} title={title} />
+              : ext === "html" || ext === "htm" ? <iframe className="frame" sandbox="allow-scripts allow-forms allow-modals" srcDoc={content} title={title} />
+              : <div className="doc"><Markdown text={content} /></div>}
+          </section>
+          <section aria-label="源码">
+            <div className="subagent-output-label">源码</div>
+            {source || <CodeLines text={content} lang={artifact?.language || filePath || ext} />}
+          </section>
+        </> : loadingMarkdown ? (
           <div className="view-empty">读取中…</div>
-        ) : artifact ? (
+        ) : source ? source : artifact ? (
           artifact.kind === "html" && !raw ? (
-            <iframe className="frame" sandbox="allow-scripts allow-forms allow-modals" srcDoc={artifact.content} title={artifact.title} />
+            <iframe className="frame" sandbox="allow-scripts allow-forms allow-modals" srcDoc={content} title={artifact.title} />
           ) : ext === "svg" && !raw ? (
-            <SvgFrame svg={artifact.content} title={artifact.title} />
+            <SvgFrame svg={content} title={artifact.title} />
           ) : artifact.kind === "markdown" && !raw ? (
             <div className="doc">
               <Markdown text={content} tasks={tasks} />
@@ -185,16 +248,51 @@ export function Canvas(props: {
           ) : (
             <CodeLines text={content} lang={artifact.language || ext} />
           )
-        ) : view.type === "file" && tab === "diff" && changes.length ? (
-          file?.type === "file" ? <FileDiff before={original} after={file.content} lang={view.path} /> : <div className="view-empty">读取中…</div>
+        ) : tab === "diff" && comparableFile ? (
+          <FileDiff before={original} after={comparableFile.content} lang={filePath} />
         ) : view.type === "file" ? (
-          <FileBody path={view.path} res={fileRes} raw={raw} onOpen={props.onOpenFile} tasks={tasks} />
+          <FileBody sessionId={props.sessionId} path={view.path} res={fileRes} raw={raw} onOpen={props.onOpenFile} tasks={tasks} />
         ) : (
           <div className="view-empty">内容已不存在</div>
         )}
       </div>
+      </div>
     </section>
   );
+}
+
+const isPreviewable = (ext: string) => ["md", "markdown", "html", "htm", "svg"].includes(ext);
+
+/** 只在查看源码时请求版本，避免打开网页预览即读取额外正文。 */
+function ArtifactSource({ sessionId, artifact, content, lang }: { sessionId: string; artifact: Artifact; content: string; lang: string }) {
+  if (content !== artifact.content) return <FileDiff before={artifact.content} after={content} lang={lang} />;
+  return <ArtifactVersionSource sessionId={sessionId} artifact={artifact} lang={lang} />;
+}
+
+function ArtifactVersionSource({ sessionId, artifact, lang }: { sessionId: string; artifact: Artifact; lang: string }) {
+  const [comparison, setComparison] = useState<{ before: string | null; after: string } | null>(null);
+  const [error, setError] = useState("");
+  const { id, content: snapshot, sourceToolCallId } = artifact;
+  useEffect(() => {
+    const controller = new AbortController();
+    setComparison(null);
+    setError("");
+    api.artifactSource(sessionId, id, controller.signal).then((result) => {
+      if (!controller.signal.aborted) setComparison(result);
+    }).catch(() => {
+      if (!controller.signal.aborted) setError("无法读取版本差异，以下显示完整源码。");
+    });
+    return () => controller.abort();
+  }, [sessionId, id, snapshot, sourceToolCallId]);
+
+  if (comparison?.after === snapshot && comparison.before !== null) {
+    return <FileDiff before={comparison.before} after={snapshot} lang={lang} />;
+  }
+  if (!comparison && !error) return <div className="view-empty" role="status">读取版本差异…</div>;
+  return <>
+    <div className="canvas-source-note" role="status">{error || "此产出缺少匹配的旧版本，以下显示完整源码。"}</div>
+    <CodeLines text={snapshot} lang={lang} />
+  </>;
 }
 
 function safeName(s: string) {

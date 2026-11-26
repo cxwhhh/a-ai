@@ -107,7 +107,7 @@ async function listWorkspace(workspace: string): Promise<string[]> {
       if (e.name.startsWith(".") || SKIP.has(e.name)) continue;
       const full = path.join(/*turbopackIgnore: true*/ dir, e.name);
       if (e.isDirectory()) await walk(full, depth + 1);
-      else {
+      else if (e.isFile()) {
         const st = await fs.stat(/*turbopackIgnore: true*/ full).catch(() => null);
         if (st) found.push({
           rel: path.relative(workspace, full) + `（${fmtSize(st.size)}）`,

@@ -3,6 +3,8 @@ import { db, newId, tx } from "./db";
 import { indexHistoryMessage } from "./history-index";
 import { recordAgentLog } from "../../session/src/log";
 import type { ReasoningEffort } from "../../protocol/src/agent-events";
+import { NOTE_TAG } from "../../protocol/src/lib/message-tags";
+import { MAX_TASK_REQUIREMENTS_CHARS, taskRequirementsUpdate } from "../../protocol/src/lib/task-requirements";
 
 export { newId };
 
@@ -56,8 +58,8 @@ export function getSession(id: string, userId: string): Session | null {
 export function createSession(userId: string, title = "新对话", projectId?: string, multiAgent = false): Session {
   const now = Date.now();
   const s: Session = { id: newId("s"), revision: 0, title, createdAt: now, updatedAt: now, messages: [], artifacts: [], ...(projectId ? { projectId } : {}), ...(multiAgent ? { multiAgent } : {}) };
-  db().prepare("INSERT INTO sessions (id, user_id, title, created_at, updated_at, project_id, multi_agent) VALUES (?, ?, ?, ?, ?, ?, ?)")
-    .run(s.id, userId, title, now, now, projectId ?? null, Number(multiAgent));
+  db().prepare("INSERT INTO sessions (id, user_id, title, created_at, updated_at, project_id, multi_agent, workspace_ready_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+    .run(s.id, userId, title, now, now, projectId ?? null, Number(multiAgent), now);
   return s;
 }
 
@@ -84,6 +86,14 @@ export function deleteSession(id: string, userId: string): boolean {
  */
 export function addMessage(s: Session, m: StoredMessage) {
   const { drafts: _d, ...clean } = m; // drafts 只是前端流式显示用的，不存
+  // 轮次和运行中补充都来自用户。状态跟着来源消息提交，编辑重发后只读当前分支。
+  const taskRequirements = m.role === "user" && (!m.feedback || m.feedback.kind === "note")
+    ? taskRequirementsUpdate(m.feedback ? m.content.slice(NOTE_TAG.length) : m.content)
+    : undefined;
+  if (taskRequirements !== undefined) {
+    if (taskRequirements.length > MAX_TASK_REQUIREMENTS_CHARS) throw new Error(`任务要求最多 ${MAX_TASK_REQUIREMENTS_CHARS} 字符`);
+    clean.taskRequirements = taskRequirements;
+  }
   const now = Date.now();
   tx(() => {
     advanceRevision(s);
@@ -98,6 +108,7 @@ export function addMessage(s: Session, m: StoredMessage) {
     db().prepare("UPDATE sessions SET updated_at = ? WHERE id = ?").run(now, s.id);
   });
   // 数据库提交成功后才更新内存；写入失败时，页面不能多出一条实际没有保存的消息。
+  if (taskRequirements !== undefined) m.taskRequirements = taskRequirements;
   s.messages.push(m);
   s.revision = (s.revision ?? 0) + 1;
   s.updatedAt = now;
@@ -207,6 +218,24 @@ function saveArtifactVersion(sessionId: string, a: Artifact) {
     .run(newId("av"), a.id, sessionId, JSON.stringify(a), a.id);
 }
 
+/** 只读当前会话的有效产出。迁移补入的单份快照没有可确认的创建基线。 */
+export function artifactSourceComparison(userId: string, sessionId: string, artifactId: string) {
+  const versions = db().prepare(`
+    SELECT v.id, json_extract(v.data, '$.content') AS content
+    FROM artifact_versions v
+    JOIN artifacts a ON a.id=v.artifact_id AND a.session_id=v.session_id
+    JOIN sessions s ON s.id=a.session_id
+    WHERE s.user_id=? AND s.id=? AND a.id=? AND a.superseded_by IS NULL
+    ORDER BY v.version DESC LIMIT 2
+  `).all(userId, sessionId, artifactId) as { id: string; content: string }[];
+  const [current, previous] = versions;
+  if (!current) return;
+  return {
+    before: previous?.content ?? (current.id.startsWith("legacy_") ? null : ""),
+    after: current.content,
+  };
+}
+
 /** 截断和新问题作为一次提交；临时快照只在整个事务成功后发布给当前运行。 */
 export function beginTurn(s: Session, m: StoredMessage, from?: string, runId?: string) {
   const next = { ...s, messages: [...s.messages], artifacts: [...s.artifacts] };
@@ -274,33 +303,18 @@ export function listArtifacts(userId: string, projectId?: string): (ArtifactMeta
     });
 }
 
-/**
- * “产出物”页也要列出 write_document 生成的 Word / Excel / PPT（它们是文件，不在 artifacts 表里）。
- * 这里只从对话记录里找出“哪个对话、什么时候、生成了哪个路径”，文件还在不在由接口去查磁盘。
- */
-export function listDocFiles(userId: string) {
-  const rows = db()
-    .prepare(
-      `SELECT m.data, m.session_id, s.title AS session_title, s.project_id
-       FROM messages m JOIN sessions s ON s.id = m.session_id
-       WHERE s.user_id = ? AND m.superseded_by IS NULL AND m.role = 'assistant' AND m.data LIKE '%write_document%'
-       ORDER BY m.created_at DESC LIMIT 500`,
-    )
-    .all(userId);
-  const out: { path: string; createdAt: number; sessionId: string; sessionTitle: string; projectId?: string }[] = [];
-  for (const r of rows) {
-    const m = JSON.parse(r.data as string) as StoredMessage;
-    for (const c of m.toolCalls ?? []) {
-      if (c.name !== "write_document") continue;
-      try {
-        const p = String(JSON.parse(c.arguments || "{}").path ?? "").trim();
-        if (p) out.push({ path: p, createdAt: m.createdAt, sessionId: r.session_id as string, sessionTitle: r.session_title as string, ...(r.project_id ? { projectId: r.project_id as string } : {}) });
-      } catch {
-        /* 参数不是合法 JSON：这次调用本来就失败了 */
-      }
-    }
-  }
-  return out;
+/** 找出近期有文件输出的会话，具体文件仍以有效工具结果及工作区检查为准。 */
+export function listFileOutputSessions(userId: string, projectId?: string) {
+  return db().prepare(`
+    SELECT s.id FROM sessions s
+    WHERE s.user_id=? ${projectId ? "AND s.project_id=?" : ""}
+      AND EXISTS (
+        SELECT 1 FROM messages m, json_each(m.data, '$.toolCalls') c
+        WHERE m.session_id=s.id AND m.superseded_by IS NULL AND m.role='assistant'
+          AND json_extract(c.value, '$.name') IN ('write_file', 'edit_file', 'write_document', 'run_python', 'run_command')
+      )
+    ORDER BY s.updated_at DESC LIMIT 500
+  `).all(...(projectId ? [userId, projectId] : [userId])).map((row) => row.id as string);
 }
 
 /** 卡片预览用的纯文字：网页去掉 <style>/<script> 和标签，Markdown 去掉 # * ` 这些符号，代码原样取前几行 */

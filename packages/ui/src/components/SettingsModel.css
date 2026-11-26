@@ -1,0 +1,18 @@
+/* 模型设置复用聊天下拉菜单，控件宽度随设置栏可用空间收缩。 */
+.set-row:has(.settings-choice-trigger) { gap: 16px; }
+.set-row:has(.settings-choice-trigger) .set-ctl { min-width: 0; width: min(320px, 52%); }
+.settings-choice-trigger {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  width: 100%; color: var(--fg); text-align: start; cursor: pointer;
+}
+.settings-choice-trigger:hover, .settings-choice-trigger[data-popup-open] { background: var(--hover); }
+.settings-choice-trigger svg { flex: none; color: var(--fg-2); transform: rotate(90deg); }
+.settings-choice-trigger[data-popup-open] svg { transform: rotate(-90deg); }
+.prompt-menu.settings-choice-menu { width: min(calc(100vw - 32px), max(180px, var(--anchor-width))); border-radius: 12px; }
+.settings-choice-menu .prompt-menu-item { min-height: 36px; }
+.settings-choice-item-text { display: grid; min-width: 0; gap: 2px; overflow-wrap: anywhere; }
+.settings-choice-item-text small { font: 11px var(--mono); color: var(--fg-2); }
+@media (max-width: 560px) {
+  .set-row:has(.settings-choice-trigger) { flex-direction: column; align-items: stretch; gap: 8px; }
+  .set-row:has(.settings-choice-trigger) .set-ctl { width: 100%; }
+}

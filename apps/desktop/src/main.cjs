@@ -112,6 +112,10 @@ const ENV_TEMPLATE = `# A.ai 桌面版的服务端设置（改完重启 A.ai 生
 # 服务器更换更新源时才填写。客户端重启后生效。
 # A_UPDATE_URL=https://你的服务器/updates/
 #
+# 本机模式的网页搜索（web_search）可使用一个搜索服务的 API Key，填写后退出并重开 A.ai。
+# TAVILY_API_KEY=
+# BRAVE_SEARCH_API_KEY=
+#
 # run_command / run_python 能不能联网（1 = 可以）。桌面版默认可以，pip install 能用
 A_SANDBOX_NETWORK=1
 `;

@@ -2,14 +2,15 @@ import { isUtf8 } from "node:buffer";
 import { createReadStream, promises as fs, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { Readable } from "node:stream";
-import { safePath, workspaceOf } from "../../../../../../packages/tools/src/files";
-import { currentUser, unauthorized } from "../../../../../../packages/application/users/src/auth";
+import { safePath } from "../../../../../../packages/tools/src/files";
+import { currentUser, notFound, unauthorized } from "../../../../../../packages/application/users/src/auth";
 import { readDocument } from "../../../../../../packages/tools/src/documents";
 import { resolvePath } from "../../../../../../packages/workspace/src/access";
 import { hashFileBytes } from "../../../../../../packages/workspace/src/file-fingerprint";
 import { replaceWorkspaceFile } from "../../../../../../packages/workspace/src/file-write";
 import { registerWorkspaceFile, workspaceFilePath } from "../../../../../../packages/storage/src/workspace-files";
 import { markdownTaskMarker } from "../../../../../../packages/protocol/src/markdown-task";
+import { legacyFilePath, openSessionWorkspace } from "../../../../../../packages/workspace/src/session-workspace";
 
 
 const MAX = 200_000;
@@ -21,28 +22,34 @@ const MIME: Record<string, string> = {
 };
 
 /**
- * GET /api/files?path=demo/result.txt
+ * GET /api/files?sessionId=…&path=demo/result.txt
  * 给右侧文件弹窗用：读取工作区内的文件或目录。
- * 兼容原相对路径，也支持按文件 ID 查询。解析后的真实路径必须在当前用户工作区内。
+ * 相对路径和文件 ID 都在服务端校验过的对话范围内解析。
  */
 export async function GET(req: Request) {
   const user = await currentUser(req);
   if (!user) return unauthorized();
   const q = new URL(req.url).searchParams;
+  const sessionId = q.get("sessionId") ?? "";
+  const scope = openSessionWorkspace(user.id, sessionId);
+  if (!scope) return notFound();
+  const { workspace } = scope;
   const id = q.get("id");
-  const p = id ? workspaceFilePath(user.id, id) : q.get("path") || ".";
+  const legacy = q.get("legacy") === "1";
+  const p = id ? workspaceFilePath(sessionId, id) : q.get("path") || ".";
   if (!p) return Response.json({ error: "文件不存在" }, { status: 404 });
   try {
-    const { full, shown } = ownedPath(user.id, p);
+    const { full, shown } = legacy ? { full: legacyFilePath(user.id, p), shown: p } : ownedPath(workspace, p);
     const st = await fs.stat(/*turbopackIgnore: true*/ full);
     if (st.isDirectory()) {
       const entries = await fs.readdir(/*turbopackIgnore: true*/ full, { withFileTypes: true });
       const items = entries
-        .filter((e) => !e.name.startsWith("."))
+        .filter((e) => !e.name.startsWith(".") && (e.isDirectory() || e.isFile()))
         .map((e) => ({ name: e.name, dir: e.isDirectory() }))
         .sort((a, b) => Number(b.dir) - Number(a.dir) || a.name.localeCompare(b.name));
       return Response.json({ path: p, type: "dir", items });
     }
+    if (legacy) return notFound();
     if (!st.isFile()) return Response.json({ path: p, error: "只能读取普通文件" }, { status: 404 });
     const streamFile = () => Readable.toWeb(createReadStream(full)) as ReadableStream<Uint8Array>;
     // ?raw=1：直接返回文件本身，给图片 <img> 和 PDF <iframe> 预览用（上传的附件点开能看到原样）
@@ -74,7 +81,7 @@ export async function GET(req: Request) {
     let preview: string | undefined;
     if (["docx", "xlsx", "pptx"].includes(ext)) {
       try {
-        const r = await readDocument.run({ path: p }, { workspace: workspaceOf(user.id) } as Parameters<typeof readDocument.run>[1]);
+        const r = await readDocument.run({ path: p }, { workspace } as Parameters<typeof readDocument.run>[1]);
         preview = String(JSON.parse(r.content).content ?? "");
       } catch {
         /* 解析失败就只给下载 */
@@ -82,7 +89,7 @@ export async function GET(req: Request) {
     }
     return Response.json({
       path: p,
-      id: registerWorkspaceFile(user.id, shown),
+      id: registerWorkspaceFile(sessionId, shown),
       ...(isMarkdown(full) && !binary && buf.length <= MAX && isUtf8(buf) ? { revision: hashFileBytes(buf) } : {}),
       type: "file",
       size: st.size,
@@ -111,11 +118,14 @@ export async function PATCH(req: Request) {
       !Number.isSafeInteger(body.itemStart) || typeof body.checked !== "boolean") {
     return Response.json({ error: "无效的任务修改" }, { status: 400 });
   }
-  const p = workspaceFilePath(user.id, body.id);
+  const sessionId = new URL(req.url).searchParams.get("sessionId") ?? "";
+  const scope = openSessionWorkspace(user.id, sessionId);
+  if (!scope) return notFound();
+  const p = workspaceFilePath(sessionId, body.id);
   if (!p) return Response.json({ error: "文件不存在" }, { status: 404 });
   const conflict = () => Response.json({ error: "文件已更新，已重新载入，请核对后再勾选" }, { status: 409 });
   try {
-    const { full } = ownedPath(user.id, p);
+    const { full } = ownedPath(scope.workspace, p);
     const st = statSync(full);
     if (!isMarkdown(full) || !st.isFile() || st.size > MAX) {
       return Response.json({ error: "只能修改完整的 Markdown 文件" }, { status: 400 });
@@ -137,8 +147,7 @@ export async function PATCH(req: Request) {
   }
 }
 
-function ownedPath(userId: string, name: string) {
-  const workspace = workspaceOf(userId);
+function ownedPath(workspace: string, name: string) {
   const target = resolvePath(workspace, safePath(workspace, name), "read");
   if (!target.inWorkspace) throw new Error("路径超出工作区");
   return target;

@@ -1,150 +1,126 @@
 "use client";
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type { StoredMessage } from "../../../protocol/src/lib/shared";
-import { currentOption, modelOptions, reasoningOptions, type Settings } from "../../../protocol/src/lib/settings";
+import { currentOption, modelOptions, reasoningOptions, type ModelOption, type Settings } from "../../../protocol/src/lib/settings";
 import type { ReasoningEffort } from "../../../protocol/src/agent-events";
-import { ICheck, IChevron, IModel, IUpDown } from "./Icons";
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuFilterProvider, DropdownMenuGroup,
+  DropdownMenuInput, DropdownMenuItem, DropdownMenuLabel, DropdownMenuList, DropdownMenuRadioGroup,
+  DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger,
+} from "./shadcn/dropdown-menu";
+import { InputGroupButton } from "./shadcn/input-group";
+import { Switch } from "./shadcn/switch";
 import { cx } from "../utils/cx";
 import "./ChartContrast.css";
-
-/**
- * 输入框下方的一行，全部靠右：上下文占用在左，模型名在最右边，中间空约 4 个字。
- *                                           [◔ 1.2%]    [◇ deepseek… ▾]
- * 模型名最多显示 7 个字，超出用 … 截断，鼠标停上去显示全名。
- */
-export function ComposerBar(props: {
-  settings: Settings;
-  messages: StoredMessage[];
-  systemTokens: number;
-  toolsTokens: number;
-  onPickModel(value: string): void;
-  onPickEffort(value: ReasoningEffort): void;
-  modelDisabled?: boolean;
-  multiAgent?: { enabled: boolean; onChange(value: boolean): void };
-  onManage(): void;
-  onUsage(): void;
-}) {
-  return (
-    <div className="cbar">
-      <div className="spacer" />
-      <ContextRing {...props} />
-      <ModelPicker settings={props.settings} onPick={props.onPickModel} onPickEffort={props.onPickEffort} onManage={props.onManage} disabled={props.modelDisabled} multiAgent={props.multiAgent} />
-    </div>
-  );
-}
-
-/* ---------------- 模型切换 ---------------- */
 
 const EFFORT_LABEL: Record<ReasoningEffort, string> = {
   default: "默认", low: "低", medium: "中", high: "高", xhigh: "极高", max: "最高",
 };
 
-function ModelPicker(props: { settings: Settings; onPick(v: string): void; onPickEffort(v: ReasoningEffort): void; onManage(): void; disabled?: boolean; multiAgent?: { enabled: boolean; onChange(value: boolean): void } }) {
-  const [view, setView] = useState<"summary" | "models" | "effort" | null>(null);
+/** 优先展示自定义名称，搜索也可用真实模型 ID。 */
+export function ModelSelector(props: {
+  settings: Settings;
+  onPickModel(value: string): void;
+  onPickEffort(value: ReasoningEffort): void;
+  onManage(): void;
+  modelDisabled?: boolean;
+  streaming?: boolean;
+  multiAgent?: { enabled: boolean; onChange(value: boolean): void };
+}) {
+  const [searching, setSearching] = useState(false);
   const [query, setQuery] = useState("");
-  const panelId = useId();
-  const open = view !== null;
-  const ref = usePopover(open, () => setView(null));
-  const trigger = useRef<HTMLButtonElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const multiAgentLabel = useId();
   const { currentModel, reasoningEffort } = props.settings;
   const current = currentOption(props.settings);
   const modelLabel = current.value === currentModel ? current.label : "模型不可用";
   const efforts = reasoningOptions(props.settings, currentModel);
-  const effort = reasoningEffort;
-  const effortLabel = efforts.includes(effort) ? EFFORT_LABEL[effort] : "不可用";
-  const groups = useMemo(() => {
-    const needle = query.trim().toLowerCase();
-    const g = new Map<string, ReturnType<typeof modelOptions>>();
-    for (const o of modelOptions(props.settings)) {
-      if (`${o.label} ${o.group}`.toLowerCase().includes(needle)) g.set(o.group, [...(g.get(o.group) ?? []), o]);
-    }
-    return [...g.entries()];
-  }, [props.settings, query]);
-
-  function closeSelection() {
-    setView(null);
-    trigger.current?.focus();
+  const effortLabel = efforts.includes(reasoningEffort) ? EFFORT_LABEL[reasoningEffort] : "不可用";
+  const options = modelOptions(props.settings);
+  const needle = query.trim().toLowerCase();
+  const groups = new Map<string, ModelOption[]>();
+  for (const model of options) {
+    if (!`${model.label} ${model.modelId ?? ""} ${model.group}`.toLowerCase().includes(needle)) continue;
+    const group = groups.get(model.group);
+    if (group) group.push(model);
+    else groups.set(model.group, [model]);
   }
+  const { multiAgent } = props;
 
   return (
-    <div className="pop-anchor" ref={ref}>
-      <button
-        type="button"
-        ref={trigger}
-        className={`cbar-btn model-btn ${open ? "on" : ""}`}
-        disabled={props.disabled}
-        onClick={() => setView(open ? null : "summary")}
-        aria-haspopup="dialog"
-        aria-expanded={open}
-        aria-controls={open ? panelId : undefined}
-        title={`此对话的模型 · ${current.value === currentModel ? modelLabel : currentModel}`}
-      >
-        <IModel width={13} height={13} />
-        <span>{clip(modelLabel, 7)}</span>
-        <IUpDown width={12} height={12} />
-      </button>
-      {open && (
-        <div className="pop pop-right model-pop" id={panelId} role="dialog" aria-label="此对话的模型设置">
-          {/* 子页共用同一个弹层，切换内容时不会重新播放外层的打开动画。 */}
-          {view === "summary" ? (
-            <>
-              <button type="button" className="pop-item model-pop-summary" disabled={props.disabled} onClick={() => { setQuery(""); setView("models"); }}>
-                <span>模型</span><span className="ellipsis pop-dim" title={modelLabel}>{modelLabel}</span><IChevron width={13} height={13} />
-              </button>
-              <button type="button" className="pop-item model-pop-summary" disabled={props.disabled} onClick={() => setView("effort")}>
-                <span>推理等级</span><span className="ellipsis pop-dim">{effortLabel}</span><IChevron width={13} height={13} />
-              </button>
-              {props.multiAgent && <div className="pop-item model-pop-summary model-pop-agent-mode">
-                <span>多agent智能体模式</span>
-                <button type="button" className={cx("switch", props.multiAgent.enabled && "on")} role="switch" aria-label="多agent智能体模式"
-                  aria-checked={props.multiAgent.enabled} disabled={props.disabled} onClick={() => props.multiAgent?.onChange(!props.multiAgent.enabled)}><span /></button>
-              </div>}
-            </>
-          ) : (
-            <>
-              <div className="model-pop-head">
-                {view === "models" ? (
-                  <input type="search" className="picker-search" aria-label="搜索模型" placeholder="搜索模型…" value={query} onChange={(e) => setQuery(e.target.value)} autoFocus />
-                ) : (
-                  <>
-                    <button type="button" className="icon-btn" aria-label="返回模型设置" onClick={() => setView("summary")}><IChevron width={13} height={13} /></button>
-                    <span>推理等级</span>
-                  </>
-                )}
-              </div>
-              <div className="model-pop-body">
-                {view === "models" ? (
-                  <>
-                    {groups.map(([group, opts]) => (
-                      <div key={group}>
-                        <div className="pop-group">{group}</div>
-                        {opts.map((o) => (
-                          <button type="button" key={o.value} className="pop-item model-pop-option" aria-pressed={o.value === currentModel} disabled={props.disabled}
-                            onClick={() => { closeSelection(); if (o.value !== currentModel) props.onPick(o.value); }}>
-                            <span className="ellipsis">{o.label}</span>
-                            <span className="pop-dim">{fmtK(o.contextWindow)}</span>
-                            <span className="pop-check">{o.value === currentModel && <ICheck width={13} height={13} />}</span>
-                          </button>
-                        ))}
-                      </div>
+    <div className="prompt-model-controls">
+      <DropdownMenuFilterProvider filter={null} value={query} onValueChange={(value) => {
+        setQuery(value);
+        if (value) setSearching(true);
+      }}>
+        <DropdownMenu modal={false} onOpenChange={(open) => {
+          if (!open) {
+            setSearching(false);
+            setQuery("");
+          }
+        }}>
+          <DropdownMenuTrigger render={<InputGroupButton className="prompt-choice prompt-model-trigger" />}
+            aria-label={`模型 · ${modelLabel}`} title={modelLabel}>
+            <span className="prompt-model-label">{modelLabel}</span>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent className="prompt-menu-model">
+            {props.streaming && <div className="prompt-menu-note">模型从下一轮生效</div>}
+            {/* Base UI 把实际焦点留在搜索框，过滤掉已高亮的选项时也能继续输入。 */}
+            <DropdownMenuInput ref={searchRef} className={cx("prompt-menu-search", !searching && "prompt-menu-search-collapsed")}
+              aria-label="搜索模型" placeholder="搜索模型…" />
+            <DropdownMenuList aria-label="选择模型">
+              <DropdownMenuRadioGroup value={currentModel} onValueChange={(value) => {
+                if (value !== currentModel) props.onPickModel(value);
+              }}>
+                {[...groups].map(([group, models]) => (
+                  <DropdownMenuGroup key={group} className="prompt-menu-group">
+                    <DropdownMenuLabel className="prompt-menu-label">{group}</DropdownMenuLabel>
+                    {models.map((model) => (
+                      <DropdownMenuRadioItem key={model.value} value={model.value} disabled={props.modelDisabled}
+                        className="prompt-menu-item" closeOnClick title={`${model.modelId ?? model.label} · ${fmtK(model.contextWindow)} tokens`}>
+                        <span className="ellipsis">{model.label}</span>
+                      </DropdownMenuRadioItem>
                     ))}
-                    {!groups.length && <div className="pop-group" role="status">没有匹配的模型</div>}
-                    <div className="pop-sep" />
-                    <button type="button" className="pop-item" onClick={() => { setView(null); props.onManage(); }}>管理模型连接…</button>
-                  </>
-                ) : efforts.map((value) => (
-                  <button type="button" key={value} className="pop-item model-pop-option" aria-pressed={value === effort} disabled={props.disabled}
-                    onClick={() => { closeSelection(); if (value !== effort) props.onPickEffort(value); }}>
-                    <span className="ellipsis">{EFFORT_LABEL[value]}</span>
-                    <span className="pop-check">{value === effort && <ICheck width={13} height={13} />}</span>
-                  </button>
+                  </DropdownMenuGroup>
                 ))}
-              </div>
-            </>
-          )}
-        </div>
-      )}
+              </DropdownMenuRadioGroup>
+              {!groups.size && <div className="prompt-menu-note" role="status">没有匹配的模型</div>}
+              <DropdownMenuSeparator className="prompt-menu-separator" />
+              {options.length > 1 && !searching && <DropdownMenuItem className="prompt-menu-item prompt-menu-secondary"
+                closeOnClick={false} onClick={() => {
+                  setSearching(true);
+                  searchRef.current?.focus();
+                }}>搜索模型…</DropdownMenuItem>}
+              <DropdownMenuItem className="prompt-menu-item prompt-menu-secondary" onClick={props.onManage}>管理模型连接…</DropdownMenuItem>
+            </DropdownMenuList>
+            {multiAgent && <div className="prompt-model-switch">
+              <span id={multiAgentLabel}>多智能体模式</span>
+              <Switch aria-labelledby={multiAgentLabel} checked={multiAgent.enabled}
+                onCheckedChange={multiAgent.onChange} disabled={props.modelDisabled || props.streaming} />
+            </div>}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </DropdownMenuFilterProvider>
+      <DropdownMenu modal={false}>
+        <DropdownMenuTrigger render={<InputGroupButton className="prompt-choice prompt-effort-trigger" />}
+          aria-label={`思考等级 · ${effortLabel}`} title={`思考等级 · ${effortLabel}`}>
+          {effortLabel}
+        </DropdownMenuTrigger>
+        <DropdownMenuContent className="prompt-menu-effort" aria-label="选择思考等级">
+          {efforts.length === 1 ? <div className="prompt-menu-note">此模型使用默认等级</div>
+            : props.streaming && <div className="prompt-menu-note">思考等级从下一轮生效</div>}
+          <DropdownMenuRadioGroup className="prompt-menu-group" value={reasoningEffort} onValueChange={(value) => {
+            const selected = efforts.find((option) => option === value);
+            if (selected && selected !== reasoningEffort) props.onPickEffort(selected);
+          }}>
+            {efforts.map((value) => (
+              <DropdownMenuRadioItem key={value} value={value} className="prompt-menu-item"
+                disabled={props.modelDisabled} closeOnClick title={value}>{EFFORT_LABEL[value]}</DropdownMenuRadioItem>
+            ))}
+          </DropdownMenuRadioGroup>
+        </DropdownMenuContent>
+      </DropdownMenu>
     </div>
   );
 }
@@ -160,7 +136,7 @@ function lastIndexOf<T>(arr: T[], ok: (x: T) => boolean) {
  * 最近一次请求之后又做过上下文压缩：用压缩后的估算值（旧的数字已经不代表下一次请求了）。
  * 还没调用过模型时，用“系统提示词 + 工具说明书”的估算值。
  */
-function ContextRing(props: {
+export function ContextRing(props: {
   settings: Settings;
   messages: StoredMessage[];
   systemTokens: number;
@@ -178,7 +154,7 @@ function ContextRing(props: {
   const compacted = compactIdx > lastIdx ? props.messages[compactIdx].compact : undefined;
   const fixed = props.systemTokens + props.toolsTokens;
   const used = compacted ? compacted.tokensAfter : last?.usage ? last.usage.inputTokens + last.usage.outputTokens : fixed;
-  const pct = Math.min(100, (used / window) * 100);
+  const pct = Math.max(0, Math.min(100, (used / window) * 100));
   const conv = Math.max(0, used - fixed);
 
   // 本会话的调用：对话的每一步 + 上下文压缩（压缩也是一次模型调用，用量记在摘要消息上）
@@ -193,9 +169,7 @@ function ContextRing(props: {
     { calls: 0, input: 0, output: 0, cache: 0, reasoning: 0 },
   );
 
-  // SVG 圆环：周长 = 2πr，用 stroke-dasharray 画出占比
-  const R = 6.5;
-  const C = 2 * Math.PI * R;
+  const pctLabel = fmtPct(pct);
   const level = pct >= 90 ? "high" : pct >= 70 ? "mid" : "";
 
   const parts = [
@@ -206,12 +180,15 @@ function ContextRing(props: {
 
   return (
     <div className="pop-anchor" ref={ref}>
-      <button className={`cbar-btn ring-btn ${open ? "on" : ""} ${level}`} onClick={() => setOpen((v) => !v)} title="上下文占用">
-        <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden>
-          <circle cx="8" cy="8" r={R} className="ctx-track" />
-          <circle cx="8" cy="8" r={R} className="ctx-fill" strokeDasharray={`${Math.max(pct > 0 ? 0.6 : 0, (pct / 100) * C)} ${C}`} transform="rotate(-90 8 8)" />
+      <button type="button" className={cx("cbar-btn ring-btn", open && "on", level)} onClick={() => setOpen((v) => !v)}
+        aria-label={`上下文占用 ${pctLabel}`} aria-expanded={open} title="上下文占用">
+        <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden>
+          <circle cx="9" cy="9" r="7" className="ctx-track" />
+          {/* pathLength 把圆周映射到 100，弧长和旁边的百分比使用相同的数值。 */}
+          {pct > 0 && <circle cx="9" cy="9" r="7" pathLength="100" className="ctx-fill"
+            strokeDasharray={pct < 100 ? `${pct} 100` : undefined} transform="rotate(-90 9 9)" />}
         </svg>
-        <span className="tnum">{fmtPct(pct)}</span>
+        <span className="tnum">{pctLabel}</span>
       </button>
 
       {open && (
@@ -222,12 +199,12 @@ function ContextRing(props: {
           </div>
           <div className="ctx-big">
             <b className="tnum">{fmtNum(used)}</b>
-            <span className="pop-dim"> / {fmtK(window)} tokens · {fmtPct(pct)}</span>
+            <span className="pop-dim"> / {fmtK(window)} tokens · {pctLabel}</span>
           </div>
 
           {/* 堆叠条：系统提示词 / 工具定义 / 对话，剩余部分留空 */}
           <div className="ctx-bar" role="img" aria-label="上下文构成">
-            {parts.map((p) => p.v > 0 && <span key={p.k} className={p.cls} style={{ width: `${Math.max(0.8, (p.v / window) * 100)}%` }} />)}
+            {parts.map((p) => p.v > 0 && <span key={p.k} className={p.cls} style={{ width: `${p.v / Math.max(window, used) * 100}%` }} />)}
           </div>
           <div className="ctx-legend">
             {parts.map((p) => (
@@ -314,9 +291,3 @@ function usePopover(open: boolean, close: () => void) {
 const fmtNum = (n: number) => Math.round(n).toLocaleString();
 const fmtK = (n: number) => (n >= 1_000_000 ? `${+(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${Math.round(n / 1000)}K` : String(n));
 const fmtPct = (p: number) => (p === 0 ? "0%" : p < 0.1 ? "<0.1%" : p < 10 ? `${p.toFixed(1)}%` : `${Math.round(p)}%`);
-
-/** 按“字”截断：用 Array.from 按字符切，中文、emoji 都算一个字 */
-const clip = (t: string, n: number) => {
-  const cs = Array.from(t);
-  return cs.length > n ? cs.slice(0, n).join("") + "…" : t;
-};

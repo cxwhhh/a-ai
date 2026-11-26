@@ -33,6 +33,7 @@ import * as route33 from "./routes/updates/[file]/route";
 import * as workspaceApps from "./routes/api/workspace-apps/route";
 import * as agentPlugins from "./routes/api/sessions/[id]/agent/plugins/route";
 import * as subagents from "./routes/api/sessions/[id]/agent/subagents/route";
+import * as storageManager from "./routes/api/storage/route";
 
 /** 现有 HTTP 入口使用显式注册表。新增路由在这里声明 URL 和实现。 */
 export const routes = new Router();
@@ -56,6 +57,7 @@ routes.register("/api/projects/:id/chats", route16);
 routes.register("/api/runs", route17);
 routes.register("/api/runs/:runId", route18);
 routes.register("/api/sandbox", route19);
+routes.register("/api/storage", storageManager);
 routes.register("/api/sessions", route20);
 routes.register("/api/sessions/:id", route21);
 routes.register("/api/sessions/:id/agent", route22);

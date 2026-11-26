@@ -1,4 +1,5 @@
 import { promises as fs } from "node:fs";
+import { setTimeout as delay } from "node:timers/promises";
 import path from "node:path";
 import { DATA_DIR } from "../../storage/src/db";
 import { resolvePath } from "../../workspace/src/access";
@@ -7,7 +8,7 @@ import { replaceWorkspaceFile } from "../../workspace/src/file-write";
 import type { Tool } from "../../tool-runtime/src/types";
 
 /**
- * 文件工具：只能在当前用户自己的“工作区”目录里读写（.data/users/<用户id>/workspace）。
+ * 文件工具使用执行入口传入的工作区。聊天会话分别传入自己的持久目录。
  * 这是 agent 安全的基本功 —— 沙箱（sandbox）：
  * （代码里的 turbopackIgnore 注释只是告诉打包器：这些路径是运行时才确定的，不要去追踪）
  * 模型给出的路径一律先 resolve，再检查是否还在工作区内，防止 ../../ 逃逸到系统文件或别的用户的目录。
@@ -50,7 +51,8 @@ export const listFiles: Tool<{ path?: string }> = {
     });
     const items = await Promise.all(
       entries
-        .filter((e) => !e.name.startsWith(".") && (!ctx.readPath || !e.isSymbolicLink()))
+        // 目录扫描只按当前目录中的条目取信息，避免 stat 跟到其它会话的链接目标。
+        .filter((e) => !e.name.startsWith(".") && (e.isDirectory() || e.isFile()))
         .map(async (e) => {
           const st = await fs.stat(/*turbopackIgnore: true*/ path.join(/*turbopackIgnore: true*/ dir, e.name));
           return {
@@ -210,11 +212,25 @@ export const editFile: Tool<{
     // 用 split/join 而不是 String.replace：replace 会把 new_string 里的 $& $1 当成特殊符号
     const next = replace_all ? text.split(oldS).join(newS) : text.slice(0, positions[0]) + newS + text.slice(positions[0] + oldS.length);
     const bytes = Buffer.from(next, "utf8");
-    ctx.signal?.throwIfAborted();
     // 右侧 Markdown 也可写入工作区。从读到提交之间出现了其他编辑，就让模型重读。
-    if (!replaceWorkspaceFile(full, original, bytes, () => {
-      if (inWorkspace) ctx.checkpointFileWrite?.(shown, hashFileBytes(original), hashFileBytes(bytes));
-    })) throw new Error(`文件已被更新：${shown}。请重新读取修改位置后再编辑`);
+    // Windows 同时预览时，文件或临时文件可能短暂被占用。重试同一份替换，每次都核对原字节。
+    let checkpointed = false;
+    for (let attempt = 0; ; attempt++) {
+      ctx.signal?.throwIfAborted();
+      try {
+        const replaced = replaceWorkspaceFile(full, original, bytes, () => {
+          if (inWorkspace && !checkpointed) ctx.checkpointFileWrite?.(shown, hashFileBytes(original), hashFileBytes(bytes));
+          checkpointed = true;
+        });
+        if (!replaced) throw new Error(`文件已被更新：${shown}。请重新读取修改位置后再编辑`);
+        break;
+      } catch (error) {
+        const cause = error as NodeJS.ErrnoException;
+        if (process.platform !== "win32" || attempt >= 3 || cause.syscall !== "rename" ||
+          !["EPERM", "EBUSY", "EACCES"].includes(cause.code ?? "")) throw error;
+        await delay(40 * (attempt + 1), undefined, { signal: ctx.signal });
+      }
+    }
 
     // 返回修改后那一段（前后各带 2 行），模型不用再 read_file 就能确认改对了
     const line = lineAt(next, positions[0]);
@@ -289,8 +305,10 @@ export const writeFile: Tool<{
   async run({ path: p, content }, ctx) {
     const { full, shown, inWorkspace } = resolvePath(ctx.workspace, p, "write");
     const bytes = Buffer.from(String(content ?? ""), "utf8");
+    let created: boolean | undefined;
     if (inWorkspace && ctx.checkpointFileWrite) {
       const beforeHash = await readFileHash(full, ctx.signal);
+      created = beforeHash === null;
       ctx.signal?.throwIfAborted();
       ctx.checkpointFileWrite(shown, beforeHash, hashFileBytes(bytes));
     }
@@ -300,7 +318,8 @@ export const writeFile: Tool<{
     await fs.writeFile(full, bytes);
     return { content: JSON.stringify({
       path: shown,
-      bytes: bytes.length
+      bytes: bytes.length,
+      created
     }) };
   },
 };

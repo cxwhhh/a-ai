@@ -12,15 +12,17 @@ import { AskCard, findAsk } from "./AskCard";
 import { ApprovalDock } from "./ApprovalDock";
 import { Loader3D } from "./Loader3D";
 import { IconPicker } from "./IconPicker";
-import { DotSpinner } from "./DotSpinner";
+import { RingSpinner } from "./RingSpinner";
 import { CoreLogo } from "./CoreLogo";
 import { IconButton } from "./base/buttons/icon-button";
-import { IArrowUp, IChevron, IClip, IFile, IFiles, IImage, IPanelLeft, IStop, IX } from "./Icons";
+import { IArrowUp, IChevron, IClock, IFile, IFiles, IImage, IPanelLeft, IPlus, IStop, IX } from "./Icons";
+import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupTextarea } from "./shadcn/input-group";
+import { Button } from "./shadcn/button";
 import { ACCEPT, isImage, joinAttachments, splitAttachments } from "../../../protocol/src/lib/attachments";
 import type { PendingAttachment } from "../../../protocol/src/lib/attachments";
 import { NameInput } from "./Sidebar";
 import "./ChatPane.css";
-import { FilesPeek } from "./OutputsCard";
+import { FilesPeek, TurnFileChanges } from "./OutputsCard";
 import { EditBubble, MessageActions } from "./MessageActions";
 import type { OutputItem, View } from "../../../protocol/src/lib/outputs";
 import type { ReactNode } from "react";
@@ -48,8 +50,9 @@ function toTurns(messages: StoredMessage[]): Turn[] {
 
 export function ChatPane(props: {
   title?: string;
-  embedded?: { icon: string; ended?: boolean; action?: ReactNode; close(): void };
+  embedded?: { icon: string; ended?: boolean; placeholder?: string; action?: ReactNode; close(): void };
   threadControl?: ReactNode;
+  workspaceTabControl?: ReactNode;
   multiAgent?: boolean;
   /** 当前对话所在项目的名字（不在项目里时为空） */
   projectName?: string;
@@ -75,8 +78,9 @@ export function ChatPane(props: {
   rightOpen: boolean;
   viewOpen: boolean;
   sendKey: "enter" | "mod-enter";
-  /** 输入框下方那一行（模型切换 + 上下文环形图），由 Workspace 传入 */
-  bar: ReactNode;
+  /** Workspace 提供主会话的模型菜单和输入框下方的上下文状态。 */
+  modelSelector?: ReactNode;
+  contextStatus?: ReactNode;
   modKey: string;
   onSend(): void;
   queue: AgentQueueItem[];
@@ -113,10 +117,13 @@ export function ChatPane(props: {
 }) {
   const { messages, streaming, draft, inputRef, modKey, home, conversationView, onConversationView } = props;
   const scroller = useRef<HTMLDivElement>(null);
+  const composerWrap = useRef<HTMLDivElement>(null);
+  const composerForm = useRef<HTMLFormElement>(null);
   const turns = useMemo(() => toTurns(messages), [messages]);
   const empty = turns.length === 0;
   const canViewTrace = !!props.sessionId && !props.loading && !props.embedded;
   const viewingTrace = conversationView !== "chat" && canViewTrace;
+  const overlayComposer = !empty && !viewingTrace;
   // 回答里点文件名 → 右侧打开。用 ref 拿最新的消息和产出物，函数本身保持不变，Markdown 的 memo 才有效
   const latest = useRef(props);
   latest.current = props;
@@ -143,6 +150,31 @@ export function ChatPane(props: {
     peekTimer.current = setTimeout(() => setPeek(false), 180);
   };
 
+  // 正文可以经过输入框两侧，滚动区在表单底边结束。只为盖住正文的部分预留滚动空间。
+  useLayoutEffect(() => {
+    const el = scroller.current;
+    const wrap = composerWrap.current;
+    const form = composerForm.current;
+    if (!overlayComposer || !el || !wrap || !form) return;
+    const reserveSpace = () => {
+      const wasAtEnd = el.scrollHeight - el.scrollTop - el.clientHeight <= 1;
+      const { top, bottom } = wrap.getBoundingClientRect();
+      const formBottom = form.getBoundingClientRect().bottom;
+      el.style.setProperty("--composer-overlap", `${formBottom - top}px`);
+      el.style.setProperty("--composer-footer-height", `${bottom - formBottom}px`);
+      if (wasAtEnd) el.scrollTop = el.scrollHeight;
+    };
+    reserveSpace();
+    const observer = new ResizeObserver(reserveSpace);
+    observer.observe(wrap, { box: "border-box" });
+    observer.observe(form, { box: "border-box" });
+    return () => {
+      observer.disconnect();
+      el.style.removeProperty("--composer-overlap");
+      el.style.removeProperty("--composer-footer-height");
+    };
+  }, [overlayComposer]);
+
   // 只在“发出新消息”或“打开另一个对话”时滚到底部一次；
   // 模型输出过程中页面固定不动，想看最新内容就自己往下滑，或点“回到底部”
   const userCount = messages.filter((m) => m.role === "user" && !m.feedback).length;
@@ -151,6 +183,16 @@ export function ChatPane(props: {
     const el = scroller.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [userCount, firstId]);
+
+  const wasStreaming = useRef(streaming);
+  useLayoutEffect(() => {
+    const el = scroller.current;
+    // 变更卡在收尾时才挂载。用户已经停在底部时，把新卡片带入视野。
+    if (wasStreaming.current && !streaming && atBottom && el?.querySelector(".turn:last-child .turn-files")) {
+      el.scrollTop = el.scrollHeight;
+    }
+    wasStreaming.current = streaming;
+  }, [atBottom, streaming]);
   // 内容变高（模型在输出、展开了过程）时也重新判断是否在底部，决定要不要显示“回到底部”
   useEffect(() => {
     const el = scroller.current;
@@ -164,15 +206,13 @@ export function ChatPane(props: {
   }, [empty, firstId, props.sessionId, viewingTrace]);
   const toBottom = () => scroller.current?.scrollTo({ top: scroller.current.scrollHeight, behavior: "smooth" });
 
-  // 输入框自适应高度。新对话页和对话中的输入框最小高度不同，所以从新对话切到对话中（或反过来）时也要重新算，
-  // 否则会留着新对话页那个较高的内联高度
-  const isEmpty = turns.length === 0;
+  // 主聊天优先按 CSS 随文字折行增高。子 Agent 和旧浏览器继续用原有的高度测量。
   useLayoutEffect(() => {
     const t = inputRef.current;
-    if (!t) return;
+    if (!t || getComputedStyle(t).getPropertyValue("field-sizing") === "content") return;
     t.style.height = "0px";
     t.style.height = Math.min(t.scrollHeight, 220) + "px";
-  }, [draft, inputRef, isEmpty]);
+  }, [draft, inputRef, empty]);
 
   const greeting = useGreeting();
 
@@ -184,12 +224,14 @@ export function ChatPane(props: {
   const canSend = !props.archived && !props.embedded?.ended && !uploading && !props.queueBusy && (!streaming || props.queueReady) && (!!draft.trim() || ready);
   const queuedHead = props.queue.find((item) => item.target === "next-turn");
   const awaitingAnswer = !streaming && !!findAsk(turns.at(-1)?.steps ?? []);
+  const showStop = streaming && !draft.trim() && !ready;
+  const sendLabel = props.embedded ? "发送给子 Agent" : streaming ? "排队发送" : "发送";
   // 草稿还没创建会话时也要有标题。项目首页由项目名称标识。
   const title = props.title || (home ? "" : "新对话");
   const Surface = props.embedded ? "section" : "main";
 
   return (
-    <Surface className={cx("chat", empty && !props.embedded && "is-empty", empty && !!home && "is-proj", props.loading && "loading", viewingTrace && "trace-open")}>
+    <Surface className={cx("chat", empty && !props.embedded && "is-empty", empty && !!home && "is-proj", props.loading && "loading", viewingTrace && "trace-open", overlayComposer && "composer-overlay")}>
       {props.loading && <div className="chat-loading" aria-hidden />}
       {props.embedded ? <header className="viewer-head">
         <IconPicker value={props.embedded.icon} size={16} />
@@ -245,6 +287,7 @@ export function ChatPane(props: {
             </span>
           )}
           {props.threadControl}
+          {props.workspaceTabControl}
           <div className="out-wrap" onMouseEnter={showPeek} onMouseLeave={hidePeek}>
             <button
               type="button"
@@ -323,10 +366,10 @@ export function ChatPane(props: {
                       <div className="msg user editing">
                         <EditBubble
                           initial={splitAttachments(t.user.content).text}
+                          disabled={streaming || !!props.archived}
                           onCancel={() => setEditing(null)}
                           onSubmit={(text) => {
-                            setEditing(null);
-                            // 编辑只改文字，原来的附件原样带上
+                            // 等服务端接受后再替换这条消息。失败时原编辑框仍在，附件也跟着原消息保留。
                             props.onResend(t.user!.id, joinAttachments(text, splitAttachments(t.user!.content).files));
                           }}
                         />
@@ -338,6 +381,7 @@ export function ChatPane(props: {
                     <div className="msg assistant">
                       {hasTrace && (
                         <Trace
+                          namesOnly={!!props.embedded}
                           steps={t.steps}
                           live={live}
                           running={props.running}
@@ -349,14 +393,15 @@ export function ChatPane(props: {
                       {answer && (
                         <div className="answer">
                           <Markdown text={answer} onOpenFile={openName} />
-                          {/* 回答还在往外吐字：末尾放一个稍大的点阵动画（18px，思维链里是 12px） */}
+                          {/* 回答仍在输出时，在末尾显示稍大的运行圆环。 */}
                           {live && (
                             <span className="answer-spinner">
-                              <DotSpinner size={18} label="正在输出" />
+                              <RingSpinner size={18} label="正在输出" />
                             </span>
                           )}
                         </div>
                       )}
+                      {!live && <TurnFileChanges steps={t.steps} artifacts={props.artifacts} onOpenView={props.onOpenView} />}
                       {answer && !live && (
                         <MessageActions
                           text={answer}
@@ -375,7 +420,7 @@ export function ChatPane(props: {
         )}
       </div>
 
-      <div className="composer-wrap">
+      <div className="composer-wrap" ref={composerWrap}>
         {!empty && !atBottom && (
           <button className="to-bottom" onClick={toBottom} title="回到底部">
             <IArrowUp width={14} height={14} />
@@ -391,27 +436,32 @@ export function ChatPane(props: {
         )}
         <ApprovalDock />
         {props.archived && <div className="error-bar" role="status">已归档。可以阅读历史，恢复后可继续发送。</div>}
-        {props.queue.length > 0 && (
+        {!props.embedded && props.queue.length > 0 && (
           <section className="chat-queue" aria-label="排队消息">
-            <div className="chat-queue-head">
-              <span>{awaitingAnswer ? "等待你回答，队列已暂停" : streaming ? "排队消息" : "队列已暂停"}</span>
-              {!streaming && !awaitingAnswer && !props.archived && queuedHead && (
-                <button type="button" disabled={props.queueBusy} onClick={() => props.onContinueQueue(queuedHead.id)}>继续队列</button>
-              )}
-            </div>
+            {!streaming && (
+              <div className="chat-queue-head">
+                <span role="status">{awaitingAnswer ? "等待你回答，队列已暂停" : "队列已暂停"}</span>
+                {!awaitingAnswer && !props.archived && queuedHead && (
+                  <Button className="chat-queue-action" disabled={props.queueBusy} onClick={() => props.onContinueQueue(queuedHead.id)}>继续队列</Button>
+                )}
+              </div>
+            )}
             <ol>
               {props.queue.map((item) => {
                 const { text, files } = splitAttachments(item.message);
                 const preview = [text.trim(), ...files.map((file) => file.split("/").at(-1))].filter(Boolean).join(" · ");
                 return (
                   <li key={item.id}>
+                    <IClock className="chat-queue-clock" width={15} height={15} />
                     <span className="chat-queue-text" title={preview}>{preview}</span>
-                    {item.target === "next-step" ? <span className="chat-queue-status">待引导</span> : (
+                    {item.target === "next-step" ? <span className="chat-queue-status">等待加入下一步</span> : (
                       <>
                         {streaming && (
-                          <button type="button" disabled={props.queueBusy || !props.queueReady} onClick={() => props.onSteer(item.id)} title="加入当前任务的下一步">引导</button>
+                          <Button className="chat-queue-action" disabled={props.queueBusy || !props.queueReady}
+                            onClick={() => props.onSteer(item.id)} title="加入当前任务的下一步">引导本轮</Button>
                         )}
-                        <button type="button" disabled={props.queueBusy || props.archived} onClick={() => props.onRemoveQueued(item.id)} aria-label="移除排队消息" title="移除排队消息"><IX width={13} height={13} /></button>
+                        <IconButton className="chat-queue-remove" icon={IX} size="small" disabled={props.queueBusy || props.archived}
+                          onClick={() => props.onRemoveQueued(item.id)} aria-label="移除排队消息" title="移除排队消息" />
                       </>
                     )}
                   </li>
@@ -421,14 +471,15 @@ export function ChatPane(props: {
           </section>
         )}
         <form
-          className={`composer ${streaming ? "busy" : ""} ${dragging ? "drag" : ""}`}
+          ref={composerForm}
+          className={cx("composer prompt-composer", streaming && "busy", dragging && "drag")}
           onSubmit={(e) => {
             e.preventDefault();
             if (canSend) props.onSend();
           }}
           // 文件直接拖进输入框也能上传
           onDragOver={(e) => {
-            if (!e.dataTransfer.types.includes("Files")) return;
+            if (props.embedded || !e.dataTransfer.types.includes("Files")) return;
             e.preventDefault();
             setDragging(true);
           }}
@@ -438,78 +489,76 @@ export function ChatPane(props: {
           onDrop={(e) => {
             if (!e.dataTransfer.files.length) return;
             e.preventDefault();
+            if (props.embedded) return;
             setDragging(false);
             props.onAttach([...e.dataTransfer.files]);
           }}
         >
-          {props.attachments.length > 0 && (
-            <div className="att-list">
-              {props.attachments.map((a) => (
-                <AttChip
-                  key={a.key}
-                  name={a.name}
-                  sub={a.error ? a.error : a.path ? fmtSize(a.size) : "上传中…"}
-                  state={a.error ? "err" : a.path ? "" : "up"}
-                  onRemove={() => props.onRemoveAttachment(a.key)}
-                />
-              ))}
-            </div>
-          )}
-          <textarea
-            ref={inputRef}
-            value={draft}
-            rows={1}
-            disabled={props.archived || props.embedded?.ended}
-            aria-label={props.embedded ? "给子 Agent 发消息" : undefined}
-            placeholder={props.embedded ? props.embedded.ended ? "任务已结束，可恢复后继续" : "给子 Agent 发消息…" : streaming ? "发送后排队，也可点「引导」加入当前任务" : "输入任务…"}
-            onChange={(e) => props.setDraft(e.target.value)}
-            // 截图直接粘贴：剪贴板里有文件时当附件上传，文字照常粘贴
-            onPaste={(e) => {
-              const files = [...e.clipboardData.files];
-              if (!files.length) return;
-              e.preventDefault();
-              props.onAttach(files);
-            }}
-            onKeyDown={(e) => {
-              if (e.key !== "Enter" || e.nativeEvent.isComposing) return;
-              // 发送方式由设置决定：Enter 发送，或 ⌘/Ctrl+Enter 发送
-              const send = props.sendKey === "enter" ? !e.shiftKey && !e.metaKey && !e.ctrlKey : e.metaKey || e.ctrlKey;
-              if (send) {
+          <InputGroup>
+            {props.attachments.length > 0 && (
+              <div className="att-list">
+                {props.attachments.map((a) => (
+                  <AttChip
+                    key={a.key}
+                    name={a.name}
+                    sub={a.error ? a.error : a.path ? fmtSize(a.size) : "上传中…"}
+                    state={a.error ? "err" : a.path ? "" : "up"}
+                    onRemove={() => props.onRemoveAttachment(a.key)}
+                  />
+                ))}
+              </div>
+            )}
+            <InputGroupTextarea
+              ref={inputRef}
+              value={draft}
+              rows={1}
+              disabled={props.archived || props.embedded?.ended}
+              aria-label={props.embedded ? "给子 Agent 发消息" : undefined}
+              placeholder={props.embedded ? props.embedded.placeholder ?? "给子 Agent 发消息…" : streaming ? "发送后排队，也可点「引导本轮」加入当前任务" : "输入任务…"}
+              onChange={(e) => props.setDraft(e.target.value)}
+              // 截图直接粘贴：剪贴板里有文件时当附件上传，文字照常粘贴
+              onPaste={(e) => {
+                const files = [...e.clipboardData.files];
+                if (props.embedded || !files.length) return;
                 e.preventDefault();
-                if (canSend) props.onSend();
-              }
-            }}
-          />
-          {/* 沿用原停止条件。发送箭头只在没有输入文字时出现，文字仍由原快捷键发送。 */}
-          {streaming && !draft.trim() && !ready ? (
-            <IconButton size="small" icon={IStop} className="composer-stop" onClick={props.onStop}
-              aria-label={props.embedded ? "停止子 Agent" : "停止生成"} title={props.embedded ? "停止子 Agent" : "停止 Esc"} />
-          ) : !draft && (
-            <button type="submit" className="send" disabled={!canSend} aria-label={props.embedded ? "发送给子 Agent" : streaming ? "排队发送" : "发送"}
-              title={props.embedded ? "发送给子 Agent" : uploading ? "附件上传中…" : streaming ? "排队发送" : "发送"}>
-              <IArrowUp />
-            </button>
-          )}
+                props.onAttach(files);
+              }}
+              onKeyDown={(e) => {
+                if (e.key !== "Enter" || e.nativeEvent.isComposing) return;
+                // 发送方式由设置决定：Enter 发送，或 ⌘/Ctrl+Enter 发送
+                const send = props.sendKey === "enter" ? !e.shiftKey && !e.metaKey && !e.ctrlKey : e.metaKey || e.ctrlKey;
+                if (send) {
+                  e.preventDefault();
+                  if (canSend) props.onSend();
+                }
+              }}
+            />
+              <InputGroupAddon className="prompt-toolbar">
+                {!props.embedded && <>
+                  <InputGroupButton className="prompt-circle prompt-attach" disabled={props.archived} onClick={() => fileRef.current?.click()}
+                    aria-label="上传文件" title="上传文件：PDF、图片、Word、Excel、PPT…">
+                    <IPlus width={14} height={14} aria-hidden />
+                  </InputGroupButton>
+                  <input ref={fileRef} type="file" multiple accept={ACCEPT} hidden onChange={(e) => {
+                    if (e.target.files?.length) props.onAttach([...e.target.files]);
+                    e.target.value = ""; // 清空后才能再次选择同一个文件
+                  }} />
+                </>}
+                {props.modelSelector}
+                {showStop ? (
+                  <InputGroupButton className="prompt-circle prompt-send composer-stop" onClick={props.onStop} aria-label={props.embedded ? "停止子 Agent" : "停止生成"} title={props.embedded ? "停止子 Agent" : "停止 Esc"}>
+                    <IStop width={18} height={18} aria-hidden />
+                  </InputGroupButton>
+                ) : (
+                  <InputGroupButton type="submit" className="prompt-circle prompt-send" disabled={!canSend} aria-label={sendLabel}
+                    title={uploading ? "附件上传中…" : sendLabel}>
+                    <IArrowUp width={18} height={18} aria-hidden />
+                  </InputGroupButton>
+                )}
+              </InputGroupAddon>
+          </InputGroup>
         </form>
-        {/* 输入框下面一行：左边上传文件，右边上下文占用和模型（props.bar）。上传按钮不放进输入框里，输入框只管打字和发送 */}
-        {!props.embedded && <div className="under-row">
-          <button type="button" className="cbar-btn att-under" disabled={props.archived} onClick={() => fileRef.current?.click()} title="上传文件：PDF、图片、Word、Excel、PPT…">
-            <IClip width={14} height={14} />
-            <span>上传文件</span>
-          </button>
-          <input
-            ref={fileRef}
-            type="file"
-            multiple
-            accept={ACCEPT}
-            hidden
-            onChange={(e) => {
-              if (e.target.files?.length) props.onAttach([...e.target.files]);
-              e.target.value = ""; // 清空，同一个文件删掉后还能再选
-            }}
-          />
-          {props.bar}
-        </div>}
+        {props.contextStatus && <div className="prompt-context">{props.contextStatus}</div>}
         {empty && home?.chats}
       </div>
     </Surface>

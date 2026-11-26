@@ -4,7 +4,7 @@
 
 /* 右侧一列：只有面板时宽 320；面板 + 文件时 = 面板 + 间距 + 文件宽度（--canvas-w），
    但最多占到窗口减去左栏和对话区最小宽度，文件区自动变窄 */
-.right.panel-only { width: 320px; }
+.right.panel-only { width: min(320px, calc(100vw - 16px)); }
 .right.with-panel:not(.panel-only) { width: calc(var(--canvas-w) + 310px); max-width: calc(100% - 640px); gap: 10px; }
 .right .panel {
   position: relative; top: auto; right: auto; z-index: auto;
@@ -14,8 +14,48 @@
   box-shadow: inset 0 1px 0 var(--edge-hi), 0 1px 2px rgba(0, 0, 0, 0.04), 0 18px 48px -18px rgba(0, 0, 0, 0.28);
 }
 .right.panel-only .panel { width: 100%; }
+.right .panel[hidden] { display: none; }
 .right .viewer { min-width: 280px; }
 .panel.oc { padding: 6px 6px 4px; }
+
+/* 变更概览沿用 A.ai 的边框、表面和差异配色，文件名与行数分别对齐。 */
+.turn-files {
+  min-width: 0; overflow: hidden;
+  border: 1px solid var(--edge); border-radius: 12px; background: var(--surface);
+  font-size: 13px; color: var(--fg);
+}
+.turn-files-heading {
+  display: flex; align-items: center; gap: 10px; padding: 11px 14px;
+  background: var(--surface-2); border-bottom: 1px solid var(--edge);
+}
+.turn-files-mark {
+  display: grid; place-items: center; flex: none; width: 33px; height: 33px;
+  background: var(--soft); color: var(--fg-2); border-radius: 8px;
+}
+.turn-files-summary { flex: 1; min-width: 0; display: grid; justify-items: start; gap: 2px; }
+.turn-files-summary strong { font-weight: 560; }
+.turn-files-summary small { color: var(--fg-2); }
+.turn-files-review {
+  flex: none; border: 1px solid var(--edge); border-radius: 7px;
+  padding: 5px 9px; font-size: 12px; background: var(--surface);
+}
+.turn-files-list { margin: 0; padding: 0; list-style: none; }
+.turn-files-entry {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; min-height: 34px;
+  padding: 6px 14px; text-align: start;
+}
+.turn-files-list li + li { border-top: 1px solid var(--edge); }
+.turn-files-path { flex: 1; min-width: 0; }
+.turn-files-path > span, .turn-files-unmeasured { color: var(--fg-2); }
+.turn-files-count { flex: none; display: inline-flex; gap: 6px; font-variant-numeric: tabular-nums; }
+.turn-files-toggle {
+  display: inline-flex; align-items: center; gap: 5px; margin: 4px 8px;
+  padding: 5px 6px; border-radius: 6px; color: var(--fg-2);
+}
+.turn-files-toggle svg { transform: rotate(90deg); }
+.turn-files-toggle[aria-expanded="true"] svg { transform: rotate(-90deg); }
+.turn-files :is(.turn-files-entry, .turn-files-toggle, .turn-files-review):hover { background: var(--hover); }
+.turn-files :is(.turn-files-entry, .turn-files-toggle, .turn-files-review):focus-visible { outline-offset: -2px; }
 
 /* 顶部：状态点 + 状态 + 摘要 + 关闭 */
 .oc-head { display: flex; align-items: center; gap: 10px; padding: 6px 2px 8px 10px; }
@@ -111,6 +151,8 @@
 .oc-thumb-pv.code span { font: 7px/1.5 var(--mono); white-space: pre; }
 /* 内容底部淡出，像 Claude 那样露出半截 */
 .oc-thumb-pv::after { content: ""; position: absolute; inset: auto 0 0 0; height: 30%; background: linear-gradient(transparent, #fff); }
+.oc-thumb-pv.has-web-thumbnail { padding: 0; }
+.oc-thumb-pv.has-web-thumbnail::after { content: none; }
 .oc-thumb-pv img { width: 100%; height: 100%; object-fit: contain; }
 .oc-thumb-ico { display: grid; place-items: center; height: 100%; color: #a1a1aa; }
 .oc-thumb-ico svg { width: 22px; height: 22px; }

@@ -2,14 +2,17 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../lib/client";
 import { useDebouncedSave } from "../lib/debounced-save";
-import { DEFAULT_SETTINGS, modelOptions, reasoningOptions, type Settings, type UsageStats } from "../../../protocol/src/lib/settings";
+import { currentOption, DEFAULT_SETTINGS, modelOptions, reasoningOptions, type Settings, type UsageStats } from "../../../protocol/src/lib/settings";
 import type { ToolInfo, UserMemory } from "../../../protocol/src/lib/shared";
 import { Avatar, type SettingsTab } from "./UserMenu";
 import { Connections } from "./Connections";
 import { SandboxPane } from "./SandboxPane";
 import { SkillsPane } from "./SkillsPane";
-import { IChart, IChip, IGear, IInfo, IKeyboard, ISpark, ITerminal, IMemory, IX } from "./Icons";
+import { StoragePane } from "./StoragePane";
+import { IChart, IChevron, IChip, IFolder, IGear, IInfo, IKeyboard, ISpark, ITerminal, IMemory, IX } from "./Icons";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuTrigger } from "./shadcn/dropdown-menu";
 import "./ChartContrast.css";
+import "./SettingsModel.css";
 
 const TABS: { id: SettingsTab; label: string; icon: React.ReactNode }[] = [
   { id: "general", label: "通用", icon: <IGear /> },
@@ -18,9 +21,11 @@ const TABS: { id: SettingsTab; label: string; icon: React.ReactNode }[] = [
   { id: "memory", label: "记忆", icon: <IMemory /> },
   { id: "skills", label: "技能", icon: <ISpark /> },
   { id: "usage", label: "用量", icon: <IChart /> },
+  { id: "storage", label: "存储管理", icon: <IFolder /> },
   { id: "keys", label: "快捷键", icon: <IKeyboard /> },
   { id: "about", label: "关于", icon: <IInfo /> },
 ];
+const EFFORT_LABEL: Record<Settings["reasoningEffort"], string> = { default: "默认", low: "低", medium: "中", high: "高", xhigh: "极高", max: "最高" };
 
 /**
  * 设置弹窗：左侧标签页，右侧内容（内容区最宽 680px，居中，像一页文档）。
@@ -41,6 +46,7 @@ export function SettingsModal(props: {
   const [saved, setSaved] = useState<"idle" | "saving" | "saved">("idle");
   const [defaultPrompt, setDefaultPrompt] = useState("");
   const flashTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const modalLayer = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     api.settings().then((r) => setDefaultPrompt(r.defaultSystemPrompt)).catch(() => {});
@@ -49,6 +55,8 @@ export function SettingsModal(props: {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
+        // 菜单先处理 Esc，下一次 Esc 再关闭设置。
+        if (e.target instanceof Element && e.target.closest(".settings-choice-menu, .settings-choice-trigger[aria-expanded='true']")) return;
         e.stopPropagation();
         props.onClose();
       }
@@ -77,7 +85,7 @@ export function SettingsModal(props: {
   };
 
   return (
-    <div className="modal-mask" onMouseDown={(e) => e.target === e.currentTarget && props.onClose()}>
+    <div className="modal-mask" ref={modalLayer} onMouseDown={(e) => e.target === e.currentTarget && props.onClose()}>
       <div className="modal" role="dialog" aria-label="设置">
         <nav className="modal-nav">
           <div className="modal-nav-title">设置</div>
@@ -209,26 +217,7 @@ export function SettingsModal(props: {
               {props.tab === "model" && (
                 <>
                   <Section title="新对话默认模型">
-                    <Row label="默认模型" hint="每个对话可以在输入框下方单独选择">
-                      <select className="set-input select" value={s.currentModel} onChange={(e) => update({ currentModel: e.target.value, reasoningEffort: "default" })}>
-                        {Object.entries(groupBy(modelOptions(s), (o) => o.group)).map(([g, opts]) => (
-                          <optgroup key={g} label={g}>
-                            {opts.map((o) => (
-                              <option key={o.value} value={o.value}>
-                                {o.label}
-                              </option>
-                            ))}
-                          </optgroup>
-                        ))}
-                      </select>
-                    </Row>
-                    {reasoningOptions(s, s.currentModel).length > 1 && (
-                      <Row label="默认思考强度">
-                        <select className="set-input select" value={s.reasoningEffort} onChange={(e) => update({ reasoningEffort: e.target.value as Settings["reasoningEffort"] })}>
-                          {reasoningOptions(s, s.currentModel).map((effort) => <option key={effort} value={effort}>{{ default: "默认", low: "低", medium: "中", high: "高", xhigh: "极高", max: "最高" }[effort]}</option>)}
-                        </select>
-                      </Row>
-                    )}
+                    <DefaultModelRows settings={s} update={update} portalContainer={modalLayer} />
                   </Section>
 
                   <Section title="模型服务" hint="接入 Claude、OpenAI、DeepSeek、通义千问、Ollama 以及任意 OpenAI 兼容服务。点模型名可设为新对话的默认模型。">
@@ -293,6 +282,8 @@ export function SettingsModal(props: {
                   </Section>
                 </>
               )}
+
+              {props.tab === "storage" && <StoragePane />}
 
               {props.tab === "memory" && (
                 <MemoryPane
@@ -617,8 +608,72 @@ function Stepper(props: { value: number; min: number; max: number; onChange(v: n
   );
 }
 
-const groupBy = <T,>(xs: T[], key: (x: T) => string) =>
-  xs.reduce<Record<string, T[]>>((acc, x) => ((acc[key(x)] ??= []).push(x), acc), {});
+type SettingsMenuPortal = React.ComponentProps<typeof DropdownMenuContent>["portalContainer"];
+
+function DefaultModelRows({ settings, update, portalContainer }: {
+  settings: Settings;
+  update(patch: Partial<Settings>): void;
+  portalContainer: SettingsMenuPortal;
+}) {
+  const groups = new Map<string, { value: string; label: string; detail?: string }[]>();
+  for (const model of modelOptions(settings)) {
+    const options = groups.get(model.group) ?? [];
+    options.push({ value: model.value, label: model.label, detail: model.modelId !== model.label ? model.modelId : undefined });
+    groups.set(model.group, options);
+  }
+  const efforts = reasoningOptions(settings, settings.currentModel);
+  const selectedModel = currentOption(settings);
+  return (
+    <>
+      <Row label="默认模型" hint="可以在聊天输入框中单独切换模型">
+        <SettingsChoice name="默认模型" value={settings.currentModel}
+          text={selectedModel.value === settings.currentModel ? selectedModel.label : "模型不可用"}
+          groups={[...groups].map(([label, options]) => ({ label, options }))} portalContainer={portalContainer}
+          onChange={(currentModel) => update({ currentModel, reasoningEffort: "default" })} />
+      </Row>
+      {efforts.length > 1 && <Row label="默认思考强度">
+        <SettingsChoice name="默认思考强度" value={settings.reasoningEffort}
+          text={efforts.includes(settings.reasoningEffort) ? EFFORT_LABEL[settings.reasoningEffort] : "不可用"}
+          groups={[{ options: efforts.map((value) => ({ value, label: EFFORT_LABEL[value] })) }]}
+          portalContainer={portalContainer} onChange={(value) => {
+            const reasoningEffort = efforts.find((effort) => effort === value);
+            if (reasoningEffort) update({ reasoningEffort });
+          }} />
+      </Row>}
+    </>
+  );
+}
+
+/** 设置中的菜单共享聊天菜单样式，挂在弹窗遮罩内可避开内容区的裁剪。 */
+function SettingsChoice({ name, value, text, groups, onChange, portalContainer }: {
+  name: string;
+  value: string;
+  text: string;
+  groups: { label?: string; options: { value: string; label: string; detail?: string }[] }[];
+  onChange(value: string): void;
+  portalContainer: SettingsMenuPortal;
+}) {
+  return (
+    <DropdownMenu modal={false}>
+      <DropdownMenuTrigger className="set-input settings-choice-trigger" aria-label={`${name} · ${text}`} title={text}>
+        <span className="ellipsis">{text}</span><IChevron width={14} height={14} aria-hidden />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent className="settings-choice-menu" align="end" sideOffset={6} aria-label={name} portalContainer={portalContainer}>
+        <DropdownMenuRadioGroup value={value} onValueChange={(next) => { if (next !== value) onChange(next); }}>
+          {groups.map(({ label, options }) => <DropdownMenuGroup key={label} className="prompt-menu-group">
+            {label && <DropdownMenuLabel className="prompt-menu-label">{label}</DropdownMenuLabel>}
+            {options.map((option) => <DropdownMenuRadioItem key={option.value} value={option.value} className="prompt-menu-item" closeOnClick>
+              <span className="settings-choice-item-text">
+                <span>{option.label}</span>
+                {option.detail && <small>{option.detail}</small>}
+              </span>
+            </DropdownMenuRadioItem>)}
+          </DropdownMenuGroup>)}
+        </DropdownMenuRadioGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
 /** 工具说明只取第一句，完整的放在鼠标悬停提示里 */
 const firstSentence = (t: string) => t.split(/(?<=[。.!！?？])\s*/)[0];
 

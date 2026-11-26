@@ -1,3 +1,5 @@
+@reference "../styles/boardui/index.css";
+
 /* 对话区的界面细节（2026-10-24）。单独放一个文件，不改 globals.css，避免和其他改动冲突。
    这个文件在 globals.css 之后加载，选择器也多加了一层，所以能覆盖 globals.css 里的旧写法。 */
 
@@ -19,36 +21,37 @@
 /* 新对话的输入框隐藏原生滚动条。长草稿达到高度上限后仍能滚动编辑。 */
 .chat.is-empty .composer textarea { scrollbar-width: none; }
 
-/* 模型与推理等级共用原弹层。列表独立滚动，搜索框和等级标题留在顶部。 */
-.cbar .model-pop {
-  display: flex; flex-direction: column; overflow: hidden;
-  width: min(280px, calc(100vw - 40px)); min-width: 0; max-height: min(50dvh, 340px);
-}
-.model-pop .model-pop-summary, .model-pop .model-pop-option { min-height: 38px; }
-.model-pop .model-pop-summary > .ellipsis { text-align: right; font-size: inherit; }
-.model-pop-summary > :first-child, .model-pop-summary > svg, .model-pop .pop-check { flex: none; }
-.model-pop .model-pop-option[aria-pressed="true"] { background: var(--hover); color: var(--fg); }
-.model-pop-head { display: flex; align-items: center; gap: 6px; padding: 0 4px 6px; font-size: 12px; color: var(--fg-2); }
-.model-pop-head .icon-btn { width: 26px; height: 26px; flex: none; }
-.model-pop-head .icon-btn svg { transform: rotate(180deg); }
-.model-pop-head .picker-search::placeholder { color: var(--fg-3); }
-.model-pop-body { min-height: 0; overflow-y: auto; }
-.model-pop-agent-mode .switch { margin-inline-start: auto; flex-shrink: 0; }
 .subagent-chat-view .chat-scroll { min-height: 0; }
 .subagent-chat-view .thread { max-width: 100%; }
 .subagent-chat-view .composer-wrap { padding-bottom: 14px; }
 
-/* 排队内容与已写入的对话分开显示；引导期间显示状态，避免重复提交。 */
-.chat-queue { margin: 0 0 8px; padding: 6px 10px; border: 1px solid var(--edge); border-radius: 10px; background: var(--surface); font-size: 12px; }
-.chat-queue-head, .chat-queue li { display: flex; align-items: center; gap: 8px; min-height: 28px; }
-.chat-queue-head { color: var(--fg-3); justify-content: space-between; }
-.chat-queue ol { margin: 0; padding: 0; list-style: none; max-height: 132px; overflow: auto; }
-.chat-queue li { border-top: 1px solid var(--edge); }
-.chat-queue-text { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.chat-queue-status { color: var(--fg-3); flex-shrink: 0; }
-.chat-queue button { display: inline-flex; align-items: center; flex-shrink: 0; padding: 4px 6px; color: var(--fg-2); border-radius: 5px; }
-.chat-queue button:hover:not(:disabled) { background: var(--hover); color: var(--fg); }
-.chat-queue button:disabled { opacity: 0.4; }
+/* 排队预览贴在输入框上沿，共用外轮廓，只在暂停时显示需要处理的状态。 */
+.chat-queue {
+  padding: 4px 8px 4px 12px; border: 1px solid var(--edge); border-bottom: 0;
+  border-radius: 22px 22px 0 0;
+  background: color-mix(in srgb, var(--surface), var(--color-background-secondary-default) 62%);
+}
+.chat-queue-head, .chat-queue li { display: flex; align-items: center; gap: 8px; min-height: 36px; padding-inline: 4px; }
+.chat-queue-head, .chat-queue-status { @apply text-caption-1-regular; }
+.chat-queue-head { flex-wrap: wrap; justify-content: space-between; color: var(--color-text-secondary); }
+.chat-queue ol { margin: 0; padding: 0; list-style: none; max-height: 144px; overflow: auto; overscroll-behavior: contain; }
+.chat-queue-clock, .chat-queue-status { flex: none; color: var(--color-text-secondary); }
+.chat-queue-text {
+  @apply text-body-regular;
+  flex: 1; min-width: 0; color: var(--color-text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.chat-queue .chat-queue-action, .chat-queue .chat-queue-remove {
+  flex: none; display: inline-flex; align-items: center; justify-content: center; min-height: 32px;
+  border: 0; border-radius: 8px; background: transparent; color: var(--color-text-secondary); box-shadow: none;
+}
+.chat-queue .chat-queue-action { @apply text-caption-1-medium; padding-inline: 8px; white-space: nowrap; }
+.chat-queue .chat-queue-action:hover:not(:disabled), .chat-queue .chat-queue-remove:hover:not(:disabled) {
+  background: var(--color-background-secondary-hover); color: var(--color-text-primary);
+}
+.chat-queue .chat-queue-action:focus-visible, .chat-queue .chat-queue-remove:focus-visible {
+  outline: 2px solid var(--color-border-focus-ring); outline-offset: -2px; box-shadow: none;
+}
+.chat-queue button:disabled { opacity: 0.5; }
 
 /* 回答里的 ---：不画线，只留一段空白；在开头或结尾时直接不显示 */
 .answer .md hr { border: 0; height: 0; margin: 14px 0; }
@@ -106,19 +109,124 @@
   .thread, .chat-loading::after { animation: none; }
 }
 
-/* ===== 输入框（2026-10-28 改）=====
-   框里只有：附件卡片（有的话占满第一行）+ 输入文字 + 右边的发送 / 停止，文字和按钮上下居中。
-   上传按钮挪到框下面那一行（.under-row），不放在框里 */
+/* 子 Agent 使用同一聊天面板里的紧凑输入框。 */
 .composer-wrap .composer { flex-wrap: wrap; align-items: center; gap: 4px 8px; padding: 8px 8px 8px 14px; }
 .composer-wrap .composer textarea { flex: 1 1 0; padding: 4px 0; min-height: 26px; }
-.chat.is-empty .composer-wrap .composer { padding: 14px 12px 14px 20px; }
-.chat.is-empty .composer-wrap .composer textarea { min-height: 0; padding: 6px 0; }
-/* 输入框下面那一行：左边“上传文件”，右边上下文和模型（.cbar 自带 spacer 把它们推到右边） */
-.under-row { display: flex; align-items: center; margin-top: 6px; padding: 0 4px; }
-.under-row .cbar { flex: 1; min-width: 0; margin-top: 0; padding: 0; }
-.att-under { margin-left: -4px; }
+
+/* 右侧优先占用两边留白。中栏小于目标时，正文和输入框才随可用空间一起收窄。 */
+main.chat > .chat-scroll > .thread { max-width: var(--chat-thread-target); }
+main.chat > .composer-wrap:has(> .prompt-composer) { max-width: min(728px, var(--chat-thread-target)); }
+
+/* 正文和输入区叠在同一行。只让卡片和按钮接收点击，两侧留白还能滚动和选中文字。 */
+.chat.composer-overlay { display: grid; grid-template: auto minmax(0, 1fr) / minmax(0, 1fr); }
+.composer-overlay > .chat-scroll, .composer-overlay > .composer-wrap { grid-area: 2 / 1; }
+.composer-overlay > .chat-scroll {
+  /* 输入框下方的上下文指示器占独立空间，滚动区只延伸到表单底边。 */
+  margin-bottom: var(--composer-footer-height, 0px);
+  scroll-padding-bottom: var(--composer-overlap, 0px);
+}
+.composer-overlay > .chat-scroll > .thread { padding-bottom: calc(40px + var(--composer-overlap, 0px)); }
+.composer-overlay > .composer-wrap { align-self: end; z-index: 2; pointer-events: none; }
+.composer-overlay > .composer-wrap > :not(.prompt-context),
+.composer-overlay > .composer-wrap > .prompt-context > * { pointer-events: auto; }
+
+/* 主聊天把输入和工具栏放在同一块圆角底上，菜单通过 Portal 避开滚动区的裁剪。 */
+.chat .composer-wrap .prompt-composer {
+  display: block; padding: 11px; border: 1px solid var(--edge); border-radius: 22px;
+  background: var(--surface);
+  box-shadow: inset 0 1px 0 var(--edge-hi), var(--shadow-card);
+}
+.chat .composer-wrap .prompt-composer:focus-within:not(.drag) { border-color: color-mix(in srgb, var(--fg) 7%, var(--edge)); }
+.chat .composer-wrap .chat-queue + .prompt-composer {
+  border-radius: 0 0 22px 22px;
+  box-shadow: 0 5px 10px -8px var(--edge);
+}
+.chat .composer-wrap .chat-queue + .prompt-composer:not(.drag) { border-top-color: var(--color-separator-border); }
+.prompt-composer [data-slot="input-group"] { display: grid; min-width: 0; gap: 4px; }
+.chat .composer-wrap .prompt-composer textarea {
+  display: block; width: 100%; min-width: 0; min-height: 1.5lh; padding: 4px 3px;
+  field-sizing: content;
+  color: var(--fg); font-size: var(--chat-fs); line-height: 1.55;
+}
+.chat .composer-wrap .prompt-composer textarea::placeholder { color: var(--fg-3); }
+.answer-spinner { display: flex; margin-top: 10px; }
+.prompt-toolbar, .prompt-model-controls { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.prompt-model-controls { margin-inline-start: auto; gap: 2px; }
+.prompt-circle {
+  display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+  height: 34px; padding: 0 12px; border: 1px solid var(--edge); border-radius: 999px;
+  background: var(--surface); color: var(--fg-2); font-size: 13px; line-height: 1; white-space: nowrap;
+}
+.prompt-circle { flex: none; width: 34px; padding: 0; }
+.prompt-attach:hover:not(:disabled) { background: var(--hover); color: var(--fg); }
+.prompt-choice:focus-visible, .prompt-circle:focus-visible { outline: 2px solid var(--color-border-focus-ring); outline-offset: 1px; }
+.prompt-choice {
+  display: inline-flex; align-items: center; justify-content: center; min-width: 32px; min-height: 32px; padding: 0 4px;
+  border: 0; border-radius: 6px; background: transparent; color: var(--fg); font-size: 12px; white-space: nowrap;
+}
+.prompt-choice:hover, .prompt-choice[data-popup-open] { background: var(--hover); }
+.prompt-model-label { min-width: 0; white-space: normal; overflow-wrap: anywhere; text-align: start; }
+.prompt-effort-trigger { flex: none; color: var(--fg-3); }
+.prompt-effort-trigger:hover, .prompt-effort-trigger[data-popup-open] { color: var(--fg-2); }
+.prompt-toolbar .prompt-send {
+  width: 34px; height: 34px; border: 0; background: var(--accent); color: var(--accent-fg);
+}
+.prompt-toolbar .prompt-send:disabled { background: var(--fg-3); color: var(--surface); cursor: default; }
+.prompt-attach:disabled { opacity: 0.45; cursor: default; }
+.prompt-context { display: flex; justify-content: flex-end; margin-top: 3px; }
+.prompt-context .ring-btn { background: transparent; border-color: transparent; }
+
+.prompt-menu-positioner { z-index: 45; }
+.prompt-menu {
+  width: min(208px, calc(100vw - 20px)); max-height: min(400px, var(--available-height, 400px));
+  padding: 5px 0; overflow: auto; overscroll-behavior: contain; outline: none;
+  border: 1px solid var(--edge); border-radius: 18px;
+  background: var(--surface); color: var(--fg); box-shadow: var(--shadow-card);
+}
+.prompt-menu-group { padding: 3px 5px; }
+.prompt-menu-effort { width: 106px; }
+.prompt-menu-group + .prompt-menu-group { border-top: 1px solid var(--edge); }
+.prompt-menu-label, .prompt-menu-note { padding: 5px 8px; color: var(--fg-3); font-size: 12px; }
+.prompt-menu-item {
+  display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 33px;
+  padding: 5px 8px; border-radius: 9px; font-size: 14px; cursor: pointer; outline: none;
+}
+.prompt-menu-item[data-highlighted] { background: var(--hover); }
+.prompt-menu-item[data-disabled] { opacity: 0.45; cursor: default; }
+.prompt-menu-check { flex: none; margin-inline-start: auto; }
+.prompt-menu-separator { margin: 2px 0; border: 0; border-top: 1px solid var(--edge); }
+.prompt-menu-secondary { margin: 0 5px; min-height: 28px; color: var(--fg-2); font-size: 12px; }
+.prompt-model-switch {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  margin-top: 4px; padding: 8px 13px 5px; border-top: 1px solid var(--edge); color: var(--fg-2); font-size: 12px;
+}
+.prompt-model-switch .shadcn-switch {
+  display: inline-flex; align-items: center; flex: none; width: 36px; height: 20px; padding: 3px;
+  border: 0; border-radius: 999px; background: color-mix(in srgb, var(--fg) 18%, var(--surface));
+  cursor: pointer; transition: background-color 0.18s ease;
+}
+.prompt-model-switch .shadcn-switch[data-checked] { background: color-mix(in srgb, var(--accent) 78%, var(--surface)); }
+.prompt-model-switch .shadcn-switch[data-disabled] { opacity: 0.45; cursor: default; }
+.prompt-model-switch .shadcn-switch:focus-visible { outline: 0; box-shadow: 0 0 0 3px color-mix(in srgb, var(--fg-2) 33%, transparent); }
+.prompt-model-switch [data-slot="switch-thumb"] {
+  width: 14px; height: 14px; flex: none; border-radius: 50%; background: var(--surface); box-shadow: var(--shadow-card);
+  transition: transform 0.18s ease;
+}
+.prompt-model-switch [data-slot="switch-thumb"][data-checked] { transform: translateX(16px); background: var(--accent-fg); }
+@media (prefers-reduced-motion: reduce) {
+  .prompt-model-switch .shadcn-switch, .prompt-model-switch [data-slot="switch-thumb"] { transition: none; }
+}
+.prompt-menu-search {
+  display: block; width: calc(100% - 16px); margin: 3px 8px; padding: 5px 8px;
+  border: 1px solid var(--edge); border-radius: 8px; background: var(--soft); color: var(--fg); font: inherit;
+}
+.prompt-menu-search-collapsed { position: absolute; width: 1px; height: 1px; margin: 0; padding: 0; clip-path: inset(50%); }
+@media (max-width: 480px) {
+  .prompt-toolbar { gap: 5px; }
+}
 /* 文件拖到输入框上方时：边框变成虚线，提示可以松手 */
 .composer-wrap .composer.drag { border-style: dashed; border-color: var(--fg-3); background: color-mix(in srgb, var(--soft) 60%, var(--surface)); }
+.chat .composer-wrap .prompt-composer.drag { background: var(--surface); }
 
 /* 附件卡片：输入框里（可删）和已发消息里（可点开）共用 */
 .att-list { display: flex; flex-wrap: wrap; gap: 6px; padding: 4px 6px 2px 0; flex-basis: 100%; }

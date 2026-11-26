@@ -1,0 +1,92 @@
+.subagent-chat-view .chat {
+  min-height: 0;
+}
+
+.subagent-chat-view .prompt-toolbar {
+  justify-content: flex-end;
+}
+
+.subagent-output-dialog[open] {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  position: fixed;
+  inset: 0;
+  box-sizing: border-box;
+  width: min(1440px, calc(100vw - 48px));
+  height: calc(100dvh - 48px);
+  max-width: none;
+  max-height: none;
+  margin: auto;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--edge);
+  border-radius: 14px;
+  background: var(--surface);
+  color: var(--fg);
+}
+
+.subagent-output-dialog::backdrop {
+  background: color-mix(in srgb, var(--fg) 30%, transparent);
+}
+
+.subagent-output-dialog > .viewer {
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  animation: none;
+}
+
+.subagent-output-dialog > .subagent-chat-view {
+  border-inline-start: 1px solid var(--edge);
+}
+
+.subagent-output-dialog .viewer-head {
+  min-height: 48px;
+  height: 48px;
+  padding-block: 0;
+}
+
+.subagent-output-dialog .subagent-output-split {
+  display: grid;
+  grid-template-rows: repeat(2, minmax(0, 1fr));
+  overflow: hidden;
+}
+
+.subagent-output-split > section {
+  min-height: 0;
+  overflow: auto;
+}
+
+.subagent-output-split > section + section {
+  border-top: 1px solid var(--edge);
+}
+
+.subagent-output-label {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 6px 14px;
+  border-bottom: 1px solid var(--edge);
+  background: var(--surface-2);
+  color: var(--fg-2);
+  font-size: 12px;
+}
+
+.subagent-output-split .frame:not(.svg-inline) {
+  height: calc(100% - 30px);
+}
+
+@media (max-width: 760px) {
+  .subagent-output-dialog[open] {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 42fr) minmax(0, 58fr);
+    width: calc(100vw - 16px);
+    height: calc(100dvh - 16px);
+  }
+
+  .subagent-output-dialog > .subagent-chat-view {
+    border-inline-start: 0;
+    border-top: 1px solid var(--edge);
+  }
+}

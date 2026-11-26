@@ -4,7 +4,11 @@ import ts from "typescript";
 
 const root = path.resolve(import.meta.dirname, "..");
 const allowedClient = new Set(["apps/web", "packages/ui", "packages/protocol"]);
-const exceptions = new Set(["react", "react-dom", "vite", "@vitejs/plugin-react", "tailwind-merge", "react-markdown", "remark-gfm", "highlight.js"]);
+const exceptions = new Set([
+  "react", "react-dom", "vite", "@vitejs/plugin-react", "tailwind-merge", "react-markdown", "remark-gfm", "highlight.js",
+  "@shadcn/react/questionnaire",
+  "@base-ui/react/button", "@base-ui/react/collapsible", "@base-ui/react/menu", "@base-ui/react/switch",
+]);
 const violations: string[] = [];
 
 function scan(dir: string) {

@@ -77,9 +77,15 @@ docker compose ps a-ai
 
 桌面本机可直接连接回环地址上的模型。服务端如需连接内网 Ollama 等模型，由部署者在 `.env`（Compose）或 `.env.local`（直接启动）设置 `A_PRIVATE_MODEL_ORIGINS`。填写带协议和端口的完整 origin，多个用逗号隔开，例如 `http://host.docker.internal:11434`。模型设置里填最终服务地址，例如 `http://host.docker.internal:11434/v1`。
 
+服务器测评使用 `docker compose exec a-ai node evals/run.mjs --only Q01`。命令会启动独立实例，使用持久卷中的 `storage-manager` 保存报告。测试通过后回收现场，失败现场满 24 小时后由服务清扫。使用 `--baseline` 固定本轮报告，`--keep-reports 10` 可调整最近报告数量。主动传入 `--base` 时使用指定的已有实例，测试现场由该实例管理员管理。
+
+「设置 → 存储管理」可查看账号占用及清理空闲缓存。首个注册账号还可清理已结束的测试现场，并调整服务器新轮次的 Docker 临时空间配额。普通服务器对话的终端与 Python 默认使用隔离临时目录，通过工具 `outputs` 参数交付成品。绑定项目的会话在需要直接修改持久工作区时可显式选择工作区模式。
+
 ### 桌面端
 
-在 Windows 或 macOS 上，使用 `pnpm electron:dev` 启动 Electron 开发版。Windows 安装包用 `pnpm dist:win` 构建，macOS 安装包用 `pnpm dist:mac` 构建，产物写入 `release/`。
+在 Windows 或 macOS 上，使用 `pnpm electron:dev` 启动 Electron 开发版。Windows 用 `pnpm dist:win` 构建安装包，macOS 用 `pnpm dist:mac`。未设置 `A_UPDATE_URL` 时，产物写入 `release/local/`，客户端默认使用本机服务。
+
+要构建带自动更新的发行包，打包前将 `A_UPDATE_URL` 设为实际更新目录的 URL。Windows PowerShell 示例为 `$env:A_UPDATE_URL = 'https://你的域名/updates/'`。发行包与 `latest.yml`（Windows）或 `latest-mac.yml`（macOS）写入 `release/`，由发布者上传到更新目录。内置更新地址的路径为 `/updates/` 时，客户端默认连接同一站点的业务服务器。
 
 ## 项目结构
 

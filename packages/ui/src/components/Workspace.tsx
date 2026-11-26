@@ -2,12 +2,13 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import type { AgentEvent, AgentQueueSnapshot, Groups, Project, ProjectChat, Session, SessionMeta, StoredMessage, ToolInfo } from "../../../protocol/src/lib/shared";
 import type { WorkspaceAppSummary } from "../../../protocol/src/workspace-app";
-import { api, mod, streamChat, subscribeRun } from "../lib/client";
+import { api, ChatHistoryConflict, mod, streamChat, subscribeRun } from "../lib/client";
 import { createLiveStore, emptyLiveStore, LiveStoreContext } from "../lib/live";
-import { Sidebar } from "./Sidebar";
+import { Sidebar, type SessionRunStatus } from "./Sidebar";
 import { ChatPane, type ConversationView } from "./ChatPane";
 import { Canvas } from "./Canvas";
-import { IFiles } from "./Icons";
+import { WorkspaceTab } from "./WorkspaceTab";
+import { IFiles, IPanelRight } from "./Icons";
 import { WorkspaceAppCanvas } from "./WorkspaceAppCanvas";
 import { OutputsCard } from "./OutputsCard";
 import { SubagentConversation } from "./SubagentConversation";
@@ -15,7 +16,7 @@ import { SubagentThreadOverview, SubagentThreadTrigger, type SubagentSelection, 
 import { collectOutputs, type View } from "../../../protocol/src/lib/outputs";
 import { DEFAULT_SETTINGS, currentOption, reasoningOptions, type Settings } from "../../../protocol/src/lib/settings";
 import type { AgentEventScope, AgentModelSelection, ReasoningEffort } from "../../../protocol/src/agent-events";
-import { ComposerBar } from "./ComposerBar";
+import { ContextRing, ModelSelector } from "./ComposerBar";
 import { joinAttachments, type PendingAttachment } from "../../../protocol/src/lib/attachments";
 import { SettingsModal } from "./SettingsModal";
 import { ProjectModal } from "./ProjectModal";
@@ -32,6 +33,7 @@ const SIDEBAR_DEFAULT = 288;
 const SIDEBAR_MIN = 200;
 const SIDEBAR_MAX = 480;
 const SIDEBAR_WIDTH_KEY = "a.sidebarW";
+const CHAT_WIDTH_RATIO: Record<Settings["chatWidth"], number> = { narrow: 0.4, normal: 0.5, wide: 0.7 };
 
 /** 一条流自持快照，切换会话时继续消费自己的事件。新对话在拿到 sessionId 前使用草稿键。 */
 type ChatRun = {
@@ -39,7 +41,13 @@ type ChatRun = {
   controller: AbortController;
   session: Session;
   scope?: AgentEventScope;
+  /** 编辑请求只有在首个会话事件确认提交后才截断页面视图。 */
+  truncateFrom?: string;
+  /** 当前页面在运行中保存的选择，避免被较早发出的会话事件覆盖。 */
+  modelSelection?: AgentModelSelection;
   stopRequested?: boolean;
+  /** 一条流可以依次处理多条排队消息，此值只表示目前最后一轮是否完整结束。 */
+  turnCompleted?: boolean;
   queue: AgentQueueSnapshot | null;
   running: Record<string, number>;
   live: ReturnType<typeof createLiveStore>;
@@ -101,6 +109,7 @@ function savePanels(id: string, p: Panels) {
 /** user：当前用户名，用来拼地址 /A.ai/chat/用户名/对话ID；initialId：地址里带的对话 ID */
 export function Workspace({ user, initialId }: { user: string; initialId?: string }) {
   const [sessions, setSessions] = useState<SessionMeta[]>([]);
+  const [sessionRunStatuses, setSessionRunStatuses] = useState<ReadonlyMap<string, SessionRunStatus>>(() => new Map());
   const [cur, setCurState] = useState<Session>(emptySession);
   const [runView, setRunView] = useState<Pick<ChatRun, "scope" | "running" | "live"> | null>(null);
   const streaming = runView !== null;
@@ -115,6 +124,9 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
   const [draft, setDraft] = useState("");
   /** 输入框里的附件：选完文件立刻上传到工作区 uploads/，发送时把路径附在消息末尾 */
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
+  const [draftFileSession, setDraftFileSession] = useState("");
+  const attachmentSession = useRef<{ key: string; request: Promise<Session> } | null>(null);
+  const nextAttachmentKey = useRef(0);
   const [leftOpen, setLeftOpen] = useState(true);
   const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_DEFAULT);
   const sidebarDrag = useRef<{ pointerId: number; x: number; width: number; next: number } | null>(null);
@@ -139,6 +151,7 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
   const [fromOutputs, setFromOutputs] = useState(false);
   const [outputPickerOpen, setOutputPickerOpen] = useState(false);
   const outputsPanelId = useId();
+  const [workspaceTabOpen, setWorkspaceTabOpen] = useState(false);
   const [libraryApp, setLibraryApp] = useState<WorkspaceAppSummary | null>(null);
   const [childView, setChildView] = useState<{ sessionId: string; task: SubagentSelection } | null>(null);
   const [threadsSessionId, setThreadsSessionId] = useState<string>();
@@ -147,13 +160,15 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
   const child = childView && childView.sessionId === cur.id ? childView.task : null;
   function openSubagent(task: SubagentSelection) {
     if (viewKey.current !== cur.id) return;
+    setWorkspaceTabOpen(false);
     setView(null);
     setThreadsSessionId(undefined);
     setChildView({ sessionId: cur.id, task });
     setListOpen(false);
   }
   function toggleThreads() {
-    if (threadsOpen) { setThreadsSessionId(undefined); return; }
+    if (threadsOpen && !workspaceTabOpen) { setThreadsSessionId(undefined); return; }
+    setWorkspaceTabOpen(false);
     setView(null);
     setChildView(null);
     setLibraryApp(null);
@@ -161,7 +176,7 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
     setThreadsSessionId(cur.id);
   }
   const openedApp = libraryApp;
-  const rightView = !openedApp && page === "chat" && !!(view || child || threadsOpen);
+  const rightView = !openedApp && page === "chat" && !!(view || child || threadsOpen || workspaceTabOpen);
   /** 宽屏的面板显示状态也保留窄屏预览期间的列表实例。 */
   const [listOpen, setListOpen] = useState(false);
   /** 右侧大视图的宽度（px，用户拖动分隔条调整，保存在浏览器里）；null = 默认宽度 */
@@ -171,7 +186,7 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
   const [winW, setWinW] = useState(1920);
   // 两列至少需要 272px 面板、10px 间距和 280px 预览，再给对话与侧栏留空间。
   const compactOutputPreview = rightView && !!view && winW < 1240;
-  const showTaskPanel = compactOutputPreview ? outputPickerOpen : listOpen && (!rightView || winW >= 1240);
+  const showTaskPanel = !workspaceTabOpen && (compactOutputPreview ? outputPickerOpen : listOpen && (!rightView || winW >= 1240));
   const outputPickerVisible = compactOutputPreview && showTaskPanel;
   const defaultViewWidth = Math.max(400, Math.min(940, winW * 0.46));
   const canvasWidth = viewW ?? defaultViewWidth;
@@ -192,8 +207,8 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
     setLeftOpen(true);
     setKeepLeft(true);
   };
-  const uiRef = useRef({ view, child, threadsOpen, openedApp, showTaskPanel, compactOutputPreview, outputPickerVisible, fromOutputs, showLeft });
-  uiRef.current = { view, child, threadsOpen, openedApp, showTaskPanel, compactOutputPreview, outputPickerVisible, fromOutputs, showLeft };
+  const uiRef = useRef({ view, child, threadsOpen, openedApp, workspaceTabOpen, showTaskPanel, compactOutputPreview, outputPickerVisible, fromOutputs, showLeft });
+  uiRef.current = { view, child, threadsOpen, openedApp, workspaceTabOpen, showTaskPanel, compactOutputPreview, outputPickerVisible, fromOutputs, showLeft };
   const closeOutputPreview = useCallback(() => {
     setView(null);
     setOutputPickerOpen(false);
@@ -206,6 +221,9 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
   const [modKey, setModKey] = useState("Ctrl+");
   /** 用户设置（服务端保存）；settingsTab 不为 null 时显示设置弹窗 */
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
+  // 按右侧关闭时的工作区计算目标宽度。面板拖动和左栏自动让位只改变可用空间，不改目标。
+  const chatReferenceWidth = winW - (leftOpen && winW > 900 ? sidebarWidth : 0);
+  const chatThreadTarget = Math.max(480, chatReferenceWidth * CHAT_WIDTH_RATIO[settings.chatWidth]);
   const [settingsTab, setSettingsTab] = useState<SettingsTab | null>(null);
   /** 上一次运行结束的时间：变了就去看看后台有没有学会新技能（SkillToast） */
   const [runEnd, setRunEnd] = useState(0);
@@ -348,7 +366,7 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
     if (run.scope) void cancelRun(run, showRun);
   }, [showRun]);
 
-  /** 新对话；传 projectId = 在这个项目里新建（发第一条消息时才真正建到项目里） */
+  /** 新对话；发送首条消息或添加附件时才在服务端创建。 */
   const newChat = useCallback((projectId?: string) => {
     viewKey.current = `draft:${++openSeq.current}`;
     setRunView(null);
@@ -363,12 +381,15 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
     setView(null);
     setFromOutputs(false);
     setOutputPickerOpen(false);
+    setWorkspaceTabOpen(false);
     setChildView(null);
     setThreadsSessionId(undefined);
     setListOpen(false);
     setError(null);
     setDraft("");
     setAttachments([]);
+    setDraftFileSession("");
+    attachmentSession.current = null;
     setTimeout(() => inputRef.current?.focus());
   }, [setCur]);
 
@@ -390,7 +411,7 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
     if (!p || p.icon === icon) return;
     setProjects((l) => l.map((x) => (x.id === id ? { ...x, icon } : x)));
     try {
-      await api.saveProject({ name: p.name, description: p.description, memory: p.memory, share: p.share, icon }, id);
+      await api.saveProject({ name: p.name, description: p.description, rulesFile: p.rulesFile, memory: p.memory, share: p.share, icon }, id);
     } catch {
       setProjects((l) => l.map((x) => (x.id === id ? { ...x, icon: p.icon } : x)));
     }
@@ -428,13 +449,28 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
 
   /** 选了文件：先在输入框里显示“上传中”的卡片，每个文件单独上传，哪个失败只标红那一个 */
   function attach(files: File[]) {
-    const items = files.map((f, i) => ({ key: `${Date.now()}-${i}-${f.name}`, name: f.name, size: f.size }));
+    const key = viewKey.current;
+    const original = curRef.current;
+    const items = files.map((f) => ({ key: String(++nextAttachmentKey.current), name: f.name, size: f.size }));
     setAttachments((l) => [...l, ...items]);
+    // 同一个草稿并发选多个文件只创建一个会话。请求完成时仍上传到发起时的会话。
+    if (!original.id && files.some((file) => file.size <= 50 * 1024 * 1024) && attachmentSession.current?.key !== key) {
+      const request = api.createSession(original.projectId);
+      attachmentSession.current = { key, request };
+      void request.then((session) => {
+        if (viewKey.current === key) setDraftFileSession(session.id);
+      }, () => {
+        if (attachmentSession.current?.request === request) attachmentSession.current = null;
+      });
+    }
+    const reservation = attachmentSession.current?.key === key ? attachmentSession.current.request : undefined;
     items.forEach((it, i) => {
       const f = files[i];
-      const done = (patch: Partial<PendingAttachment>) => setAttachments((l) => l.map((a) => (a.key === it.key ? { ...a, ...patch } : a)));
+      const done = (patch: Partial<PendingAttachment>) => {
+        if (viewKey.current === key) setAttachments((l) => l.map((a) => (a.key === it.key ? { ...a, ...patch } : a)));
+      };
       if (f.size > 50 * 1024 * 1024) return done({ error: "超过 50 MB" });
-      api.upload([f]).then(
+      (original.id ? Promise.resolve(original) : reservation!).then((session) => api.upload(session.id, [f])).then(
         ([r]) => done({ path: r.path, name: r.name }),
         (e) => done({ error: e instanceof Error ? e.message : "上传失败" }),
       );
@@ -445,7 +481,7 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
   /** 发送输入框：文字 + 已上传好的附件。失败的附件不发 */
   async function sendDraft() {
     const key = viewKey.current;
-    if (queueAction.current.has(key) || modelAction.current.has(key) || isArchived) return;
+    if (queueAction.current.has(key) || modelAction.current.has(key) || isArchived || attachments.some((a) => !a.path && !a.error)) return;
     const paths = attachments.filter((a) => a.path).map((a) => a.path!);
     const text = joinAttachments(draft.trim(), paths);
     if (!text) return;
@@ -496,6 +532,7 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
     const seq = ++openSeq.current; // 连点几个对话时，只认最后一次点击，前面慢返回的结果丢掉
     if (id === viewKey.current) {
       setLoadingId(null);
+      setSessionRunStatus(id, undefined, "completed");
       // 轨迹和统计能在详情里追踪别的会话。重新从侧栏打开时，要回到菜单所属的会话。
       if (nextView === "trace" || nextView === "stats") setTraceScopeVersion((version) => version + 1);
       setConversationView(nextView);
@@ -511,8 +548,14 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
     const run = runs.current.get(id);
     const s = run?.session ?? saved;
     if (!s) return;
+    // 确认打开了目标会话再清除完成提示，运行中的动画继续显示。
+    setSessionRunStatus(id, undefined, "completed");
     viewKey.current = id;
+    setAttachments([]);
+    setDraftFileSession("");
+    attachmentSession.current = null;
     setConversationView(nextView);
+    setWorkspaceTabOpen(false);
     setDraftModel(undefined);
     setChildView(null);
     setThreadsSessionId(undefined);
@@ -550,7 +593,19 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
     runs.current.delete(id);
     run?.controller.abort();
     setSessions((l) => l.filter((s) => s.id !== id));
+    setSessionRunStatus(id);
     if (viewKey.current === id) newChat();
+  }
+
+  function setSessionRunStatus(id: string, status?: SessionRunStatus, expected?: SessionRunStatus) {
+    setSessionRunStatuses((previous) => {
+      const current = previous.get(id);
+      if (current === status || (expected && current !== expected)) return previous;
+      const next = new Map(previous);
+      if (status) next.set(id, status);
+      else next.delete(id);
+      return next;
+    });
   }
 
   /* ---------- 发送与事件处理 ---------- */
@@ -558,6 +613,7 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
     const update = (mutate: (session: Session) => Session) => { run.session = mutate(run.session); };
     switch (e.type) {
       case "session":
+        run.turnCompleted = false;
         // 首个事件为草稿分配正式 ID。只有仍停留在该草稿时才更新当前选中键。
         if (run.key !== e.session.id) {
           runs.current.delete(run.key);
@@ -565,8 +621,16 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
           run.key = e.session.id;
           runs.current.set(run.key, run);
         }
-        update((c) => ({ ...c, ...e.session,
-          projectId: e.session.projectId, modelSelection: e.session.modelSelection ?? c.modelSelection }));
+        setSessionRunStatus(e.session.id, "running");
+        update((c) => {
+          const cut = run.truncateFrom ? c.messages.findIndex((message) => message.id === run.truncateFrom) : -1;
+          return { ...c, ...e.session, projectId: e.session.projectId,
+            modelSelection: run.modelSelection ?? e.session.modelSelection ?? c.modelSelection,
+            // 新问题已经提交，接下来的 message 事件会把它追加到留下的前缀。
+            ...(cut >= 0 ? { messages: c.messages.slice(0, cut), artifacts: c.artifacts.filter((a) => a.createdAt < c.messages[cut].createdAt) } : {}),
+          };
+        });
+        run.truncateFrom = undefined;
         setSessions((l) => [{ ...l.find((s) => s.id === e.session.id), ...e.session }, ...l.filter((s) => s.id !== e.session.id)]);
         break;
       case "queue":
@@ -654,6 +718,7 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
         run.live.apply(e);
         break;
       case "done":
+        run.turnCompleted = !e.awaitingUser && !e.interrupted && !e.outputTruncated;
         run.running = {};
         run.live.reset();
         break;
@@ -662,7 +727,7 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
 
   /**
    * 重新生成 / 编辑后重发：替换当前有效视图的后缀，原问题与后续记录由服务端保留。
-   * 先显示乐观结果，服务端保留旧历史；请求结束后回读有效视图，失败时也不会把旧回答藏在本地。
+   * 等服务端确认再替换视图。版本冲突时保留编辑框，用户核对同步后的历史再提交。
    */
   async function resend(fromId: string, text: string) {
     text = text.trim();
@@ -676,27 +741,25 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
     if (runs.current.has(key) || queueAction.current.has(key) || modelAction.current.has(key) || isArchived) return;
     setError(null);
     const original = curRef.current;
-    const requestSessionId = original.id;
-    if (!queuedId) setCur((c) => {
+    const requestSessionId = original.id || draftFileSession;
+    if (!queuedId && !truncate) setCur((c) => {
       const tmp: StoredMessage = { id: "tmp" + Date.now(), role: "user", content: text, createdAt: Date.now() };
-      const cut = truncate ? c.messages.findIndex((m) => m.id === truncate) : -1;
-      const keep = cut >= 0 ? c.messages.slice(0, cut) : c.messages;
-      const since = cut >= 0 ? c.messages[cut].createdAt : Infinity;
-      return { ...c, messages: [...keep, tmp], artifacts: c.artifacts.filter((a) => a.createdAt < since) };
+      return { ...c, messages: [...c.messages, tmp] };
     });
     const run: ChatRun = {
       key,
       controller: new AbortController(),
       session: curRef.current,
+      truncateFrom: truncate,
       queue: queue?.sessionId === requestSessionId ? queue : null,
       running: {},
       live: createLiveStore(),
       error: null,
     };
     await track(run, original, (onEvent) => streamChat(
-      { sessionId: requestSessionId || undefined, revision: requestSessionId && !queuedId ? original.revision : undefined, message: queuedId ? undefined : text, queuedId, truncateFrom: truncate,
-        projectId: requestSessionId ? undefined : original.projectId, modelSelection: requestSessionId ? undefined : draftModel,
-        multiAgent: requestSessionId || original.projectId ? undefined : original.multiAgent },
+      { sessionId: requestSessionId || undefined, revision: original.id && !queuedId ? original.revision : undefined, message: queuedId ? undefined : text, queuedId, truncateFrom: truncate,
+        projectId: original.id ? undefined : original.projectId, modelSelection: original.id ? undefined : draftModel,
+        multiAgent: original.id || original.projectId ? undefined : original.multiAgent },
       onEvent, run.controller.signal,
     ));
   }
@@ -717,10 +780,12 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
     const key = run.key;
     const requestSessionId = original.id;
     runs.current.set(key, run);
+    if (requestSessionId) setSessionRunStatus(requestSessionId, "running");
     showRun(run);
     // 每条流各自按帧合并相邻增量，防止不同会话复用消息或调用 ID 时串数据。
     let pending: AgentEvent[] = [];
     let frame = 0;
+    let historyConflict = false;
     const flush = () => {
       if (frame) cancelAnimationFrame(frame);
       frame = 0;
@@ -743,6 +808,7 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
           if (!frame) frame = requestAnimationFrame(flush);
         });
     } catch (err) {
+      historyConflict = err instanceof ChatHistoryConflict;
       if (!run.controller.signal.aborted) run.error = err instanceof Error ? err.message : String(err);
     } finally {
       flush();
@@ -750,12 +816,22 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
       if (runs.current.get(run.key) !== run) return;
       // 服务端确认的记录决定最终视图。后台任务结束也同步列表，但只能写回同一会话。
       const savedId = run.session.id;
+      // done 按轮发出，只有整条流结束后才确认队列里没有下一轮正在执行。
+      const completed = run.turnCompleted && !run.error && !run.stopRequested && !run.controller.signal.aborted;
       if (savedId) {
         void api.queue(savedId).then(applyQueue).catch(() => {});
+        const selectionBeforeRead = run.modelSelection;
         try {
           const saved = await api.get(savedId);
           if (saved) {
-            run.session = saved;
+            // 会话读取期间返回的模型保存结果比这一份快照更新。
+            run.session = run.modelSelection === selectionBeforeRead ? saved : { ...saved, modelSelection: run.modelSelection };
+            if (historyConflict) {
+              run.error = run.truncateFrom && !saved.messages.some((message) => message.id === run.truncateFrom)
+                ? "原消息已被替换。已同步最新对话，请重新选择要编辑的消息。"
+                : "已同步最新对话，请确认后重新发送。";
+              historyConflict = false;
+            }
             setSessions((items) => items.map((item) => item.id === savedId ? { ...item, updatedAt: saved.updatedAt } : item));
           }
         } catch {
@@ -764,8 +840,13 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
       } else {
         run.session = original;
       }
+      if (historyConflict) run.error = "会话已变化，暂时无法同步。请稍后再试。";
       if (runs.current.get(run.key) !== run) return;
       runs.current.delete(run.key);
+      if (savedId) {
+        // 如果会话已删除，收尾不再为没有侧栏行的 ID 留下标记。
+        setSessionRunStatus(savedId, completed ? "completed" : undefined, "running");
+      }
       if (viewKey.current === run.key) {
         setCur(run.session);
         if (run.error) setError(run.error);
@@ -796,6 +877,9 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
       } else if (e.key === "Escape" && uiRef.current.openedApp) {
         e.preventDefault();
         setLibraryApp(null);
+      } else if (e.key === "Escape" && uiRef.current.workspaceTabOpen) {
+        e.preventDefault();
+        setWorkspaceTabOpen(false);
       } else if (e.key === "Escape" && uiRef.current.threadsOpen) {
         e.preventDefault();
         setThreadsSessionId(undefined);
@@ -829,8 +913,9 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
   const model = modelOption.group === "内置" ? modelOption.label : `${modelOption.group} · ${modelOption.label}`;
   const pickModel = async (value: string, effort: ReasoningEffort = "default") => {
     const key = viewKey.current;
-    if (modelAction.current.has(key) || runs.current.has(key) || isArchived) return;
-    const next = { model: value, effort: reasoningOptions(settings, value).includes(effort) ? effort : "default" as const };
+    const run = runs.current.get(key);
+    if (modelAction.current.has(key) || (run && !run.scope) || isArchived) return;
+    const next: AgentModelSelection = { model: value, effort: reasoningOptions(settings, value).includes(effort) ? effort : "default" };
     const id = curRef.current.id;
     if (!id) {
       setDraftModel(next);
@@ -840,7 +925,12 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
     setModelBusyIds([...modelAction.current]);
     try {
       const saved = await api.selectAgentModel(id, next);
-      setCur((s) => s.id === id ? { ...s, modelSelection: saved } : s);
+      const active = runs.current.get(id);
+      if (active) {
+        active.modelSelection = saved;
+        active.session = { ...active.session, modelSelection: saved };
+      }
+      if (viewKey.current === id) setCur((s) => ({ ...s, modelSelection: saved }));
     } catch (error) {
       if (viewKey.current === id) setError(error instanceof Error ? error.message : "无法保存对话模型");
     } finally {
@@ -874,6 +964,7 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
     return { ...collected, outputs: collected.outputs.filter(({ key }) => !unavailable.has(key)) };
   }, [cur.messages, cur.artifacts, cur.unavailableOutputKeys]);
   const openView = (v: View, fromList = false) => {
+    setWorkspaceTabOpen(false);
     setChildView(null);
     setThreadsSessionId(undefined);
     setView(v);
@@ -885,6 +976,7 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
   // 预览内打开输出列表时保留当前文件，窄屏只让列表临时覆盖预览区域。
   const toggleList = () => {
     const { view: currentView, compactOutputPreview: compact, showTaskPanel: showing } = uiRef.current;
+    setWorkspaceTabOpen(false);
     if (currentView && compact) {
       setOutputPickerOpen(!showing);
       if (!showing) setListOpen(true);
@@ -1005,6 +1097,7 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
   const sidebarProps = {
     // 当前对话有没有文件，直接用前端算好的 outputs（生成过程中就能实时出现图标）
     sessions: sessions.map((s) => (s.id === cur.id ? { ...s, hasFiles: outputs.length > 0 } : s)),
+    sessionRunStatuses,
     currentId: page === "artifacts" ? undefined : loadingId ?? cur.id,
     viewingDetails: conversationView !== "chat",
     model,
@@ -1038,7 +1131,11 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
   const content = (
     <div
       className={`app ${showLeft ? "left-open" : ""} ${rightView ? "right-open" : ""} ${resizing ? "resizing" : ""}`}
-      style={{ "--side-w": `${displayedSidebarWidth}px`, ...(viewW ? { "--canvas-w": `${viewW}px` } : {}) } as React.CSSProperties}
+      style={{
+        "--side-w": `${displayedSidebarWidth}px`,
+        "--chat-thread-target": `${chatThreadTarget}px`,
+        ...(viewW ? { "--canvas-w": `${viewW}px` } : {}),
+      } as React.CSSProperties}
     >
       {showLeft ? (
         <Sidebar {...sidebarProps} resizeHandle={sidebarHandle} onCollapse={() => setLeftOpen(false)} />
@@ -1108,17 +1205,23 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
           rightOpen={showTaskPanel}
           viewOpen={rightView}
           sendKey={settings.sendKey}
-          bar={
-            <ComposerBar
+          modelSelector={
+            <ModelSelector
+              settings={chatSettings}
+              onPickModel={(value) => void pickModel(value, value === settings.currentModel ? settings.reasoningEffort : "default")}
+              onPickEffort={(effort) => void pickModel(selection.model, effort)}
+              modelDisabled={isArchived || modelBusyIds.includes(cur.id) || (streaming && !runId)}
+              streaming={streaming}
+              multiAgent={cur.projectId ? undefined : { enabled: multiAgent, onChange: (enabled) => void changeMultiAgent(enabled) }}
+              onManage={() => setSettingsTab("model")}
+            />
+          }
+          contextStatus={
+            <ContextRing
               settings={chatSettings}
               messages={cur.messages}
               systemTokens={fixedTokens.system}
               toolsTokens={fixedTokens.tools}
-              onPickModel={(value) => void pickModel(value, value === settings.currentModel ? settings.reasoningEffort : "default")}
-              onPickEffort={(effort) => void pickModel(selection.model, effort)}
-              modelDisabled={isArchived || modelBusyIds.includes(cur.id) || streaming}
-              multiAgent={cur.projectId ? undefined : { enabled: multiAgent, onChange: (enabled) => void changeMultiAgent(enabled) }}
-              onManage={() => setSettingsTab("model")}
               onUsage={() => setSettingsTab("usage")}
             />
           }
@@ -1144,13 +1247,19 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
           onOpenFile={(path) => openView({ type: "file", path })}
           onToggleLeft={expandLeft}
           onToggleRight={toggleList}
+          workspaceTabControl={
+            <button type="button" className="icon-btn" aria-expanded={workspaceTabOpen} aria-controls={workspaceTabOpen ? "conversation-workspace-tab" : undefined}
+              title={workspaceTabOpen ? "关闭标签页" : "打开新标签页"} aria-label={workspaceTabOpen ? "关闭标签页" : "打开新标签页"}
+              onClick={() => setWorkspaceTabOpen((open) => !open)}>
+              <IPanelRight aria-hidden />
+            </button>
+          }
           threadControl={cur.id && !loadingId && <SubagentThreadTrigger key={cur.id} sessionId={cur.id}
             expanded={threadsOpen} onToggle={toggleThreads} />}
           userName={settings.name !== DEFAULT_SETTINGS.name ? settings.name : user}
           onDismissError={() => setError(null)}
         />
       )}
-      {/* 两个视图在宽屏并排，窄屏打开选择列表时保留原预览。 */}
       {page === "chat" && (rightView || listOpen) && (
         <div className={`right ${showTaskPanel && !outputPickerVisible ? "with-panel" : ""} ${outputPickerVisible ? "output-picker" : ""} ${rightView ? "" : "panel-only"}`}>
           {/* 分隔条：按住左右拖动调整宽度，双击恢复默认 */}
@@ -1172,17 +1281,29 @@ export function Workspace({ user, initialId }: { user: string; initialId?: strin
               onClose={() => outputPickerVisible ? setOutputPickerOpen(false) : setListOpen(false)}
             />
           )}
-          {threadsOpen ? <SubagentThreadOverview key={cur.id} sessionId={cur.id}
+          {workspaceTabOpen && !openedApp ? (
+            <WorkspaceTab key={cur.id || "draft"} fileSessionId={cur.id || draftFileSession}
+              messages={cur.messages} artifacts={cur.artifacts}
+              canImport={Boolean(cur.id) && !isArchived && !loadingId}
+              refreshKey={`${cur.messages.length}:${attachments.filter((item) => item.path).length}`}
+              onOpenFile={(path) => openView({ type: "file", path })}
+              onOpenView={openView}
+              onOpenTasks={toggleList} onOpenThreads={cur.id && !loadingId ? toggleThreads : undefined}
+              onClose={() => setWorkspaceTabOpen(false)} />
+          ) : threadsOpen ? <SubagentThreadOverview key={cur.id} sessionId={cur.id}
             layout={threadLayout} onLayout={setThreadLayout} onSelect={openSubagent} onClose={() => setThreadsSessionId(undefined)} />
           : child ? <SubagentConversation key={`${cur.id}:${child.id}`} sessionId={cur.id} selected={child}
-            archived={isArchived} canResume={multiAgent && !isArchived} onResume={openSubagent}
-            sendKey={settings.sendKey} modKey={modKey} onOpenFile={(path) => openView({ type: "file", path })}
+            archived={isArchived} canResume={multiAgent && !isArchived} artifacts={cur.artifacts}
+            sendKey={settings.sendKey} modKey={modKey}
             onClose={() => setChildView(null)} /> : view && (
             <Canvas
+              key={cur.id || draftFileSession}
+              sessionId={cur.id || draftFileSession}
               view={view}
               artifacts={cur.artifacts}
               messages={cur.messages}
-              refreshKey={cur.messages.length}
+              refreshKey={`${cur.messages.length}:${attachments.filter((item) => item.path).length}`}
+              canImport={Boolean(cur.id) && !isArchived && !loadingId}
               outputSwitch={outputs.length > 0 && <button type="button" className="icon-btn" title="切换生成物" aria-label="切换生成物"
                 aria-expanded={showTaskPanel} aria-controls={outputsPanelId} onClick={toggleList}><IFiles /></button>}
               onOpenFile={(path) => setView({ type: "file", path })}

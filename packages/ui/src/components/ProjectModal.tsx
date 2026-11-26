@@ -28,6 +28,7 @@ export function ProjectModal(props: { project?: Project; onSave(p: Omit<Project,
   const p = props.project;
   const [name, setName] = useState(p?.name ?? "");
   const [description, setDescription] = useState(p?.description ?? "");
+  const [rulesFile, setRulesFile] = useState(p?.rulesFile ?? "");
   const [memory, setMemory] = useState<ProjectMemoryMode>(p?.memory ?? "global");
   const [share, setShare] = useState(p?.share ?? true);
   const [busy, setBusy] = useState(false);
@@ -51,7 +52,7 @@ export function ProjectModal(props: { project?: Project; onSave(p: Omit<Project,
     setBusy(true);
     setErr("");
     try {
-      await props.onSave({ name: name.trim(), description: description.trim(), memory, share });
+      await props.onSave({ name: name.trim(), description: description.trim(), rulesFile: rulesFile.trim(), memory, share });
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
       setBusy(false);
@@ -117,6 +118,17 @@ export function ProjectModal(props: { project?: Project; onSave(p: Omit<Project,
             placeholder="这个项目是做什么的、有什么要求。项目里的每次对话都会先读这段话。"
             onChange={(e) => setDescription(e.target.value)}
           />
+        </label>
+
+        <label className="pm-field">
+          <span className="set-label">项目规则文件 <span className="pm-opt">可选</span></span>
+          <input
+            className="set-input"
+            value={rulesFile}
+            placeholder="例如 repo/AGENTS.md"
+            onChange={(e) => setRulesFile(e.target.value)}
+          />
+          <span className="set-hint">支持原账号工作区的相对路径和已授权目录中的绝对路径。每轮开始时读取。</span>
         </label>
 
         <div className="pm-field">

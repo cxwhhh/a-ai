@@ -17,6 +17,14 @@ interface Hit {
   snippet: string;
 }
 
+function searchSettings() {
+  return process.env.A_DESKTOP === "1" ? "桌面应用的「打开设置文件 a-ai.env」" : "服务端的搜索环境变量（源码启动读取 .env.local）";
+}
+
+function duckDuckGoHint() {
+  return `可通过${searchSettings()}配置 TAVILY_API_KEY，重启后改用 Tavily 搜索。`;
+}
+
 export const webSearch: Tool<{
   query: string;
   max_results?: number
@@ -64,8 +72,9 @@ export const webSearch: Tool<{
         code?: string;
         message?: string
       } };
-      if (err.name === "TimeoutError") throw new Error(`${engine} 搜索超时（15 秒）。换个更短的关键词再试一次；仍然超时就告诉用户现在搜不了`);
-      if (err.message === "fetch failed") throw new Error(`连不上 ${engine}：${err.cause?.code ?? err.cause?.message ?? "网络错误"}。服务器现在可能不能联网，不要反复重试，告诉用户需要检查网络或代理`);
+      const hint = engine === "duckduckgo" ? duckDuckGoHint() : "请检查 A.ai 服务运行环境到该搜索服务的网络或代理设置。";
+      if (err.name === "TimeoutError") throw new Error(`${engine} 搜索请求超时（15 秒）。${hint}`);
+      if (err.message === "fetch failed") throw new Error(`连不上搜索服务 ${engine}（${err.cause?.code ?? "网络错误"}）。${hint}`);
       throw e;
     }
 
@@ -90,7 +99,7 @@ async function tavily(q: string, n: number, signal: AbortSignal): Promise<Hit[]>
       max_results: n
     }),
   });
-  if (!res.ok) throw new Error(`Tavily 搜索失败：HTTP ${res.status}`);
+  if (!res.ok) throw new Error(searchHttpError("Tavily", "TAVILY_API_KEY", res.status));
   const data = (await res.json()) as { results?: {
     title?: string;
     url?: string;
@@ -112,7 +121,7 @@ async function brave(q: string, n: number, signal: AbortSignal): Promise<Hit[]> 
       "X-Subscription-Token": process.env.BRAVE_SEARCH_API_KEY!
     }
   });
-  if (!res.ok) throw new Error(`Brave 搜索失败：HTTP ${res.status}`);
+  if (!res.ok) throw new Error(searchHttpError("Brave", "BRAVE_SEARCH_API_KEY", res.status));
   const data = (await res.json()) as { web?: {
     results?: {
       title?: string;
@@ -142,7 +151,7 @@ async function duckduckgo(q: string, n: number, signal: AbortSignal): Promise<Hi
     },
     body: new URLSearchParams({ q }).toString(),
   });
-  if (!res.ok) throw new Error(`DuckDuckGo 搜索失败：HTTP ${res.status}。可以在 .env.local 里配置 TAVILY_API_KEY 换成更稳定的搜索 API`);
+  if (!res.ok) throw new Error(`DuckDuckGo 搜索失败（HTTP ${res.status}）。${duckDuckGoHint()}`);
   const html = await res.text();
 
   const hits: Hit[] = [];
@@ -166,8 +175,14 @@ async function duckduckgo(q: string, n: number, signal: AbortSignal): Promise<Hi
     if (hits.length >= n) break;
   }
   if (!hits.length && /anomaly|captcha|challenge/i.test(html))
-    throw new Error("DuckDuckGo 暂时限制了搜索请求（需要人机验证）。可以稍后再试，或在 .env.local 里配置 TAVILY_API_KEY");
+    throw new Error(`DuckDuckGo 要求人机验证。${duckDuckGoHint()}`);
   return hits;
+}
+
+function searchHttpError(provider: string, key: string, status: number) {
+  const hint = status === 401 || status === 403 ? `请在${searchSettings()}核对 ${key} 和账户权限。`
+    : status === 429 ? "请检查搜索服务的调用频率或配额。" : "";
+  return `${provider} 搜索失败（HTTP ${status}）。${hint}`;
 }
 
 /** 去掉 HTML 标签（标题里的 <b> 高亮）并还原实体 */

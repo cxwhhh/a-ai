@@ -1,6 +1,7 @@
 import type { Tool } from "../../tool-runtime/src/types";
 import { projectAppReferences } from "../../application/projects/src/projects";
 import { workspaceAppRequest } from "../../workspace/src/apps";
+import { workspaceOf } from "./files";
 
 /** 把可以长期使用的 HTML 应用部署到当前账号，下次可从产出物页打开。 */
 export const deployApp: Tool<{ title: string; html: string; app_id?: string }> = {
@@ -28,7 +29,7 @@ export const deployApp: Tool<{ title: string; html: string; app_id?: string }> =
   async run({ title, html, app_id }, ctx) {
     const { projectId, userId } = ctx;
     const attachLegacy = Boolean(app_id && projectId && userId && projectAppReferences(projectId, userId).has(app_id));
-    const reply = await workspaceAppRequest(ctx.workspace,
+    const reply = await workspaceAppRequest(userId ? workspaceOf(userId) : ctx.workspace,
       { type: "deploy-app", appId: app_id, title, html, projectId, attachLegacy }, ctx.signal);
     if (!("app" in reply)) throw new Error("error" in reply ? reply.error : "应用部署失败");
     const { app } = reply;
@@ -52,7 +53,7 @@ export const inspectApp: Tool<{ app_id?: string }> = {
     const { projectId, userId } = ctx;
     const refs = projectId && userId ? projectAppReferences(projectId, userId) : undefined;
     const belongs = (app: { id: string; projectId?: string }) => !projectId || app.projectId === projectId || (!app.projectId && refs?.has(app.id));
-    const reply = await workspaceAppRequest(ctx.workspace, app_id ? { type: "read-app", appId: app_id, projectId } : { type: "list-apps" }, ctx.signal);
+    const reply = await workspaceAppRequest(userId ? workspaceOf(userId) : ctx.workspace, app_id ? { type: "read-app", appId: app_id, projectId } : { type: "list-apps" }, ctx.signal);
     if ("error" in reply) throw new Error(reply.error);
     if ("apps" in reply) return { content: JSON.stringify({ apps: reply.apps.filter(belongs) }) };
     if ("app" in reply && belongs(reply.app)) return { content: JSON.stringify(reply) };

@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 /**
- * A.ai 自动测评：把 evals/cases.json 里的题目一道道发给正在运行的 A.ai，自动判分，并和上一次结果对比。
+ * A.ai 自动测评：默认启动本机隔离实例，自动判分，并和上一次结果对比。
  *
- * 用法（先启动 A.ai，再在项目根目录运行；只需要 Node 22，不用装依赖）：
+ * 用法（先构建 A.ai，再在项目根目录运行，要求支持 TypeScript 类型擦除的 Node）：
  *   node evals/run.mjs --user eval --pass eval12345            # 跑全部题目
  *   node evals/run.mjs --user eval --pass eval12345 --only F04,E02 --repeat 3
  *   node evals/run.mjs --base http://服务器:3000 --category 改文件,多步 --model "conn/model"
  *
  * 参数：
- *   --base       A.ai 地址，默认 http://localhost:3000（也可用环境变量 A_EVAL_BASE）
+ *   --base       显式使用已运行的实例（也可用 A_EVAL_BASE），不会自动清理该实例的数据
  *   --user/--pass 测评账号（A_EVAL_USER / A_EVAL_PASS）。登录失败会自动注册。
  *                 建议单独建一个测评账号，在界面里给它配好要测的模型；新账号默认是 Mock 模型
  *   --model      临时切换模型（值和设置里一样：mock 或 “连接id/模型名”），跑完改回去
@@ -16,15 +16,19 @@
  *   --repeat     每道题跑几次（模型有随机性，3 次以上更能看出稳定性），默认 1
  *   --timeout    每道题最多等几秒，默认 300
  *   --compare    和哪次结果对比（results 里的文件名），默认和上一次
+ *   --baseline   将本次报告保留为基线；--keep-reports 设置保留最近几轮（默认 10）
  *   --label      给这次结果起个名字，比如 "改提示词后"，会出现在报告里
  *   --cases      换一份题目文件（默认 evals/cases.json），比如自己另写一份只测某个功能的
  *
  * 跑的时候会临时把账号设置改成：关闭长期记忆（题目之间互不影响）、终端命令不用确认（没人点确认）。
- * 跑完恢复原样。结果存在 evals/results/<时间>.json 和同名 .md 报告。
+ * 跑完恢复原样。报告交给 Storage Manager，旧 evals/results 仍可用于对比。
  */
 import { promises as fs } from "node:fs";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { StorageManager, failedFixtureRetention } from "../packages/storage-manager/src/index.ts";
+import { startEvaluationServer } from "../packages/storage-manager/src/evaluation.ts";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const RESULTS = path.join(HERE, "results");
@@ -38,7 +42,14 @@ const opt = (name, def) => {
 };
 const list = (v) => (v ? v.split(",").map((s) => s.trim()).filter(Boolean) : null);
 
-const BASE = opt("base", process.env.A_EVAL_BASE || "http://localhost:3000").replace(/\/$/, "");
+let BASE = opt("base", process.env.A_EVAL_BASE || "").replace(/\/$/, "");
+const BASE_DATA = path.resolve(process.env.A_DATA_DIR || ".data");
+const bundledEntry = path.join(HERE, "..", "server.mjs");
+const manager = new StorageManager(process.env.A_STORAGE_MANAGER_DIR || path.join(BASE_DATA, "storage-manager"));
+const reportOwner = "evaluation";
+const keepReports = Number(opt("keep-reports", 10));
+const baseline = argv.includes("--baseline");
+const controller = new AbortController();
 const USER = opt("user", process.env.A_EVAL_USER || "eval");
 const PASS = opt("pass", process.env.A_EVAL_PASS || "eval12345");
 const MODEL = opt("model", "");
@@ -60,6 +71,7 @@ async function api(method, url, body, extra = {}) {
     method,
     headers: { ...(cookie ? { Cookie: cookie } : {}), ...(body && !isForm ? { "Content-Type": "application/json" } : {}) },
     body: body ? (isForm ? body : JSON.stringify(body)) : undefined,
+    signal: AbortSignal.timeout(30_000),
     ...extra,
   });
   return res;
@@ -95,12 +107,13 @@ async function chat(sessionId, message, signal) {
   let buf = "";
   for await (const chunk of res.body) {
     buf += dec.decode(chunk, { stream: true });
-    let i;
-    while ((i = buf.indexOf("\n\n")) >= 0) {
-      const line = buf.slice(0, i);
-      buf = buf.slice(i + 2);
-      if (!line.startsWith("data: ")) continue;
-      const ev = JSON.parse(line.slice(6));
+    let end;
+    while ((end = /\r?\n\r?\n/.exec(buf))) {
+      const frame = buf.slice(0, end.index);
+      buf = buf.slice(end.index + end[0].length);
+      const data = frame.split(/\r?\n/).filter((line) => line.startsWith("data:")).map((line) => line.slice(5).replace(/^ /, "")).join("\n");
+      if (!data) continue;
+      const ev = JSON.parse(data);
       if (ev.type === "session") out.sessionId = ev.session.id;
       else if (ev.type === "error") out.errors.push(ev.message);
       else if (ev.type === "approval") {
@@ -112,8 +125,8 @@ async function chat(sessionId, message, signal) {
   return out;
 }
 
-async function readFile(p) {
-  const res = await api("GET", `/api/files?path=${encodeURIComponent(p)}`);
+async function readFile(sessionId, p) {
+  const res = await api("GET", `/api/files?${new URLSearchParams({ sessionId, path: p })}`);
   const data = await res.json().catch(() => ({}));
   return res.ok && data.type === "file" ? data : null;
 }
@@ -135,13 +148,13 @@ function generate(spec) {
 const contentOf = (spec) => (typeof spec === "string" ? spec : generate(spec));
 
 /** 每道题的附件放进自己的 uploads/<dir>/：上一次测评留下的同名文件不会混进来 */
-async function upload(files, dir) {
+async function upload(sessionId, files, dir) {
   const map = {};
   for (const [name, spec] of Object.entries(files ?? {})) {
     const form = new FormData();
     form.append("dir", dir);
     form.append("file", new Blob([contentOf(spec)]), name);
-    const data = await json("POST", "/api/upload", form);
+    const data = await json("POST", `/api/upload?${new URLSearchParams({ sessionId })}`, form);
     map[name] = data.files[0].path;
   }
   return map;
@@ -263,7 +276,7 @@ async function grade(checks, m, ctx, setup) {
   if (checks.maxSteps !== undefined) add(m.steps <= checks.maxSteps, `步数 ≤ ${checks.maxSteps}（实际 ${m.steps}）`);
   for (const f of checks.files ?? []) {
     const p = fill(f.path, ctx);
-    const file = await readFile(p);
+    const file = await readFile(m.sessionId, p);
     const text = file?.content ?? "";
     if (f.exists === false) {
       add(!file, `${p} 不存在`);
@@ -300,16 +313,20 @@ async function runCase(c, runId, round) {
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), TIMEOUT);
   try {
-    ctx.files = await upload(c.files, `eval-${runId}-${c.id}${REPEAT > 1 ? `-${round}` : ""}`);
-    const turns = c.turns ?? [c.prompt];
     let sessionId;
+    if (Object.keys(c.files ?? {}).length) {
+      sessionId = (await json("POST", "/api/sessions", {})).id;
+      ctx.files = await upload(sessionId, c.files, `eval-${runId}-${c.id}${REPEAT > 1 ? `-${round}` : ""}`);
+    }
+    const turns = c.turns ?? [c.prompt];
     for (let i = 0; i < turns.length; i++) {
       let msg = fill(turns[i], ctx);
       // 和界面上传附件一样：路径附在第一条消息末尾
       const paths = Object.values(ctx.files);
       if (i === 0 && paths.length) msg += `\n\n<附件>\n${paths.join("\n")}\n</附件>`;
-      const res = await chat(sessionId, msg, ac.signal);
+      const res = await chat(sessionId, msg, AbortSignal.any([ac.signal, controller.signal]));
       sessionId = res.sessionId;
+      r.sessionId = sessionId;
       if (res.errors.length) r.error = res.errors.join("；");
     }
     const session = await json("GET", `/api/sessions/${sessionId}`);
@@ -407,7 +424,8 @@ function report(result, prev) {
     const down = result.byCase.filter((c) => before.get(c.id) && c.passRate < before.get(c.id).passRate).map((c) => c.id);
     L.push("", `变好：${up.join("、") || "无"}　变差：${down.join("、") || "无"}`);
   }
-  L.push("", "每道题的完整过程可以在 A.ai 里打开对应会话查看（标题就是题目），sessionId 在 json 结果里。");
+  L.push("", result.isolated ? "独立实例在测评后关闭。通过的现场已回收，失败的现场最多保留 24 小时。"
+    : "可在被测实例中按 JSON 报告的 sessionId 查看对应会话。");
   return L.join("\n") + "\n";
 }
 
@@ -416,6 +434,16 @@ function report(result, prev) {
  * 题目不同（比如只跑了 --only F04）时对比没有意义，宁可不比
  */
 async function previous(current, ids) {
+  if (COMPARE && !/^[\w-]+(?:\.json)?$/.test(COMPARE)) throw new Error("对比报告必须是文件名");
+  const selected = COMPARE && COMPARE.replace(/\.json$/, "");
+  for (const entry of manager.retained("report", reportOwner)) {
+    const result = await fs.readFile(path.join(manager.directory(entry.id), "report.json"), "utf8").then(JSON.parse).catch(() => null);
+    if (!result) continue;
+    if (selected ? selected === result.runId : JSON.stringify(result.cases) === JSON.stringify(ids)) {
+      if (selected) manager.pin(entry.id);
+      return { file: `${result.runId}.json`, ...result };
+    }
+  }
   const names = (await fs.readdir(RESULTS).catch(() => [])).filter((f) => f.endsWith(".json") && f !== current).sort().reverse();
   const load = async (name) => {
     try {
@@ -434,7 +462,8 @@ async function previous(current, ids) {
 
 /* ---------------- 主流程 ---------------- */
 
-async function main() {
+async function main(isolated) {
+  if (!Number.isSafeInteger(keepReports) || keepReports < 1) throw new Error("--keep-reports 必须是正整数");
   const { cases: all } = JSON.parse(await fs.readFile(CASES, "utf8"));
   const cases = all.filter((c) => (!ONLY || ONLY.includes(c.id)) && (!CATS || CATS.includes(c.category)));
   if (!cases.length) throw new Error("没有符合条件的题目");
@@ -448,22 +477,17 @@ async function main() {
       console.warn("恢复设置失败，请到设置页手动改回：", e.message),
     );
   };
-  process.once("SIGINT", async () => {
-    console.log("\n中断，恢复设置…");
-    await restore();
-    process.exit(130);
-  });
-
-  const info = await json("GET", "/api/info");
-  console.log(`模型：${info.model}　题目：${cases.length} 道 × ${REPEAT} 次`);
-  if (/mock/i.test(info.model)) console.log("⚠️  当前是 Mock 模型：只能验证测评流程能跑通，分数没有意义。用 --model 或在设置里给测评账号换成真实模型。");
-
   const startedAt = new Date();
-  const runId = startedAt.toISOString().replace(/[-:]/g, "").replace(/\..+/, "").replace("T", "-");
+  const runId = startedAt.toISOString().replace(/[-:.]/g, "").replace("T", "-").replace("Z", "");
   const rows = [];
+  let info;
   try {
-    for (const c of cases)
+    info = await json("GET", "/api/info");
+    console.log(`模型：${info.model}　题目：${cases.length} 道 × ${REPEAT} 次`);
+    if (/mock/i.test(info.model)) console.log("⚠️  当前是 Mock 模型：只能验证测评流程。");
+    evaluation: for (const c of cases)
       for (let k = 1; k <= REPEAT; k++) {
+        if (controller.signal.aborted) break evaluation;
         process.stdout.write(`  ${c.id} ${c.title}${REPEAT > 1 ? ` #${k}` : ""} … `);
         const r = await runCase(c, runId, k);
         rows.push(r);
@@ -478,6 +502,8 @@ async function main() {
   }
 
   const result = {
+    runId,
+    isolated,
     startedAt: startedAt.toISOString(),
     label: LABEL,
     base: BASE,
@@ -488,12 +514,16 @@ async function main() {
     byCase: byCase(rows),
     rows,
   };
-  await fs.mkdir(RESULTS, { recursive: true });
   const file = `${runId}.json`;
   const prev = await previous(file, result.cases);
-  await fs.writeFile(path.join(RESULTS, file), JSON.stringify(result, null, 2));
   const md = report(result, prev);
-  await fs.writeFile(path.join(RESULTS, `${runId}.md`), md);
+  const reportScope = manager.create("report", reportOwner);
+  try {
+    await fs.writeFile(path.join(reportScope.directory, "report.json"), JSON.stringify(result, null, 2));
+    await fs.writeFile(path.join(reportScope.directory, "report.md"), md);
+    reportScope.finish({ retainMs: Infinity, pinned: baseline });
+  } catch (error) { reportScope.finish(); throw error; }
+  manager.trimReports(reportOwner, keepReports);
 
   const s = result.summary;
   const p = prev?.summary;
@@ -501,10 +531,38 @@ async function main() {
     `\n通过 ${s.passed}/${s.cases}（${pct(s.passRate)}${delta(s.passRate, p?.passRate, { fmt: pct })}）　平均得分 ${pct(s.avgScore)}　平均 ${num(s.avgSteps)} 步　工具出错 ${s.toolErrors}　平均 ${Math.round(s.avgTokens)} token　平均 ${num(s.avgSeconds)} 秒`,
   );
   console.log(prev ? `对比：${prev.file}` : "没有跑过同一批题的旧结果，这次先当基线。");
-  console.log(`报告：${path.relative(process.cwd(), path.join(RESULTS, `${runId}.md`))}`);
+  console.log(`报告：${path.join(reportScope.directory, "report.md")}`);
+  return !controller.signal.aborted && rows.length === cases.length * REPEAT && rows.every((row) => row.pass);
 }
 
-main().catch((e) => {
+async function evaluate() {
+  manager.sweep();
+  const scope = BASE ? undefined : manager.create("evaluation", reportOwner);
+  let server;
+  let passed = false;
+  const interrupt = () => controller.abort();
+  process.once("SIGINT", interrupt);
+  process.once("SIGTERM", interrupt);
+  try {
+    if (scope) {
+      server = await startEvaluationServer(existsSync(bundledEntry) ? bundledEntry : path.resolve("dist/server/server.mjs"), scope, BASE_DATA);
+      BASE = server.origin;
+    } else console.log("使用现有测评实例，实例数据随其管理员策略保留。");
+    passed = await main(Boolean(scope));
+    process.exitCode = controller.signal.aborted ? 130 : passed ? 0 : 1;
+  } finally {
+    process.removeListener("SIGINT", interrupt);
+    process.removeListener("SIGTERM", interrupt);
+    try { await server?.stop(); }
+    catch (error) { passed = false; throw error; }
+    finally {
+      scope?.finish({ retainMs: passed ? 0 : failedFixtureRetention });
+      if (scope && !passed) console.log(`失败现场保留 24 小时：${scope.directory}`);
+    }
+  }
+}
+
+evaluate().catch((e) => {
   console.error("测评失败：", e instanceof Error ? e.message : e);
-  process.exit(1);
+  process.exitCode = 1;
 });

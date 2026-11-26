@@ -24,7 +24,11 @@ export interface TaskRecord extends TaskOrigin {
   sessionId: string;
   role: SubagentRole;
   status: TaskStatus;
+  /** 对话可继续时为 true，执行结果仍由 status 单独记录。 */
+  chatActive: boolean;
   contract: TaskContract;
+  /** 只保存同会话内已登记的直接上游 ID，重试时仍需核对原始结果。 */
+  dependencyIds?: string[];
   limits: BudgetLimits;
   progress: TaskProgress;
   evidence: Evidence[];
@@ -45,14 +49,20 @@ export function canAccessTasks(owner: TaskOwner) {
   return !!db().prepare("SELECT 1 FROM sessions WHERE id=? AND user_id=?").get(owner.sessionId, owner.userId);
 }
 
+function chatActive(row: Row) {
+  return row.chat_active == null ? row.status !== "cancelled" && row.status !== "interrupted" : row.chat_active === 1;
+}
+
 function read(row: Row): TaskRecord {
   const { progress, evidence, messages, pendingMessages } = JSON.parse(String(row.snapshot)) as Checkpoint;
+  const { dependencyIds, ...contract } = JSON.parse(String(row.contract)) as TaskContract & { dependencyIds?: string[] };
   return {
     id: String(row.id), sessionId: String(row.session_id), runId: String(row.run_id), inputId: String(row.input_id),
     parentCallId: row.parent_call_id ? String(row.parent_call_id) : undefined,
     retryOf: row.retry_of ? String(row.retry_of) : undefined,
     role: row.role as SubagentRole, status: row.status as TaskStatus,
-    contract: JSON.parse(String(row.contract)), limits: { idleTimeoutMs: DEFAULT_IDLE_TIMEOUT_MS, ...JSON.parse(String(row.limits)) },
+    chatActive: chatActive(row),
+    contract, dependencyIds, limits: { idleTimeoutMs: DEFAULT_IDLE_TIMEOUT_MS, ...JSON.parse(String(row.limits)) },
     progress, evidence, messages, pendingMessages, result: row.result ? JSON.parse(String(row.result)) : undefined,
     createdAt: Number(row.created_at), updatedAt: Number(row.updated_at),
   };
@@ -93,7 +103,7 @@ export function listSubagentThreads(owner: TaskOwner, before?: string, currentOn
   settleInterrupted(owner);
   const cursor = before ? lookup(owner, before) : undefined;
   if (before && !cursor) throw new SubagentRequestError("任务分页游标不存在", 404);
-  const rows = db().prepare(`SELECT t.id, t.status, t.role, t.contract, t.created_at, t.updated_at,
+  const rows = db().prepare(`SELECT t.id, t.status, t.chat_active, t.role, t.contract, t.created_at, t.updated_at,
     json_extract(t.snapshot, '$.progress') AS progress
     FROM subagent_tasks t WHERE ${owned}
       AND NOT EXISTS (SELECT 1 FROM subagent_tasks next WHERE next.session_id=t.session_id AND next.retry_of=t.id)
@@ -104,12 +114,12 @@ export function listSubagentThreads(owner: TaskOwner, before?: string, currentOn
   const attempts = currentOnly ? undefined : threadAttempts(owner.sessionId, rows.map(({ id }) => String(id)));
   const now = Date.now();
   return rows.map((row) => {
-    const { task, name, purpose } = JSON.parse(String(row.contract)) as TaskContract;
+    const contract = JSON.parse(String(row.contract)) as TaskContract;
     const progress = JSON.parse(String(row.progress)) as TaskProgress;
     return {
-      id: String(row.id), name: name || (purpose || task).split(/[。！？\n]/, 1)[0].trim().slice(0, 24) || "子任务",
+      id: String(row.id), name: subagentName(contract),
       role: row.role as SubagentRole,
-      status: row.status as TaskStatus, createdAt: Number(row.created_at), updatedAt: Number(row.updated_at),
+      status: row.status as TaskStatus, chatActive: chatActive(row), createdAt: Number(row.created_at), updatedAt: Number(row.updated_at),
       tokens: progress.inputTokens + progress.outputTokens, estimated: progress.estimated,
       metrics: attempts && summarizeAttempts(attempts.get(String(row.id)) ?? [], now),
     };
@@ -117,6 +127,10 @@ export function listSubagentThreads(owner: TaskOwner, before?: string, currentOn
 }
 
 export type SubagentThread = ReturnType<typeof listSubagentThreads>[number];
+
+export function subagentName({ name, purpose, task }: TaskContract) {
+  return name || (purpose || task).split(/[。！？\n]/, 1)[0].trim().slice(0, 24) || "子任务";
+}
 
 /** 重试仍属于同一线程。按本页的最新尝试回溯，跨会话的旧记录不会参与统计。 */
 function threadAttempts(sessionId: string, ids: string[]) {
@@ -159,7 +173,7 @@ function summarizeAttempts(attempts: Row[], now: number) {
     tokens += progress.inputTokens + progress.outputTokens;
     estimated ||= progress.estimated;
     hasDialogue ||= !!messages;
-    // 恢复会复制已保存的对话。按消息 ID 去重，排除任务描述和系统生成的“恢复任务”消息。
+    // 后续轮次复用历史，按消息 ID 去重，排除初始任务描述和旧版的恢复占位消息。
     for (const message of [...(messages ?? []), ...(pendingMessages ?? [])]) {
       if (message.role === "user" && !starters.has(message.id)) userMessages.add(message.id);
       else if (message.role === "assistant" && message.content.trim()) replies.add(message.id);
@@ -174,6 +188,14 @@ function summarizeAttempts(attempts: Row[], now: number) {
 export function getSubagentTask(owner: TaskOwner, id: string) {
   settleInterrupted(owner);
   return lookup(owner, id);
+}
+
+/** 暂停和恢复仅切换最新尝试的对话状态，保持历史执行结果、时间和预算。 */
+export function setSubagentChatActive(owner: TaskOwner, id: string, active: boolean) {
+  const row = db().prepare(`UPDATE subagent_tasks AS t SET chat_active=? WHERE ${owned} AND id=?
+    AND NOT EXISTS (SELECT 1 FROM subagent_tasks next WHERE next.session_id=t.session_id AND next.retry_of=t.id)
+    RETURNING *`).get(Number(active), owner.sessionId, owner.userId, id);
+  return row && read(row);
 }
 
 function lookup(owner: TaskOwner, id: string) {
@@ -193,22 +215,32 @@ export function listSubagentTasks(owner: TaskOwner, before?: string) {
 
 /** 同一会话/去重键只登记一次。已有键的合法性由权限和契约快照共同决定。 */
 export function registerTask(owner: TaskOwner, origin: TaskOrigin, contract: TaskContract,
-  role: SubagentRole, limits: BudgetLimits, key: string, fingerprint: string) {
+  role: SubagentRole, limits: BudgetLimits, key: string, fingerprint: string,
+  dependencies?: { ids: string[]; queued: boolean }) {
   const id = randomUUID();
   const at = Date.now();
   const inserted = db().prepare(`INSERT INTO subagent_tasks (
     id, session_id, run_id, input_id, parent_call_id, retry_of, dedupe_key, fingerprint, executor,
     role, status, contract, limits, snapshot, created_at, updated_at)
-    SELECT ?, s.id, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ? FROM sessions s WHERE s.id=? AND s.user_id=?
+    SELECT ?, s.id, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? FROM sessions s WHERE s.id=? AND s.user_id=?
     ON CONFLICT(session_id, dedupe_key) DO NOTHING RETURNING *`).get(
     id, origin.runId, origin.inputId, origin.parentCallId ?? null, origin.retryOf ?? null, key,
-    fingerprint, worker, role, JSON.stringify(contract), JSON.stringify(limits),
+    fingerprint, worker, role, dependencies?.queued ? "queued" : "running",
+    JSON.stringify(dependencies ? { ...contract, dependencyIds: dependencies.ids } : contract), JSON.stringify(limits),
     JSON.stringify({ progress: emptyProgress(), evidence: [] }), at, at, owner.sessionId, owner.userId);
   if (inserted) return { record: read(inserted), created: true };
   const row = db().prepare(`SELECT t.* FROM subagent_tasks t WHERE ${owned} AND dedupe_key=?`).get(owner.sessionId, owner.userId, key);
   if (!row) throw new SubagentRequestError("会话不存在", 404);
   if (row.fingerprint !== fingerprint) throw new SubagentRequestError("该去重键已用于不同的子任务、上下文或权限范围", 409);
   return { record: read(row), created: false };
+}
+
+/** 只有当前执行器可以领取仍在等待的任务。取消或结算后，迟到的上游无法重新启动它。 */
+export function startQueuedTask(owner: TaskOwner, id: string) {
+  const row = db().prepare(`UPDATE subagent_tasks AS t SET status='running', updated_at=?
+    WHERE ${owned} AND id=? AND executor=? AND status='queued' RETURNING *`)
+    .get(Date.now(), owner.sessionId, owner.userId, id, worker);
+  return row && read(row);
 }
 
 export function checkpointTask(owner: TaskOwner, id: string, snapshot: Checkpoint) {

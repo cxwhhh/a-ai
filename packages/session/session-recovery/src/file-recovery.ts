@@ -25,6 +25,7 @@ type FileWriteRow = {
   path: string;
   before_hash: string | null;
   expected_hash: string;
+  session_workspace: number;
 };
 
 export interface ToolWriteScope {
@@ -37,11 +38,11 @@ export interface ToolWriteScope {
 }
 
 /** 在文件操作前提交。调用方已取得会话运行权，助手的调用声明也已经保存。 */
-export function recordFileWrite(scope: ToolWriteScope, path: string, before: string | null, expected: string): void {
+export function recordFileWrite(scope: ToolWriteScope, path: string, before: string | null, expected: string, sessionWorkspace = false): void {
   db().prepare(`INSERT INTO agent_file_writes
-    (session_id, assistant_id, call_id, run_id, input_id, step, path, before_hash, expected_hash)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(scope.sessionId, scope.assistantId, scope.callId, scope.runId, scope.inputId, scope.step, path, before, expected);
+    (session_id, assistant_id, call_id, run_id, input_id, step, path, before_hash, expected_hash, session_workspace)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(scope.sessionId, scope.assistantId, scope.callId, scope.runId, scope.inputId, scope.step, path, before, expected, Number(sessionWorkspace));
 }
 
 export function readFileRecoveries(sessionId: string, userId: string): FileRecovery[] {
@@ -64,7 +65,7 @@ function resultFor(messages: StoredMessage[], assistantId: string, callId: strin
  * 续聊前对账最近一轮。正常结果优先，缺少结果时只读检查带检查点的文件。
  * 已有的核验是某一时点的事实。历史、步骤状态和文件正文保持原记录。
  */
-export async function recoverInterruptedTurn(session: Session, userId: string, workspace: string, signal: AbortSignal): Promise<string | undefined> {
+export async function recoverInterruptedTurn(session: Session, userId: string, workspace: string, signal: AbortSignal, sessionWorkspace = false): Promise<string | undefined> {
   // 找当前分支上最后一个实际输入，避免把更早的已截断轮次当作这次需要恢复的任务。
   let lastInputId: string | undefined;
   for (let i = session.messages.length - 1; i >= 0; i--) {
@@ -116,7 +117,8 @@ export async function recoverInterruptedTurn(session: Session, userId: string, w
     try {
       const target = resolvePath(workspace, write.path, "read");
       // 路径经过符号链接后可能换了目标。只核验仍指向原工作区相对位置的文件。
-      if (target.inWorkspace && target.shown === write.path) {
+      // 旧检查点对应共享目录。独立目录里的同名文件不能证明当时写入的结果。
+      if (write.session_workspace === Number(sessionWorkspace) && target.inWorkspace && target.shown === write.path) {
         hash = await readFileHash(target.full, signal);
         verification = hash === write.expected_hash ? "matches-expected"
           : hash === write.before_hash ? "matches-before" : "changed";

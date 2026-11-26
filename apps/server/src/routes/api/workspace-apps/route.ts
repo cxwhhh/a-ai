@@ -18,7 +18,7 @@ function respond(reply: WorkspaceAppReply) {
   return Response.json(reply, { status, headers });
 }
 
-/** 只返回 JSON，任意生成的 HTML 都由隔离的应用 iframe 打开。 */
+/** 账号应用数据默认以 JSON 返回，缩略图使用隔离的 HTML，下载按附件交付。 */
 export async function GET(req: Request) {
   const user = await currentUser(req);
   if (!user) return unauthorized();
@@ -32,6 +32,14 @@ export async function GET(req: Request) {
     const refs = projectAppReferences(projectId, user.id);
     if ("apps" in reply) return respond({ apps: reply.apps.filter((app) => app.projectId === projectId || (!app.projectId && refs.has(app.id))) });
     if ("app" in reply && reply.app.projectId !== projectId && (reply.app.projectId || !refs.has(reply.app.id))) return respond(notFound);
+  }
+  if ("app" in reply && query.get("thumbnail") === "1") {
+    // 缩略图只排版保存的页面。浏览器不能执行脚本、提交表单或请求外部资源。
+    return new Response(reply.app.html, { headers: {
+      "Content-Type": "text/html; charset=utf-8",
+      "Content-Security-Policy": "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'self'",
+      "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff",
+    } });
   }
   if ("app" in reply && query.get("download") === "1") {
     const name = encodeURIComponent(reply.app.title.replace(/[<>:"/\\|?*\x00-\x1f]/g, "_") + ".html");

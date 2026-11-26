@@ -9,13 +9,14 @@ const { hashFileBytes } = load("packages/workspace/src/file-fingerprint.ts");
 const { recordFileWrite, readFileRecoveries, recoverInterruptedTurn } = load("packages/session/session-recovery/src/file-recovery.ts");
 const { recordAgentLog, readAgentEvents } = load("packages/session/src/log.ts");
 const { readSessionTrace } = load("packages/conversation-trace/src/projection.ts");
+const { openSessionWorkspace } = load("packages/workspace/src/session-workspace.ts");
 const hash = (text) => hashFileBytes(Buffer.from(text));
 const original = "timeout: 30\n";
 const expected = "timeout: 60\n";
 const step = { step: 1, model: "mock", effort: "default" };
 
 /** 按真实落库顺序保存调用和检查点，停在文件操作和结果事务之间的指定位置。 */
-function interruptedFile(label, content, { result = false } = {}) {
+function interruptedFile(label, content, { result = false, legacy = false } = {}) {
   const session = store.createSession("u");
   const file = `${label}.txt`;
   const scope = {
@@ -31,10 +32,11 @@ function interruptedFile(label, content, { result = false } = {}) {
     }]
   });
   recordAgentLog(session.id, { kind: "tool-start", runId, inputId, detail: { step: 1, callId, name: "edit_file" } });
-  recordFileWrite(scope, file, hash(original), hash(expected));
-  writeFileSync(path.join(data, file), content);
+  const { workspace } = openSessionWorkspace("u", session.id);
+  recordFileWrite(scope, file, hash(original), hash(expected), !legacy);
+  writeFileSync(path.join(legacy ? data : workspace, file), content);
   if (result) store.addMessage(session, { id: `${label}-result`, role: "tool", toolCallId: callId, content: "实际工具结果", status: "ok", createdAt: 3 });
-  return { session, file, scope };
+  return { session, file, scope, workspace };
 }
 
 test("文件工具提交检查点后才写入，提交失败时保留原文件", async () => {
@@ -77,7 +79,7 @@ test("真实聊天入口将新建文件的检查点与助手、运行和步骤�
     assert.equal(row.before_hash, null);
     assert.equal(row.expected_hash, hash(expected));
     assert.equal(row.verification, null);
-    assert.equal(readFileSync(path.join(data, "created.txt"), "utf8"), expected);
+    assert.equal(readFileSync(path.join(openSessionWorkspace("u", run.sessionId).workspace, "created.txt"), "utf8"), expected);
   } finally {
     tools.findTool = originalFind;
   }
@@ -85,8 +87,8 @@ test("真实聊天入口将新建文件的检查点与助手、运行和步骤�
 
 test("续聊自动核验已写入文件，恢复结论进入原调用的上下文与轨迹", async () => {
   const { request } = routeFixture();
-  const { session, file, scope } = interruptedFile("applied", expected);
-  const full = path.join(data, file);
+  const { session, file, scope, workspace } = interruptedFile("applied", expected);
+  const full = path.join(workspace, file);
   const before = statSync(full).mtimeMs;
   const captured = [];
   routeState.provider = { async *stream({ messages }) {
@@ -124,14 +126,21 @@ test("恢复区分仍是原版、外部更改和已有结果，并且重复核�
   const before = interruptedFile("unchanged", original);
   const changed = interruptedFile("conflict", "timeout: 90\n");
   for (const item of [already, before, changed]) {
-    for (let i = 0; i < 2; i++) await recoverInterruptedTurn(item.session, "u", data, signal);
-    assert.equal(readFileSync(path.join(data, item.file), "utf8"), item === already ? expected : item === before ? original : "timeout: 90\n");
+    for (let i = 0; i < 2; i++) await recoverInterruptedTurn(item.session, "u", item.workspace, signal, true);
+    assert.equal(readFileSync(path.join(item.workspace, item.file), "utf8"), item === already ? expected : item === before ? original : "timeout: 90\n");
   }
   assert.equal(readAgentEvents("u", already.session.id).filter((e) => e.kind === "tool-result").length, 1);
   assert.equal(readFileRecoveries(already.session.id, "u").length, 0);
   assert.deepEqual(readFileRecoveries(before.session.id, "u").map((item) => item.verification), ["matches-before"]);
   assert.deepEqual(readFileRecoveries(changed.session.id, "u").map((item) => item.verification), ["changed"]);
   assert.equal(db().prepare("SELECT COUNT(*) AS n FROM agent_file_writes WHERE session_id=? AND checked_at IS NOT NULL").get(changed.session.id).n, 1);
+});
+
+test("旧共享目录检查点不会核验新对话目录里的同名文件", async () => {
+  const { session, file, workspace } = interruptedFile("legacy-write", expected, { legacy: true });
+  writeFileSync(path.join(workspace, file), expected);
+  await recoverInterruptedTurn(session, "u", workspace, signal, true);
+  assert.equal(readFileRecoveries(session.id, "u")[0].verification, "unreadable");
 });
 
 test("普通对话中断后继续会带上已保存的半截回复", async () => {
@@ -156,7 +165,7 @@ test("普通对话中断后继续会带上已保存的半截回复", async () =>
 
 test("续聊发现同一文件冲突时，内置写入工具要求先核对", async () => {
   const { request } = routeFixture();
-  const { session, file } = interruptedFile("blocked-write", "timeout: 90\n");
+  const { session, file, workspace } = interruptedFile("blocked-write", "timeout: 90\n");
   const tools = overrides["packages/tool-runtime/src/index.ts"];
   const originalFind = tools.findTool;
   try {
@@ -173,7 +182,7 @@ test("续聊发现同一文件冲突时，内置写入工具要求先核对", as
     const stored = store.getSession(session.id, "u");
     const tool = stored.messages.find((message) => message.toolCallId === "repeat-write");
     assert.match(tool.content, /恢复核验发现/);
-    assert.equal(readFileSync(path.join(data, file), "utf8"), "timeout: 90\n");
+    assert.equal(readFileSync(path.join(workspace, file), "utf8"), "timeout: 90\n");
   } finally {
     tools.findTool = originalFind;
   }

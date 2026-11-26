@@ -36,7 +36,7 @@ RUN pip install --no-cache-dir ${PIP_INDEX_URL:+-i $PIP_INDEX_URL} pandas numpy 
 
 # matplotlib 默认字体没有中文，图上的中文会变成方块。上面装了文泉驿微米黑（fonts-wqy-microhei，约 5 MB），这里把它设成默认字体：
 #   backend Agg = 没有屏幕也能画图（只能 savefig 存成文件）；axes.unicode_minus False = 负号不用 Unicode 字符，否则中文字体里显示成方块
-# MATPLOTLIBRC 指向这个文件。matplotlib 的字体缓存会写在 HOME（= 工作区）下的 .cache 里，第一次 import 会慢几秒
+# MATPLOTLIBRC 指向这个文件。服务执行器把 matplotlib 的字体缓存通过 XDG_CACHE_HOME 写到容器的临时空间。
 RUN printf '%s\n' 'backend: Agg' 'font.family: sans-serif' 'font.sans-serif: WenQuanYi Micro Hei, WenQuanYi Zen Hei, Noto Sans CJK SC, DejaVu Sans' 'axes.unicode_minus: False' > /etc/matplotlibrc
 ENV MATPLOTLIBRC=/etc/matplotlibrc MPLBACKEND=Agg
 

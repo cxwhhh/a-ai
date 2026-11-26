@@ -13,3 +13,6 @@
 .trace .tr-say { display: flex; align-items: flex-start; gap: 8px; }
 .trace .tr-say > .tr-type-icon { margin-top: 3px; }
 .trace .tr-say > .md { flex: 1; min-width: 0; }
+
+/* 文件预览入口是真正的按钮，也保持操作行的整行尺寸。 */
+.trace button.tr-row { width: 100%; text-align: left; }

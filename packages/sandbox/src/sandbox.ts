@@ -1,9 +1,12 @@
 import { execFile, execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DATA_DIR } from "../../storage/src/db";
+import { dockerCacheEnv, dockerRunStorage, dockerScratch, dockerTemporaryMount } from "./docker-storage";
+import { currentRunScope, publishRunFiles, validOutputName } from "../../storage-manager/src/index";
 import { networkPolicy } from "./sandbox-network";
 
 /**
@@ -14,7 +17,7 @@ import { networkPolicy } from "./sandbox-network";
  *      只是字符串检查，能被绕过，但能让模型马上知道“该去哪找”，查得更准。
  *   2. 用户确认：会改东西的命令先问用户（run.ts 的 confirm，第 7.22 步）。
  *   3. 操作系统级隔离：就算命令绕过了第 1 层，也读不到、写不了授权范围之外的文件。
- *        docker   ：每个账号工作区一个容器，只挂载工作区和授权目录（只读的就只读挂载），默认断网
+ *        docker   ：按工作区分配容器，只挂载该工作区和授权目录（只读的就只读挂载），默认断网
  *        seatbelt ：macOS 自带的 sandbox-exec，用规则限制读写路径和网络，不需要装 Docker
  *        local    ：没有隔离，只有第 1、2 层（开发时用，设置页会提示“未隔离”）
  *
@@ -217,6 +220,9 @@ export interface ExecOptions {
   /** 沙箱里看到的工作目录（root 或其子目录，或某个授权目录） */
   cwd: string;
   script: string;
+  /** Docker 里让相对路径写入本次调用的临时目录。显式绝对路径仍由沙箱挂载规则约束。 */
+  temporary?: boolean;
+  outputs?: string[];
   /**
    * 不经过 shell、直接运行的程序和参数（run_python 用：[python, 脚本路径]）。
    * 只在 Windows 本机模式下使用，这样电脑上没装 Git Bash 也能跑 Python；其他情况仍然执行 script
@@ -230,8 +236,10 @@ export interface ExecOptions {
 
 export interface Exec {
   proc: ChildProcess;
-  /** 结束这次运行的所有进程（超时、点停止、命令结束后清理后台进程都用它） */
-  kill(): void;
+  /** 超时或停止时通知进程组退出。Docker 的文件回收在执行结束后统一完成。 */
+  kill(): void | Promise<void>;
+  dispose?(): Promise<void>;
+  publish?(): Promise<string[]>;
 }
 
 /** 工作区在沙箱里的路径：docker 里固定是 /workspace，其余就是本机路径 */
@@ -344,7 +352,7 @@ export function seatbeltProfile(workspace: string, info: SandboxInfo) {
     .join("\n");
 }
 
-/* ---------- docker：每个账号工作区一个可复用容器 ---------- */
+/* ---------- docker：同一对话工作区可复用容器 ---------- */
 
 const IMAGE = () => process.env.A_SANDBOX_IMAGE || "a-ai-sandbox:latest";
 const IDLE_MS = 15 * 60_000;
@@ -352,7 +360,7 @@ const IDLE_MS = 15 * 60_000;
 const namespace = process.env.A_SANDBOX_NAMESPACE || "1";
 const sandboxLabel = `a-ai.sandbox=${namespace}`;
 const sandboxPrefix = namespace === "1" ? "a-ai-sbx-" : `a-ai-sbx-${namespace}-`;
-const containers = new Map<string, { lastUsed: number; active: number; ready: Promise<void> }>();
+const containers = new Map<string, { lastUsed: number; active: number; ready: Promise<void>; workspace: string; scoped: boolean; retired?: boolean; removing?: Promise<void> }>();
 let sweeper: ReturnType<typeof setInterval> | undefined;
 let activeDockerRuns = 0;
 
@@ -424,49 +432,80 @@ async function dockerExec(o: ExecOptions, info: SandboxInfo): Promise<Exec> {
   // 旧命令继续收尾，新命令使用新策略的容器；不通过强删正在执行的容器来应用设置。
   const policy = networkPolicy();
   info = { ...info, network: policy.enabled };
-  // 会话 ID 仍用于审计。同一账号的聊天、代码和应用操作通过工作区复用执行环境。
+  const scope = o.temporary ? currentRunScope() : undefined;
+  if (scope && !scope.active) throw new Error("运行临时目录已释放");
+  const outputs = [...new Set(o.outputs ?? [])];
+  if (outputs.length && (!scope || outputs.length > 32 || outputs.some((name) => !validOutputName(name)))) throw new Error("产出须为临时执行目录中的文件名，最多 32 个");
+  // 按实际挂载的工作区复用。不同对话即使属于同一账号或项目，也使用不同容器。
   const workspaceKey = createHash("sha256").update(path.resolve(o.workspace)).digest("hex").slice(0, 32);
-  const name = `${sandboxPrefix}user-${workspaceKey}-net${Number(policy.enabled)}-v${policy.revision}`;
+  const name = `${sandboxPrefix}user-${workspaceKey}-net${Number(policy.enabled)}-v${policy.revision}${scope ? `-run-${scope.id}` : ""}`;
   let c = containers.get(name);
+  if (c?.removing) {
+    await c.removing.catch(() => {});
+    c = containers.get(name);
+  }
   if (!c) {
-    const ready = createContainer(name, o.workspace, info).catch((e: Error) => {
+    const scopedLimit = Number(process.env.A_STORAGE_MAX_RUN_CONTAINERS || 4);
+    if (scope && Number.isSafeInteger(scopedLimit) && scopedLimit > 0 && [...containers.values()].filter((entry) => entry.scoped).length >= scopedLimit)
+      throw new Error("服务器临时运行环境已达上限，请稍候重试");
+    const ready = createContainer(name, o.workspace, info, scope?.limitMiB).catch((e: Error) => {
       throw new Error("沙箱容器启动失败：" + explainDocker(e.message));
     });
-    c = { lastUsed: Date.now(), active: 0, ready };
+    c = { lastUsed: Date.now(), active: 0, ready, workspace: path.resolve(o.workspace), scoped: Boolean(scope) };
     containers.set(name, c);
     c.ready.catch(() => containers.delete(name));
+    const allocated = c;
+    scope?.onClose(async () => {
+      allocated.retired = true;
+      await ready.catch(() => {});
+      await removeContainer(name);
+    });
   }
-  await c.ready;
-  o.signal?.throwIfAborted();
+  c.active++;
+  try {
+    await c.ready;
+    o.signal?.throwIfAborted();
+    if (scope && !scope.active) throw new Error("运行临时目录已释放");
+  } catch (error) { c.active--; throw error; }
   c.lastUsed = Date.now();
   startSweeper();
 
-  // 记录进程组方便取消。正常退出清理标记，避免频繁调用应用时在 tmpfs 留下临时文件。
-  const runId = Math.random().toString(36).slice(2);
-  const pidFile = `/tmp/.a-ai-run-${runId}`;
-  const wrapped = `echo $$ > ${pidFile}\ntrap 'rm -f -- ${pidFile}' EXIT\n${o.script}`;
-  const envArgs = Object.entries(o.env).flatMap(([k, v]) => (v === undefined ? [] : ["-e", `${k}=${v}`]));
+  const storage = dockerRunStorage(o.script, o.temporary, Boolean(scope));
+  const envArgs = Object.entries({ ...o.env, ...dockerCacheEnv }).flatMap(([k, v]) => (v === undefined ? [] : ["-e", `${k}=${v}`]));
   const input = o.input === undefined ? [] : ["-i"];
-  const proc = spawn("docker", ["exec", ...input, "-w", o.cwd, ...envArgs, name, "setsid", "-w", "bash", "-c", wrapped], {
+  const proc = spawn("docker", ["exec", ...input, "-w", o.cwd, ...envArgs, name, "setsid", "-w", "bash", "-c", storage.script], {
     stdio: [input.length ? "pipe" : "ignore", "pipe", "pipe"],
   });
-  c.active++;
   const running = c;
   proc.once("close", () => {
     running.active--;
     running.lastUsed = Date.now();
   });
-  let killed = false;
-  const kill = () => {
-    if (killed) return;
-    killed = true;
-    docker(["exec", name, "bash", "-c", `kill -KILL -- -$(cat ${pidFile}) 2>/dev/null; rm -f ${pidFile}`], 10_000).catch(() => {});
+  let stopping: Promise<void> | undefined;
+  const kill = () => stopping ??= docker(["exec", name, "bash", "-c", storage.cancel], 10_000).then(() => {}, () => {});
+  const dispose = async () => {
+    await stopping;
+    await docker(["exec", name, "bash", "-c", storage.cleanup], 10_000)
+      .catch(() => { console.warn("[sandbox] 无法回收执行临时目录，将随容器回收"); });
   };
-  return { proc, kill };
+  const publish = scope && outputs.length ? async () => {
+    if (!scope.active) throw new Error("运行已结束");
+    const staged = await mkdtemp(path.join(scope.directory, "publish-"));
+    try {
+      for (const file of outputs) {
+        const source = `${dockerScratch}/${file}`;
+        // docker cp 保留符号链接，服务在公布前再次核验复制结果。先确认源是临时目录内的普通文件。
+        await docker(["exec", name, "bash", "-c", 'test -f "$1" && test "$(realpath -e -- "$1")" = "$1"', "aai-publish", source], 10_000);
+        await docker(["cp", `${name}:${source}`, path.join(staged, file)], 30_000);
+      }
+      return publishRunFiles(scope, o.workspace, staged, outputs);
+    } finally { await rm(staged, { recursive: true, force: true }); }
+  } : undefined;
+  return { proc, kill, dispose, publish };
 }
 
 /**
- * 创建账号工作区容器：
+ * 创建工作区容器：
  *   --network none        默认断网
  *   --memory/--cpus/--pids-limit  防止吃光机器、fork 炸弹
  *   --cap-drop ALL + no-new-privileges + 非 root 用户
@@ -474,13 +513,13 @@ async function dockerExec(o: ExecOptions, info: SandboxInfo): Promise<Exec> {
  *   工作区挂到 /workspace；授权目录挂到“和宿主机相同的路径”，模型看到的路径就是用户说的路径
  *   授权目录里的 .ssh 之类目录用空的 tmpfs 盖住
  */
-async function createContainer(name: string, workspace: string, info: SandboxInfo) {
+async function createContainer(name: string, workspace: string, info: SandboxInfo, scopedLimit?: number) {
   await docker(["rm", "-f", name]).catch(() => {});
   const vol = process.env.A_SANDBOX_DATA_VOLUME;
-  const wsMount = vol
-    ? `type=volume,src=${vol},dst=/workspace,volume-subpath=${path.relative(DATA_DIR, workspace)}`
-    : `type=bind,src=${workspace},dst=/workspace`;
-  const dirMounts = info.dirs.flatMap((d) => ["--mount", `type=bind,src=${d.path},dst=${d.path}${d.mode === "ro" ? ",readonly" : ""}`]);
+  const wsMount = (vol
+    ? `type=volume,src=${vol},dst=/workspace,volume-subpath=${path.relative(process.env.A_SANDBOX_VOLUME_ROOT || DATA_DIR, workspace)}`
+    : `type=bind,src=${workspace},dst=/workspace`) + (scopedLimit ? ",readonly" : "");
+  const dirMounts = info.dirs.flatMap((d) => ["--mount", `type=bind,src=${d.path},dst=${d.path}${scopedLimit || d.mode === "ro" ? ",readonly" : ""}`]);
   const base = ["--network", info.network ? "bridge" : "none", "--mount", wsMount, ...dirMounts];
 
   // 先用一次性容器找出授权目录里的敏感目录（A.ai 自己跑在容器里时看不到宿主机目录，只能这样找）
@@ -495,21 +534,63 @@ async function createContainer(name: string, workspace: string, info: SandboxInf
     "run", "-d", "--name", name, "--label", sandboxLabel,
     "--memory", process.env.A_SANDBOX_MEMORY || "1g", "--cpus", process.env.A_SANDBOX_CPUS || "1", "--pids-limit", "256",
     "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", "1000:1000",
-    "--read-only", "--tmpfs", "/tmp:rw,exec,size=512m",
+    "--read-only", "--tmpfs", scopedLimit ? `/tmp:rw,exec,mode=1777,size=${scopedLimit}m` : dockerTemporaryMount,
+    ...(scopedLimit ? ["--ipc", "none"] : []),
     ...base, ...masks,
     "-w", "/workspace", "--entrypoint", "sleep", IMAGE(), "infinity",
   ]);
 }
 
-/** 空闲时可回收容器，账号工作区及部署记录由持久卷提供。 */
+async function removeContainer(name: string) {
+  const entry = containers.get(name);
+  if (entry?.removing) return entry.removing;
+  const removal = docker(["rm", "-f", name]).catch((error) => {
+    if (!/No such container/i.test(error.message)) throw error;
+  }).then(() => { containers.delete(name); });
+  if (entry) entry.removing = removal;
+  try { await removal; } finally { if (entry) entry.removing = undefined; }
+}
+
+export async function closeEvaluationSandboxes() {
+  if (process.env.A_SANDBOX_CLEANUP_ON_CLOSE !== "1") return;
+  await Promise.allSettled([...containers.keys()].map(removeContainer));
+}
+
+export function startSandboxStorage() {
+  if (sandboxInfo().mode === "docker") startSweeper();
+}
+
+export async function dockerCacheUsage(roots: string[]) {
+  const entries = [...containers].filter(([, entry]) => within(entry.workspace, roots));
+  const sizes = await Promise.all(entries.map(async ([name, entry]) => {
+    const out = await docker(["exec", name, "bash", "-c",
+      'if [ -d /tmp/aai-cache ]; then du -sb /tmp/aai-cache; else printf "0 cache\\n"; fi; du -sb /tmp'], 3000).catch(() => "");
+    const [cache, total] = out ? out.split("\n").map((line) => Number(line.trim().split(/\s+/)[0])) : [];
+    return Number.isFinite(cache) && Number.isFinite(total) ? { cache, scratch: entry.scoped ? Math.max(0, total - cache) : 0 } : null;
+  }));
+  return { containers: entries.length, bytes: sizes.some((size) => size === null) ? null : sizes.reduce((sum, size) => sum + (size?.cache ?? 0), 0),
+    scratchBytes: sizes.some((size) => size === null) ? null : sizes.reduce((sum, size) => sum + (size?.scratch ?? 0), 0) };
+}
+
+export async function clearDockerCache(roots: string[]) {
+  const idle = [...containers].filter(([, entry]) => within(entry.workspace, roots) && !entry.scoped && !entry.active && !entry.removing);
+  const results = await Promise.allSettled(idle.map(([name]) => removeContainer(name)));
+  return { removed: results.filter((result) => result.status === "fulfilled").length,
+    failed: results.filter((result) => result.status === "rejected").length };
+}
+
+/** 空闲时可回收容器，对话工作区及部署记录由持久卷提供。 */
 function startSweeper() {
   if (sweeper) return;
   sweeper = setInterval(() => {
-    for (const [name, c] of containers)
-      if (!c.active && Date.now() - c.lastUsed > IDLE_MS) {
-        containers.delete(name);
-        docker(["rm", "-f", name]).catch(() => {});
-      }
+    for (const [name, entry] of containers) {
+      if (entry.retired && !entry.removing) void removeContainer(name).catch(() => {});
+    }
+    const idle = [...containers].filter(([, c]) => !c.active && !c.scoped && !c.removing).sort((a, b) => b[1].lastUsed - a[1].lastUsed);
+    idle.forEach(([name, c], index) => {
+      // 先按空闲时间回收。并发工作区较多时，优先保留最近使用的 16 个空闲缓存容器。
+      if (index >= 16 || Date.now() - c.lastUsed > IDLE_MS) void removeContainer(name).catch(() => {});
+    });
   }, 60_000);
   sweeper.unref();
   // 服务重启前留下的沙箱容器（不在 containers 里）也清掉
@@ -527,6 +608,7 @@ export function sandboxPrompt(): string {
     ? "- run_command / run_python 可以联网。"
     : "- run_command / run_python 在断网的沙箱里运行：pip install、curl、requests、urllib 都连不上网。查网页用 web_search / web_fetch，下载文件用 download_file（下到工作区后再处理）。";
   const parts = ["## 运行环境", net, "- 工作区在沙箱里的路径是 /workspace（Docker 模式）；文件工具用相对路径或 /workspace/… 都可以。"];
+  if (info.mode === "docker") parts.push("- 服务器的 run_command / run_python 默认在本轮临时目录执行，/workspace 只读。用 /workspace 下的绝对路径读取附件和项目源文件。正式成品写到当前目录，并通过 outputs 参数交付。绑定项目且确实需要修改持久工作区时可显式传 temporary: false。");
   if (info.dirs.length) {
     const list = info.dirs.map((d) => `- ${d.path}（${d.mode === "ro" ? "只读" : "可读写"}）`).join("\n");
     parts.push(
@@ -549,6 +631,7 @@ export interface RunResult {
   code: number | null;
   signal: NodeJS.Signals | null;
   timedOut: boolean;
+  outputs?: string[];
 }
 
 /**
@@ -560,6 +643,7 @@ export async function runInSandbox(
   o: ExecOptions & { timeoutMs: number; onData(stream: "out" | "err", text: string): void },
 ): Promise<RunResult> {
   o.signal?.throwIfAborted();
+  if (o.outputs?.length && (!o.temporary || sandboxInfo().mode !== "docker")) throw new Error("交付参数只能用于服务器 Docker 临时执行");
   if (sandboxInfo().mode !== "docker") return runProcess(o);
   const limit = Number(process.env.A_SANDBOX_MAX_CONCURRENT ?? 0);
   if (Number.isSafeInteger(limit) && limit > 0 && activeDockerRuns >= limit) {
@@ -575,7 +659,7 @@ export async function runInSandbox(
 }
 
 async function runProcess(o: Parameters<typeof runInSandbox>[0]): Promise<RunResult> {
-  const { proc, kill } = await sandboxExec(o);
+  const { proc, kill, dispose, publish } = await sandboxExec(o);
   let timedOut = false;
   const timer = setTimeout(() => ((timedOut = true), kill()), o.timeoutMs);
   o.signal?.addEventListener("abort", kill, { once: true });
@@ -591,8 +675,9 @@ async function runProcess(o: Parameters<typeof runInSandbox>[0]): Promise<RunRes
     }
     if (d) o.onData("err", d);
   });
+  let result: RunResult;
   try {
-    return await new Promise<RunResult>((resolve, reject) => {
+    result = await new Promise<RunResult>((resolve, reject) => {
       let closed = false;
       proc.on("error", (e) => reject(new Error(`无法启动：${e.message}`)));
       proc.on("close", (code, signal) => {
@@ -614,6 +699,8 @@ async function runProcess(o: Parameters<typeof runInSandbox>[0]): Promise<RunRes
   } finally {
     clearTimeout(timer);
     o.signal?.removeEventListener("abort", kill);
-    if (sandboxInfo().mode === "docker") kill(); // 容器里的后台进程也清掉（本机模式下进程组已随 bash 结束或在上面被杀）
+    await dispose?.(); // Docker 在返回前回收后台进程和本次临时目录
   }
+  if (publish && result.code === 0 && !result.timedOut && !o.signal?.aborted) result.outputs = await publish();
+  return result;
 }

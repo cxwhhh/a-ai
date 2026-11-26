@@ -1,13 +1,12 @@
 "use client";
+import { Questionnaire } from "@shadcn/react/questionnaire";
 import { useState } from "react";
 import "./AskCard.css";
 
 /**
  * agent 的提问卡片（模型调用了 ask_user）。
  *   问题
- *   [选项 A] [选项 B] [选项 C]      ← 点选（multiple 时可多选）
- *   补充想法（可选）……             ← 选项之外的要求，也可以不选只写
- *                          [发送]
+ * Questionnaire 提供单题表单和原生单选、多选控件。补充想法独立填写，允许与选项一起发送。
  * 回答拼成一条普通的用户消息发出去：“选项 A\n补充：……”，模型收到后接着做下一步。
  * 已经回答过的（不是最后一轮）只显示问题，不能再点。
  */
@@ -21,53 +20,79 @@ export function AskCard(props: {
 }) {
   const [picked, setPicked] = useState<string[]>([]);
   const [note, setNote] = useState("");
-  const toggle = (o: string) =>
-    setPicked((p) => (p.includes(o) ? p.filter((x) => x !== o) : props.multiple ? [...p, o] : [o]));
+  const options = [...new Set(props.options)];
+  const noteLabel = options.length ? "补充想法（可选）" : "输入你的回答";
+  const setChoice = (option: string, checked: boolean) => {
+    setPicked((previous) => {
+      if (!checked) return previous.filter((value) => value !== option);
+      return props.multiple ? [...previous, option] : [option];
+    });
+  };
   const answer = [picked.join("、"), note.trim() && (picked.length ? `补充：${note.trim()}` : note.trim())].filter(Boolean).join("\n");
-  const submit = () => answer && props.onAnswer(answer);
+  const submit = () => {
+    if (answer) props.onAnswer(answer);
+  };
 
   return (
     <div className={`ask-card ${props.active ? "" : "done"}`}>
       <div className="ask-label">{props.active ? "需要你确认" : "已提问"}</div>
-      <div className="ask-q">{props.question}</div>
-      {props.active && (
-        <>
-          {props.options.length > 0 && (
-            <div className="ask-opts" role={props.multiple ? "group" : "radiogroup"}>
-              {props.options.map((o) => (
-                <button
-                  key={o}
-                  type="button"
-                  className={`ask-opt ${picked.includes(o) ? "on" : ""}`}
-                  aria-pressed={picked.includes(o)}
-                  onClick={() => toggle(o)}
-                  // 双击直接发送：只想选一个时不用再点“发送”
-                  onDoubleClick={() => props.onAnswer(o)}
-                >
-                  {o}
-                </button>
-              ))}
+      {props.active ? (
+        <Questionnaire.Root
+          onSubmit={(e) => {
+            e.preventDefault();
+            submit();
+          }}
+        >
+          <Questionnaire.Item name="answer" multiple={props.multiple} className="ask-question">
+            <Questionnaire.Title className="ask-q">{props.question}</Questionnaire.Title>
+            {options.length > 0 && (
+              <Questionnaire.Choices className="ask-opts">
+                {options.map((option) => (
+                  <Questionnaire.Choice
+                    key={option}
+                    className="ask-opt"
+                    value={option}
+                    checked={picked.includes(option)}
+                    onChange={(e) => setChoice(option, e.currentTarget.checked)}
+                    // 沿用原有双击快捷发送，直接提交这一个选项。
+                    onDoubleClick={() => props.onAnswer(option)}
+                  >
+                    <Questionnaire.ChoiceInput
+                      className="ask-choice-input"
+                      onClick={(e) => {
+                        // 用户再次点当前单选项时可以清空选项，改成只写文字。
+                        if (e.detail > 0 && !props.multiple && picked.includes(option)) setPicked([]);
+                      }}
+                    />
+                    <Questionnaire.ChoiceLabel>{option}</Questionnaire.ChoiceLabel>
+                  </Questionnaire.Choice>
+                ))}
+              </Questionnaire.Choices>
+            )}
+            <div className="ask-foot">
+              <textarea
+                className="ask-note"
+                rows={1}
+                value={note}
+                aria-label={noteLabel}
+                placeholder={noteLabel}
+                onChange={(e) => setNote(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && e.keyCode !== 229) {
+                    e.preventDefault();
+                    if (!e.repeat) submit();
+                  }
+                }}
+              />
+              {/* 自由文字是独立补充字段，空选项时也按 A.ai 的规则提交。 */}
+              <Questionnaire.Submit type="button" className="ask-send" disabled={!answer} onClick={submit}>
+                发送
+              </Questionnaire.Submit>
             </div>
-          )}
-          <div className="ask-foot">
-            <textarea
-              className="ask-note"
-              rows={1}
-              value={note}
-              placeholder={props.options.length ? "补充想法（可选）" : "输入你的回答"}
-              onChange={(e) => setNote(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-                  e.preventDefault();
-                  submit();
-                }
-              }}
-            />
-            <button type="button" className="ask-send" disabled={!answer} onClick={submit}>
-              发送
-            </button>
-          </div>
-        </>
+          </Questionnaire.Item>
+        </Questionnaire.Root>
+      ) : (
+        <div className="ask-q">{props.question}</div>
       )}
     </div>
   );

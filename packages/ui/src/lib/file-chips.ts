@@ -70,9 +70,9 @@ function split(text: string): HNode[] {
  *   3. 都不是 → 按名字当作工作区里的路径打开（找不到时右侧会提示）
  */
 export function resolveFileName(name: string, messages: StoredMessage[], artifacts: Artifact[]): { type: "artifact"; id: string } | { type: "file"; path: string } {
-  const a = artifacts.find((x) => x.title === name);
-  if (a) return { type: "artifact", id: a.id };
   const n = name.replace(/^\.\//, "");
+  const a = artifacts.find((x) => x.file === n) ?? artifacts.find((x) => x.title === name);
+  if (a) return { type: "artifact", id: a.id };
   let hit = "";
   for (const m of messages)
     for (const c of m.toolCalls ?? []) {

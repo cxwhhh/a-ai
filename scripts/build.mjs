@@ -20,3 +20,5 @@ await build({
   logLevel: "info",
 });
 await build({ absWorkingDir: root, entryPoints: ["apps/cli/src/main.ts"], bundle: true, target: "node22", platform: "node", format: "esm", outfile: "dist/cli/main.mjs" });
+await build({ absWorkingDir: root, entryPoints: ["evals/run.mjs"], bundle: true, target: "node22", platform: "node", format: "esm", outfile: "dist/server/evals/run.mjs" });
+for (const file of ["cases.json", "harness.json", "tools.json"]) await copyFile(path.join(root, "evals", file), path.join(root, "dist/server/evals", file));

@@ -2,12 +2,15 @@ import { randomUUID } from "node:crypto";
 import type { RouteContext } from "../../../../../../router";
 import { currentUser, notFound, unauthorized } from "../../../../../../../../../packages/application/users/src/auth";
 import { getSettings } from "../../../../../../../../../packages/application/settings/src/settings";
+import { getProject } from "../../../../../../../../../packages/application/projects/src/projects";
+import { readProjectRules } from "../../../../../../../../../packages/application/projects/src/rules";
 import { unavailableTools } from "../../../../../../../../../packages/sandbox/src/sandbox";
 import { currentOption } from "../../../../../../../../../packages/protocol/src/lib/settings";
 import { resolveModelSelection } from "../../../../../../../../../packages/session/src/model-selection";
 import { createConversationTrace } from "../../../../../../../../../packages/conversation-trace/src/recorder";
 import { workspaceOf } from "../../../../../../../../../packages/tools/src/files";
-import { canAccessTasks, getSubagentTask, listRunningDelegations, listSubagentTasks, listSubagentThreads } from "../../../../../../../../../packages/subagent/src/ownership-claim";
+import { openSessionWorkspace } from "../../../../../../../../../packages/workspace/src/session-workspace";
+import { canAccessTasks, getSubagentTask, listRunningDelegations, listSubagentTasks, listSubagentThreads, setSubagentChatActive } from "../../../../../../../../../packages/subagent/src/ownership-claim";
 import { SubagentRequestError } from "../../../../../../../../../packages/subagent/src/task-contract";
 
 const json = (body: unknown, status = 200) => Response.json(body, { status, headers: { "Cache-Control": "private, no-store" } });
@@ -42,7 +45,7 @@ export async function GET(req: Request, { params }: RouteContext) {
   }
 }
 
-/** 独立任务只读当前会话的显式引用。HTTP 返回登记结果后，运行由 Host 持有。 */
+/** Host 持有独立任务。用户从子线程提交后续消息时，可以指定一个已引用的文件。 */
 export async function POST(req: Request, { params, runtime }: RouteContext) {
   const user = await currentUser(req);
   if (!user) return unauthorized();
@@ -55,6 +58,7 @@ export async function POST(req: Request, { params, runtime }: RouteContext) {
     const task = getSubagentTask(owner, taskId);
     if (!task) return notFound();
     if (runtime.agentSessions.isArchived(owner.sessionId, owner.userId)) return json({ error: "对话或项目已归档" }, 409);
+    if (!task.chatActive) return json({ error: "子 Agent 对话已暂停，请先恢复对话" }, 409);
     const text = "message" in body && typeof body.message === "string" ? body.message.trim() : "";
     if (!text || text.length > 4_000 || Object.keys(body).length !== 1) return json({ error: "请输入 1 至 4000 字的消息" }, 400);
     try { return json({ message: runtime.subagents.sendMessage(owner, taskId, text) }, 202); }
@@ -63,6 +67,14 @@ export async function POST(req: Request, { params, runtime }: RouteContext) {
   const retryOf = "retryTaskId" in body ? body.retryTaskId : undefined;
   if (retryOf !== undefined && (typeof retryOf !== "string" || !retryOf.trim() || Object.keys(body).length !== 1)) {
     return json({ error: "重试只接受一个有效的 retryTaskId" }, 400);
+  }
+  const continuation = "continueTaskId" in body ? body.continueTaskId : undefined;
+  const message = "message" in body && typeof body.message === "string" ? body.message.trim() : "";
+  const file = "path" in body ? body.path : undefined;
+  if (continuation !== undefined && (typeof continuation !== "string" || !continuation.trim() || !message || message.length > 4_000 ||
+    (file !== undefined && (typeof file !== "string" || !file.trim() || file.length > 500)) ||
+    Object.keys(body).some((key) => !["continueTaskId", "message", "path"].includes(key)))) {
+    return json({ error: "请输入 1 至 4000 字的子线程消息，并选择有效文件" }, 400);
   }
   const disabled = await unavailableTools();
   const session = runtime.agentSessions.get(owner.sessionId, owner.userId);
@@ -74,19 +86,48 @@ export async function POST(req: Request, { params, runtime }: RouteContext) {
   try { selection = resolveModelSelection(session.id, user.id, defaults); }
   catch (error) { return json({ error: error instanceof Error ? error.message : "模型选择不可用" }, 409); }
   const settings = { ...defaults, currentModel: selection.model, reasoningEffort: selection.effort };
+  const scope = openSessionWorkspace(user.id, session.id);
+  if (!scope) return Response.json({ error: "会话不存在" }, { status: 404 });
+  const { workspace } = scope;
+  let projectRules: string;
+  try { projectRules = await readProjectRules(workspaceOf(user.id), getProject(session.projectId, user.id)?.rulesFile); }
+  catch (error) { return json({ error: error instanceof Error ? error.message : "项目规则不可用" }, 409); }
   const runId = `subagent-run:${randomUUID()}`;
   const inputId = `subagent-input:${randomUUID()}`;
   try {
-    const { record, finished } = runtime.subagents.start(body, {
-      ...owner, session, disabled, workspace: workspaceOf(user.id), provider: runtime.models(settings),
+    const context = {
+      ...owner, session, disabled, workspace, projectRules, provider: runtime.models(settings),
       contextWindow: currentOption(settings).contextWindow,
       trace: { recorder: createConversationTrace({ sessionId: session.id, runId, inputId, ...selection }), step: 1 },
-    }, { runId, inputId, retryOf });
+    };
+    const { record, finished } = typeof continuation === "string"
+      ? runtime.subagents.continueTask(message, typeof file === "string" ? file : undefined, context, { runId, inputId, retryOf: continuation })
+      : runtime.subagents.start(body, context, { runId, inputId, retryOf });
     void finished.catch(() => console.warn("[subagent] 无法保存独立任务终态"));
     return json({ task: record }, 202);
   } catch (error) {
     return requestFailure(error);
   }
+}
+
+/** 恢复的是子线程的对话状态，模型收到实际消息后再运行。 */
+export async function PATCH(req: Request, { params, runtime }: RouteContext) {
+  const user = await currentUser(req);
+  if (!user) return unauthorized();
+  const owner = { sessionId: (await params).id, userId: user.id };
+  const id = new URL(req.url).searchParams.get("taskId");
+  if (!id) return json({ error: "需要 taskId" }, 400);
+  if (!getSubagentTask(owner, id)) return notFound();
+  const body: unknown = await req.json().catch(() => null);
+  if (!body || typeof body !== "object" || !("active" in body) || body.active !== true || Object.keys(body).length !== 1) {
+    return json({ error: "恢复子 Agent 对话需要 active=true" }, 400);
+  }
+  const session = runtime.agentSessions.get(owner.sessionId, owner.userId);
+  if (!session) return notFound();
+  if (runtime.agentSessions.isArchived(owner.sessionId, owner.userId)) return json({ error: "对话或项目已归档，请先恢复" }, 409);
+  if (!session.projectId && !session.multiAgent) return json({ error: "请先开启多agent智能体模式" }, 409);
+  const task = setSubagentChatActive(owner, id, true);
+  return task ? json({ task }) : json({ error: "子 Agent 已开始新的轮次，请重新打开线程" }, 409);
 }
 
 export async function DELETE(req: Request, { params, runtime }: RouteContext) {
@@ -96,6 +137,7 @@ export async function DELETE(req: Request, { params, runtime }: RouteContext) {
   const id = new URL(req.url).searchParams.get("taskId");
   if (!id) return json({ error: "需要 taskId" }, 400);
   if (!getSubagentTask(owner, id)) return notFound();
+  if (!setSubagentChatActive(owner, id, false)) return json({ error: "子 Agent 已开始新的轮次，请重新打开线程" }, 409);
   runtime.subagents.cancel(owner, id);
   return new Response(null, { status: 204 });
 }

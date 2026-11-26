@@ -4,6 +4,7 @@ import type { CSSProperties, DragEvent } from "react";
 import type { Groups, Project, SessionMeta } from "../../../protocol/src/lib/shared";
 import type { ConversationView } from "./ChatPane";
 import { CoreLogo } from "./CoreLogo";
+import { RingSpinner } from "./RingSpinner";
 import { AgentIcon, IArchive, IChart, IChevron, IClock, ICode, IDoc, IFile, IFolder, IGlobe, IMore, IPanelLeft, IPencil, IPlus, IGear, IFolderPlusLine, ILayersLine, IRetry, ISearchLine, ITable, IX } from "./Icons";
 import "./Sidebar.css";
 import { UserMenu, type SettingsTab } from "./UserMenu";
@@ -12,6 +13,20 @@ export interface QuickAction {
   label: string;
   prefix: string;
   icon: React.ReactNode | null;
+}
+
+export type SessionRunStatus = "running" | "completed";
+
+function SessionRunIndicator({ status }: { status?: SessionRunStatus }) {
+  if (!status) return null;
+  const label = status === "running" ? "任务进行中" : "任务已完成";
+  return (
+    <span className="session-run-indicator" title={label}>
+      {status === "running"
+        ? <RingSpinner label={label} />
+        : <span className="session-completed-dot" role="img" aria-label={label} />}
+    </span>
+  );
 }
 
 /** 空白对话页上的快捷开头：点一下把常用开头填进输入框 */
@@ -38,6 +53,7 @@ let foldedCache: Set<string> | null = null;
  */
 export function Sidebar(props: {
   sessions: SessionMeta[];
+  sessionRunStatuses: ReadonlyMap<string, SessionRunStatus>;
   currentId?: string;
   viewingDetails: boolean;
   model: string;
@@ -274,7 +290,7 @@ export function Sidebar(props: {
   });
 
   /**
-   * 一行对话共用标题、文件标记和选中样式。归档行可打开历史，右侧提供日志和独立恢复。
+   * 一行对话共用标题、运行提示、文件标记和选中样式。归档行可打开历史，右侧提供日志和独立恢复。
    * 传了 gid（在分组里）时，这一行本身也能接住拖拽：鼠标在上半截插到它上面，下半截插到它下面。
    */
   const renderRow = (s: SessionMeta, gid?: string, archived = false) => (
@@ -336,15 +352,20 @@ export function Sidebar(props: {
           }}
         />
       ) : (
-        // 在详情页单击当前对话可返回正文，正文里的标题单击仍用于改名。
+        // 当前对话有完成提示时，单击先确认完成；平时单击当前正文标题用于改名。
         <span
           className="ellipsis"
-          onClick={(e) => s.id === currentId && !props.viewingDetails && (e.stopPropagation(), setRenaming(s.id))}
+          onClick={(e) => {
+            if (s.id !== currentId || props.viewingDetails || props.sessionRunStatuses.get(s.id) === "completed") return;
+            e.stopPropagation();
+            setRenaming(s.id);
+          }}
           onDoubleClick={(e) => (e.stopPropagation(), setRenaming(s.id))}
         >
           {s.title}
         </span>
       )}
+      <SessionRunIndicator status={props.sessionRunStatuses.get(s.id)} />
       {archived ? (
         <>
           {s.hasFiles && <IFile width={13} height={13} />}
@@ -490,15 +511,16 @@ export function Sidebar(props: {
   return (
     <aside id={props.resizeHandle ? "workspace-sidebar" : undefined} className={`side ${props.floating ? "floating" : ""}`} onMouseEnter={props.onMouseEnter} onMouseLeave={props.onMouseLeave}>
       {props.resizeHandle}
-      {/* 顶部：收起按钮在最左边，后面是 logo 和 “A.ai”（字体 Manrope，见 layout.tsx 和 Sidebar.css） */}
+      {/* 球形标识和字标在左，侧栏控制在同一行右端。 */}
       <div className="side-head">
-        <button className="icon-btn side-collapse" onClick={props.onCollapse} title={props.floating ? `固定左栏 ${modKey}B` : `收起 ${modKey}B`}>
-          <IPanelLeft />
-        </button>
         <span className="brand">
           <CoreLogo size={32} className="logo" />
           <span className="brand-text">A.ai</span>
         </span>
+        <button type="button" className="icon-btn side-collapse" onClick={props.onCollapse}
+          aria-label={props.floating ? "固定左栏" : "收起左栏"} title={props.floating ? `固定左栏 ${modKey}B` : `收起 ${modKey}B`}>
+          <IPanelLeft aria-hidden />
+        </button>
       </div>
 
       <button className="new-btn" onClick={props.onNew}>

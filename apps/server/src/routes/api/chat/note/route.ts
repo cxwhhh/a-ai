@@ -1,5 +1,6 @@
 import { currentUser, unauthorized } from "../../../../../../../packages/application/users/src/auth";
 import type { RouteContext } from "../../../../router";
+import { MAX_TASK_REQUIREMENTS_CHARS, taskRequirementsUpdate } from "../../../../../../../packages/protocol/src/lib/task-requirements";
 
 
 /**
@@ -13,6 +14,11 @@ export async function POST(req: Request, { runtime }: RouteContext) {
   const b = (await req.json().catch(() => ({}))) as { sessionId?: string; message?: string };
   const text = String(b.message ?? "").trim();
   if (!b.sessionId || !text) return Response.json({ error: "sessionId 和 message 不能为空" }, { status: 400 });
-  if (!runtime.agents.get(b.sessionId, user.id)?.enqueueInput(undefined, text.slice(0, 4000), "next-step")) return Response.json({ queued: false }, { status: 409 });
+  const requirements = taskRequirementsUpdate(text);
+  if (requirements !== undefined && requirements.length > MAX_TASK_REQUIREMENTS_CHARS) {
+    return Response.json({ error: `任务要求最多 ${MAX_TASK_REQUIREMENTS_CHARS} 字符` }, { status: 400 });
+  }
+  const message = requirements === undefined ? text.slice(0, 4000) : text;
+  if (!runtime.agents.get(b.sessionId, user.id)?.enqueueInput(undefined, message, "next-step")) return Response.json({ queued: false }, { status: 409 });
   return Response.json({ queued: true });
 }

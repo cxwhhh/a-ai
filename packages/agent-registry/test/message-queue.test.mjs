@@ -637,6 +637,7 @@ test("并行对话复用工具调用 ID 时，审批和停止只影响对应运�
 test("并行对话的同名产出、SSE、日志各归原会话，投错作用域的事件被丢弃", async () => {
   const { request, logs, queue } = routeFixture();
   const { bindAgentDispatch } = load("packages/protocol/src/dispatch.ts");
+  const { openSessionWorkspace } = load("packages/workspace/src/session-workspace.ts");
   const a = store.createSession("u"), b = store.createSession("u");
   const gate = Promise.withResolvers();
   const fileTool = { spec: { name: "scoped_artifact" }, async run(args, ctx) {
@@ -672,7 +673,10 @@ test("并行对话的同名产出、SSE、日志各归原会话，投错作用�
       assert.ok(events.every((e) => e.scope.sessionId === scope.sessionId && e.scope.runId === scope.runId));
       const art = events.find((e) => e.type === "artifact").artifact;
       assert.ok(art.file.startsWith(`output/${scope.sessionId}/`));
-      assert.equal(readFileSync(path.join(data, art.file), "utf8"), content);
+      const { workspace } = openSessionWorkspace("u", scope.sessionId);
+      assert.equal(readFileSync(path.join(workspace, art.file), "utf8"), content);
+      const other = openSessionWorkspace("u", scope.sessionId === a.id ? b.id : a.id);
+      assert.throws(() => readFileSync(path.join(other.workspace, art.file)), { code: "ENOENT" });
       const trace = await (await logs({ sessionId: scope.sessionId })).json();
       assert.ok(trace.every((e) => e.sessionId === scope.sessionId));
       assert.ok(trace.some((e) => e.kind === "model-result" && e.detail.outcome === "output-truncated"));

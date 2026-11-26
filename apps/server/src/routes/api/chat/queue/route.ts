@@ -1,6 +1,7 @@
 import { currentUser, unauthorized } from "../../../../../../../packages/application/users/src/auth";
 import type { RouteContext } from "../../../../router";
 import { emptyQueueSnapshot, MAX_QUEUE_MESSAGE_LENGTH } from "../../../../../../../packages/agent-core/inbox/src/index";
+import { MAX_TASK_REQUIREMENTS_CHARS, taskRequirementsUpdate } from "../../../../../../../packages/protocol/src/lib/task-requirements";
 
 
 /** 只返回自己的收件箱。别人的会话与没有待处理输入的会话一样，返回空列表。 */
@@ -30,6 +31,9 @@ export async function POST(req: Request, { runtime }: RouteContext) {
     if (!message || message.length > MAX_QUEUE_MESSAGE_LENGTH) {
       const error = `排队消息需为非空且不超过 ${MAX_QUEUE_MESSAGE_LENGTH} 字符`;
       return Response.json({ error }, { status: 400 });
+    }
+    if ((taskRequirementsUpdate(message)?.length ?? 0) > MAX_TASK_REQUIREMENTS_CHARS) {
+      return Response.json({ error: `任务要求最多 ${MAX_TASK_REQUIREMENTS_CHARS} 字符` }, { status: 400 });
     }
     accepted = agent?.enqueueInput(runId, message, "next-turn") === true;
   } else if (typeof id === "string" && id && (action === "remove" || (action === "steer" && typeof runId === "string" && runId))) {

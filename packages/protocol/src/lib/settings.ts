@@ -10,6 +10,8 @@ import { MODEL_REASONING_EFFORTS, REASONING_EFFORTS, type ModelReasoningEffort }
 
 export interface ModelEntry {
   id: string; // 发给 API 的模型名，例如 deepseek-flash
+  /** 仅供界面显示。留空或旧连接缺少此项时使用模型 ID。 */
+  displayName?: string;
   contextWindow: number; // 上下文长度（token），用于计算占用百分比
   /** 自定义兼容服务中该模型支持的 reasoning_effort；旧连接缺少此项时沿用默认。 */
   reasoningEfforts?: ModelReasoningEffort[];
@@ -65,6 +67,7 @@ export const MOCK_MODEL = { value: "mock", label: "Mock（演示）", contextWin
 
 export interface ModelOption {
   value: string; // "mock" 或 "连接id/模型名"
+  modelId?: string;
   label: string;
   group: string;
   contextWindow: number;
@@ -75,7 +78,7 @@ export function modelOptions(s: Pick<Settings, "connections">): ModelOption[] {
   return [
     { ...MOCK_MODEL, group: "内置" },
     ...s.connections.flatMap((c) => c.models.map((m) => ({
-      value: `${c.id}/${m.id}`, label: m.id, group: c.name, contextWindow: validContextWindow(m.contextWindow),
+      value: `${c.id}/${m.id}`, modelId: m.id, label: m.displayName || m.id, group: c.name, contextWindow: validContextWindow(m.contextWindow),
     }))),
   ];
 }
@@ -232,6 +235,7 @@ function normalizeConnection(x: unknown): Connection | null {
           const reasoningEfforts = preset === "custom" && Array.isArray(configuredEfforts)
             ? MODEL_REASONING_EFFORTS.filter((effort) => configuredEfforts.includes(effort)) : [];
           const model: ModelEntry = { id: mid, contextWindow: validContextWindow(Math.round(cw)) };
+          if (typeof e.displayName === "string" && e.displayName.trim()) model.displayName = e.displayName.trim();
           if (reasoningEfforts.length) model.reasoningEfforts = reasoningEfforts;
           return model;
         })

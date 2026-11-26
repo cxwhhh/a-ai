@@ -1,6 +1,6 @@
 export type TaskStatus = "queued" | "running" | "completed" | "partial" | "blocked" | "failed" | "timed-out" | "cancelled" | "interrupted";
 export type TerminalTaskStatus = Exclude<TaskStatus, "queued" | "running">;
-export type BlockerCode = "budget" | "timeout" | "idle-timeout" | "repeated-output" | "tool-loop" | "cancelled" | "interrupted" | "truncated" | "model" | "tool" | "acceptance" | "queue";
+export type BlockerCode = "budget" | "timeout" | "idle-timeout" | "repeated-output" | "tool-loop" | "cancelled" | "interrupted" | "truncated" | "model" | "tool" | "acceptance" | "queue" | "dependency";
 export type ProgressKind = "text" | "reasoning" | "tool-call" | "tool-output" | "tool-result";
 type LoopCode = "repeated-output" | "tool-loop";
 

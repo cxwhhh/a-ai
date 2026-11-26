@@ -5,12 +5,15 @@ import { createConversationTrace } from "../../../conversation-trace/src/recorde
 import { HistoryConflict, type AgentSessionService } from "../../../session/src/agent-session";
 import { getSettings } from "../../settings/src/settings";
 import { workspaceOf } from "../../../tools/src/files";
+import { openSessionWorkspace } from "../../../workspace/src/session-workspace";
 import { reflect } from "../../../memory/src/reflect";
 import { getMemory, memoryPrompt, saveMemory } from "../../../memory/src/memory";
 import { getProject, getProjectMemory, projectPrompt, saveProjectMemory } from "../../projects/src/projects";
+import { readProjectRules } from "../../projects/src/rules";
 import { learnSkills } from "../../../skills/src/learn";
 import { activeSkills, skillsPrompt } from "../../../skills/src/skills";
-import { sandboxPrompt, unavailableTools } from "../../../sandbox/src/sandbox";
+import { sandboxInfo, sandboxPrompt, unavailableTools } from "../../../sandbox/src/sandbox";
+import type { StorageManager } from "../../../storage-manager/src/index";
 import { AgentUnavailable, type AgentRegistry } from "../../../agent-registry/src/index";
 import { bindAgentDispatch } from "../../../protocol/src/dispatch";
 import { recordAgentLog } from "../../../session/src/log";
@@ -20,8 +23,14 @@ import { toolStatus, type AgentEvent, type StoredMessage } from "../../../protoc
 import type { AgentTurnOutcome } from "../../../protocol/src/agent-events";
 import { splitAttachments } from "../../../protocol/src/lib/attachments";
 import { currentOption } from "../../../protocol/src/lib/settings";
+import { MAX_TASK_REQUIREMENTS_CHARS, taskRequirementsUpdate } from "../../../protocol/src/lib/task-requirements";
+import { addMessage, newId, setMultiAgent } from "../../../storage/src/store";
 import { openChatAgent } from "./agent-session";
 
+/** 版本冲突需要在页面内同步会话，其他 409 仍保留各自的处理方式。 */
+function historyConflictResponse(error = new HistoryConflict()) {
+  return Response.json({ code: "history_conflict", error: error.message }, { status: 409 });
+}
 
 /**
  * 发送新消息，或用 queuedId 继续已暂停的队首；每轮仍单独提交到会话历史。
@@ -33,6 +42,7 @@ export async function submitChat(req: Request, userId: string, services: {
   agentSessions: AgentSessionService;
   scheduler?: Scheduler;
   subagents?: SubagentOrchestrator;
+  storageManager?: StorageManager;
 }) {
   const registry = services.agents;
   const sessions = services.agentSessions;
@@ -44,11 +54,13 @@ export async function submitChat(req: Request, userId: string, services: {
     return Response.json({ error: "继续队列需要会话和队首消息，不能同时发送新消息" }, { status: 400 });
   }
   if (!text && !body.queuedId) return Response.json({ error: "message 不能为空" }, { status: 400 });
+  if ((taskRequirementsUpdate(text)?.length ?? 0) > MAX_TASK_REQUIREMENTS_CHARS)
+    return Response.json({ error: `任务要求最多 ${MAX_TASK_REQUIREMENTS_CHARS} 字符` }, { status: 400 });
   if (body.revision !== undefined && (!Number.isSafeInteger(body.revision) || body.revision < 0))
     return Response.json({ error: "无效的会话版本" }, { status: 400 });
   const initialModel = body.modelSelection === undefined ? undefined : parseModelSelection(body.modelSelection, getSettings(userId));
-  if (initialModel === null || (initialModel && body.sessionId)) return Response.json({ error: "无效的新会话模型选择" }, { status: 400 });
-  if (body.multiAgent !== undefined && (typeof body.multiAgent !== "boolean" || body.sessionId)) {
+  if (initialModel === null) return Response.json({ error: "无效的新会话模型选择" }, { status: 400 });
+  if (body.multiAgent !== undefined && typeof body.multiAgent !== "boolean") {
     return Response.json({ error: "只能在新对话请求中指定多 Agent 模式" }, { status: 400 });
   }
 
@@ -75,7 +87,7 @@ export async function submitChat(req: Request, userId: string, services: {
     return Response.json({ error: "对话或项目已归档，请先恢复" }, { status: 409 });
   }
   if (body.revision !== undefined && body.revision !== restored?.revision)
-    return Response.json({ error: "会话已更新，请刷新后重试" }, { status: 409 });
+    return historyConflictResponse();
   const opened = await openChatAgent(sessions, registry, userId, restored, titleFrom(text), project?.id, !project && body.multiAgent === true).catch((error) => {
     if (error instanceof AgentUnavailable) return null;
     throw error;
@@ -85,10 +97,14 @@ export async function submitChat(req: Request, userId: string, services: {
   // 插件可能异步初始化，期间会话可能被修改。取得运行权前使用当时的最新快照。
   const session = sessions.get(opened.session.id, userId);
   if (!session) return Response.json({ error: "会话不存在" }, { status: 404 });
+  // 附件可在首条消息之前创建空会话，仍接受首轮模型和多 Agent 选项。
+  if (restored && (initialModel || body.multiAgent !== undefined) && (session.messages.length || body.queuedId || body.truncateFrom)) {
+    return Response.json({ error: "只能在新对话请求中指定初始设置" }, { status: 400 });
+  }
   if (body.projectId !== undefined && body.projectId !== session.projectId)
     return Response.json({ error: "对话与项目不匹配" }, { status: 409 });
   if (body.revision !== undefined && body.revision !== session.revision)
-    return Response.json({ error: "会话已更新，请刷新后重试" }, { status: 409 });
+    return historyConflictResponse();
   const runtime = handle.agent.runtime;
   // 截断重发时标题保持不变（哪怕截到只剩 0 条消息），免得用户改过的标题被覆盖
   if (restored && text && session.messages.length === 0 && !body.truncateFrom) {
@@ -105,14 +121,22 @@ export async function submitChat(req: Request, userId: string, services: {
     finally { if (scheduled) scheduler!.finish(scheduled); }
   };
   const { signal, id: runId } = lease;
+  let workspace: string;
   let firstMessage: StoredMessage;
   let interruptedInputId: string | undefined;
   try {
     // 续聊前取得会话运行权，再核对上一轮。显式编辑重发走选中的历史分支。
-    if (restored && !body.truncateFrom) interruptedInputId = await recoverInterruptedTurn(session, userId, workspaceOf(userId), signal);
+    const scope = openSessionWorkspace(userId, session.id);
+    if (!scope) throw new Error("会话工作区不存在");
+    workspace = scope.workspace;
+    if (restored && !body.truncateFrom) interruptedInputId = await recoverInterruptedTurn(session, userId, workspace, signal, true);
     if (initialModel) {
       setModelSelection(session.id, userId, initialModel);
       session.modelSelection = initialModel;
+    }
+    if (restored && !session.projectId && body.multiAgent !== undefined) {
+      setMultiAgent(session.id, userId, body.multiAgent);
+      session.multiAgent = body.multiAgent;
     }
     if (body.queuedId) {
       const claimed = lease.beginNext(session, body.queuedId);
@@ -127,7 +151,7 @@ export async function submitChat(req: Request, userId: string, services: {
     }
   } catch (error) {
     finish();
-    if (error instanceof HistoryConflict) return Response.json({ error: error.message }, { status: 409 });
+    if (error instanceof HistoryConflict) return historyConflictResponse(error);
     throw error;
   }
   const encoder = new TextEncoder();
@@ -165,7 +189,10 @@ export async function submitChat(req: Request, userId: string, services: {
           }
           let outcome: AgentTurnOutcome = "failed";
           try {
-            outcome = await executeTurn(s, message.id);
+            const execute = () => executeTurn(s, message);
+            outcome = services.storageManager && sandboxInfo().mode === "docker"
+              ? await services.storageManager.withRun(userId, execute, Boolean(s.projectId))
+              : await execute();
           } finally {
             lease.endTurn(outcome);
           }
@@ -180,7 +207,7 @@ export async function submitChat(req: Request, userId: string, services: {
         }
       } catch (e) {
         if (!signal.aborted) send({ type: "error", message: e instanceof Error ? e.message : String(e) });
-        send({ type: "done" });
+        send({ type: "done", interrupted: signal.aborted || undefined });
       } finally {
         try { finish(); }
         catch (error) { console.warn("[agent-registry] 收尾日志写入失败", error); }
@@ -193,7 +220,19 @@ export async function submitChat(req: Request, userId: string, services: {
       }
 
       /** 每轮重新准备模型与会话配置，只有正常完成才允许继续领取下一条。 */
-      async function executeTurn(s: typeof initial.session, inputId: string): Promise<AgentTurnOutcome> {
+      async function executeTurn(s: typeof initial.session, input: StoredMessage): Promise<AgentTurnOutcome> {
+        if (input.taskRequirements !== undefined) {
+          // 独立的设置指令已经落库。由应用直接确认，避免为配置更新调用模型或触发工具。
+          const reply: StoredMessage = {
+            id: newId("m"), role: "assistant", createdAt: Date.now(),
+            content: input.taskRequirements ? "已更新本次任务要求。" : "已清除本次任务要求。",
+          };
+          addMessage(s, reply);
+          send({ type: "assistant_end", message: reply });
+          send({ type: "done" });
+          return "completed";
+        }
+        const inputId = input.id;
         const turnStart = s.messages.length - 1;
         const defaults = getSettings(userId);
         const selection = resolveModelSelection(s.id, userId, defaults);
@@ -202,6 +241,7 @@ export async function submitChat(req: Request, userId: string, services: {
         const pluginPrompt = await runtime.setupTurn(runId, inputId, signal);
         // 项目：决定用哪份记忆（全局 / 项目自己的 / 不用），并把项目说明和共享内容接进系统提示词
         const project = getProject(s.projectId, userId);
+        const projectRules = await readProjectRules(workspaceOf(userId), project?.rulesFile);
         const memMode = !settings.memory ? "off" : project?.memory ?? "global";
         const memStore =
           memMode === "project" && project
@@ -214,7 +254,8 @@ export async function submitChat(req: Request, userId: string, services: {
           provider,
           tools: runtime.tools,
           session: s,
-          workspace: workspaceOf(userId),
+          workspace,
+          sessionWorkspace: true,
           execution: { runId, inputId },
           recovery: {
             interruptedInputId: inputId === firstMessage.id ? interruptedInputId : undefined,
@@ -224,6 +265,7 @@ export async function submitChat(req: Request, userId: string, services: {
           commandApproval: settings.commandApproval,
           signal,
           systemPrompt: settings.systemPrompt,
+          projectRules,
           maxSteps: settings.maxSteps,
           maxFixRounds: settings.maxFixRounds,
           // 长期记忆 + 技能目录 + 运行环境说明（断网、授权目录，第 7.27 步）都接在系统提示词后面
@@ -260,7 +302,10 @@ export async function submitChat(req: Request, userId: string, services: {
           }
           if (ev.type === "artifact") recordAgentLog(s.id, { kind: "artifact", runId, inputId,
             detail: { artifactId: ev.artifact.id, title: ev.artifact.title, path: ev.artifact.file ?? null } });
-          send(ev);
+          // 停止信号和输出上限同样会结束流，带上原因供仍在订阅的页面识别。
+          if (ev.type === "done" && signal.aborted) send({ ...ev, interrupted: true });
+          else if (ev.type === "done" && outcome === "output-truncated") send({ ...ev, outputTruncated: true });
+          else send(ev);
         }
         // 半截回答保留供查看，后续重新生成后再学习这轮内容。
         if (outcome === "interrupted") return outcome;

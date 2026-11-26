@@ -3,6 +3,7 @@ import path from "node:path";
 import { audit } from "../../telemetry/src/audit";
 import { checkCommand, networkHint, runInSandbox, sandboxEnv, sandboxInfo, sandboxRoot, within } from "../../sandbox/src/sandbox";
 import type { Tool, ToolContext } from "../../tool-runtime/src/types";
+import { useTemporaryStorage } from "../../storage-manager/src/index";
 
 const DEFAULT_TIMEOUT = 30_000;
 const MAX_TIMEOUT = 120_000;
@@ -11,6 +12,7 @@ const HEAD = 2000;
 const TAIL = 6000;
 /** 实时输出每隔多久推一次给前端（合并成一段，避免一行一个事件） */
 const FLUSH_MS = 100;
+const TEMP_CWD = "临时目录";
 
 /**
  * 终端工具：在工作区里执行一条 bash 命令（和 Claude Code 的 Bash 工具同一类）。
@@ -31,7 +33,9 @@ export const runCommand: Tool<{
   command: string;
   purpose?: string;
   description?: string;
-  timeout_ms?: number
+  timeout_ms?: number;
+  temporary?: boolean;
+  outputs?: string[];
 }> = {
   spec: {
     name: "run_command",
@@ -40,6 +44,7 @@ export const runCommand: Tool<{
       "当前目录会保留：每条命令都从上一条命令结束时的目录开始执行（不是每次回到工作区根目录）。ranIn 是这条命令开始时的目录，cwd 是结束后的目录（相对工作区，. = 工作区根目录），下一条命令就从 cwd 开始。" +
       "cd 之前先看上一次结果的 cwd：已经在目标目录就不要再 cd；命令里的相对路径是相对当前目录的。" +
       "适合：git、运行脚本和测试（python -m unittest、pytest、npm test）、解压、批量处理文件。" +
+      "服务器默认从本轮临时目录执行，按 /workspace/… 读取原文件。只有绑定项目的会话可显式传 temporary: false 在持久工作区执行。" +
       "不要用于：读写文件（用 read_file、read_document、edit_file、write_file、file_op，不要用 cat、sed、echo >、mkdir、mv、rm）；找文件（用 glob、grep，不要用 find、rg）；纯 Python 计算（用 run_python）。联网以当前沙箱设置为准，关闭时使用 web_fetch、download_file。" +
       "只能访问工作区和授权目录（系统提示里有列表），其他路径和密钥文件会被拒绝。默认限时 30 秒，最长 120 秒。" +
       "不能交互：没有输入，不要运行 vim、top、python（不带脚本）这类等待输入的程序；不要用 & 启动后台常驻进程，命令结束时会被一起结束。" +
@@ -47,6 +52,8 @@ export const runCommand: Tool<{
     parameters: {
       type: "object",
       properties: {
+        temporary: { type: "boolean", description: "服务器默认临时执行。项目需要写入工作区时才显式传 false。" },
+        outputs: { type: "array", items: { type: "string" }, description: "temporary 模式要交付的成品文件名，使用临时工作目录下的文件名。" },
         command: {
           type: "string",
           description: "要执行的命令，可以用 &&、| 组合多步。例：unzip -o data.zip -d data && ls data",
@@ -64,19 +71,22 @@ export const runCommand: Tool<{
     },
   },
 
-  async run({ command, purpose, description, timeout_ms }, ctx) {
+  async run({ command, purpose, description, timeout_ms, temporary: requested, outputs }, ctx) {
     const cmd = String(command ?? "").trim();
     if (!cmd) throw new Error("command 不能为空：写要执行的 bash 命令，例：python -m unittest discover -s tests");
     const info = sandboxInfo();
+    const temporary = useTemporaryStorage(requested);
+    if (temporary && info.mode !== "docker") throw new Error("临时执行模式需要 Docker 沙箱");
     await fs.mkdir(ctx.workspace, { recursive: true });
     const root = sandboxRoot(ctx.workspace);
-    const cwd = await currentDir(ctx, root);
+    const cwd = temporary ? root : await currentDir(ctx, root);
+    const ranIn = temporary ? TEMP_CWD : showDir(root, cwd);
     const log = {
       userId: ctx.userId ?? "",
       sessionId: ctx.sessionId,
       tool: "run_command",
       command: cmd,
-      cwd,
+      cwd: temporary ? TEMP_CWD : cwd,
       sandbox: info.mode
     };
 
@@ -89,7 +99,7 @@ export const runCommand: Tool<{
         decision: "blocked",
         reason: blocked
       });
-      throw new Error(`不允许执行：${blocked}。当前目录：${showDir(root, cwd)}。这是安全限制，不要换个写法绕过：换别的办法，或用 ask_user 告诉用户需要什么`);
+      throw new Error(`不允许执行：${blocked}。当前目录：${ranIn}。这是安全限制，不要换个写法绕过：换别的办法，或用 ask_user 告诉用户需要什么`);
     }
 
     // ---- 2. 用户确认（只读命令按设置可以直接放行） ----
@@ -107,7 +117,7 @@ export const runCommand: Tool<{
         });
         return { content: JSON.stringify({
           denied: true,
-          cwd: showDir(root, cwd),
+          cwd: ranIn,
           message: "用户拒绝了这条命令。不要重复执行它：换一种做法，或者问用户想怎么做。"
         }) };
       }
@@ -119,7 +129,7 @@ export const runCommand: Tool<{
     // （以前用第 4 个管道 fd 3 传目录，但 docker exec 只转发 stdout/stderr，所以改成标记行，收到后从输出里去掉）
     // Windows 的 Git Bash 里 pwd 是 /c/Users/… 这种写法，用 cygpath -w 换回 C:\Users\…，才能和工作区路径对上
     const pwd = process.platform === "win32" && info.mode !== "docker" ? `$(cygpath -w "$(pwd -P)")` : "$(pwd -P)";
-    const script = `trap 'printf "\\n${MARK}%s\\n" "${pwd}"' EXIT\n${cmd}`;
+    const script = temporary ? cmd : `trap 'printf "\\n${MARK}%s\\n" "${pwd}"' EXIT\n${cmd}`;
     const out = new HeadTail(HEAD, TAIL);
     const live = {
       out: "",
@@ -140,11 +150,13 @@ export const runCommand: Tool<{
       workspace: ctx.workspace,
       cwd,
       script,
+      temporary,
+      outputs,
       env: sandboxEnv(root, level.readonly),
       timeoutMs: timeout,
       signal: ctx.signal,
       onData(s, d) {
-        if (s === "out" && d.includes(MARK)) {
+        if (!temporary && s === "out" && d.includes(MARK)) {
           const m = new RegExp(`\\n?${MARK}(.*)\\n?`).exec(d);
           if (m) {
             finalDir = m[1];
@@ -160,9 +172,9 @@ export const runCommand: Tool<{
     flush();
 
     // ---- 4. 记住目录，记审计，整理结果 ----
-    const dir = saveDir(ctx, root, finalDir.trim());
+    const dir = temporary ? { shown: TEMP_CWD, reset: false } : saveDir(ctx, root, finalDir.trim());
     const output = clean(out.text());
-    const notes = [dir.reset && "命令结束时的目录不在允许范围内，已回到工作区根目录", r.code !== 0 && networkHint(output), cdHint(output, showDir(root, cwd))].filter(Boolean);
+    const notes = [dir.reset && "命令结束时的目录不在允许范围内，已回到工作区根目录", r.code !== 0 && networkHint(output), !temporary && cdHint(output, ranIn)].filter(Boolean);
     audit({
       ...log,
       decision: "allowed",
@@ -178,9 +190,10 @@ export const runCommand: Tool<{
         timedOut: r.timedOut,
         output,
         truncated: out.dropped > 0,
-        ranIn: showDir(root, cwd),
+        ranIn,
         cwd: dir.shown,
         sandbox: info.mode,
+        ...(r.outputs?.length ? { outputs: r.outputs } : {}),
         ...(notes.length ? { note: notes.join("；") } : {}),
       }),
     };

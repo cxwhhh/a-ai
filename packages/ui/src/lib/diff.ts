@@ -1,4 +1,4 @@
-import type { StoredMessage } from "../../../protocol/src/lib/shared";
+import { toolStatus, type StoredMessage } from "../../../protocol/src/lib/shared";
 
 /**
  * 按行对比两段文字，算出哪些行是新增（+）、删除（-）、不变（空格）。
@@ -44,6 +44,8 @@ export interface FileChange {
   after: string;
   startLine: number;
   isNew: boolean; // write_file 且之前没写过：整篇新增
+  /** 统计行数时只使用有明确基线的单次改动。 */
+  countable: boolean;
   ts: number;
 }
 
@@ -59,27 +61,31 @@ export function fileChanges(messages: StoredMessage[], path: string): FileChange
     for (const c of m.toolCalls ?? []) {
       if (c.name !== "edit_file" && c.name !== "write_file") continue;
       const r = results.get(c.id);
-      if (!r || r.isError) continue;
+      if (!r || toolStatus(r) !== "ok") continue;
       let a: Record<string, unknown>;
       try {
         a = JSON.parse(c.arguments || "{}");
       } catch {
         continue;
       }
-      if (norm(String(a.path ?? "")) !== target) continue;
       let res: Record<string, unknown> = {};
       try {
-        res = JSON.parse(r.content);
+        res = JSON.parse(r.content) ?? {};
       } catch {
         /* 结果不是 JSON 时没有行号，从 1 开始 */
       }
+      // 模型可能传入容器绝对路径，成功结果里的相对路径与预览一致。
+      const written = typeof res.path === "string" && res.path ? res.path : a?.path;
+      if (norm(String(written ?? "")) !== target) continue;
       if (c.name === "edit_file") {
-        out.push({ id: c.id, tool: "edit_file", before: String(a.old_string ?? ""), after: String(a.new_string ?? ""), startLine: Number(res.line) || 1, isNew: false, ts: r.createdAt });
+        out.push({ id: c.id, tool: "edit_file", before: String(a.old_string ?? ""), after: String(a.new_string ?? ""), startLine: Number(res.line) || 1, isNew: false,
+          countable: typeof a.old_string === "string" && typeof a.new_string === "string" && !a.replace_all, ts: r.createdAt });
         // 如果之前整篇写过，把这次替换也应用上，下一次 write_file 才能和“改完之后”的内容对比
         if (last !== null) last = last.replace(String(a.old_string ?? ""), String(a.new_string ?? ""));
       } else {
         const content = String(a.content ?? "");
-        out.push({ id: c.id, tool: "write_file", before: last ?? "", after: content, startLine: 1, isNew: last === null, ts: r.createdAt });
+        out.push({ id: c.id, tool: "write_file", before: last ?? "", after: content, startLine: 1, isNew: last === null,
+          countable: typeof a.content === "string" && (last !== null || res.created === true), ts: r.createdAt });
         last = content;
       }
     }

@@ -54,7 +54,7 @@ export function MessageActions({ text, onEdit, onRetry, disabled, always }: {
  * 编辑用户消息：气泡变成输入框，Enter 发送、Shift+Enter 换行、Esc 取消。
  * 发送后从这里重新生成，原问题与后续回答保存在历史中。
  */
-export function EditBubble({ initial, onCancel, onSubmit }: { initial: string; onCancel(): void; onSubmit(text: string): void }) {
+export function EditBubble({ initial, disabled, onCancel, onSubmit }: { initial: string; disabled: boolean; onCancel(): void; onSubmit(text: string): void }) {
   const [text, setText] = useState(initial);
   const ref = useRef<HTMLTextAreaElement>(null);
   useEffect(() => {
@@ -72,7 +72,7 @@ export function EditBubble({ initial, onCancel, onSubmit }: { initial: string; o
   }, [text]);
   // 原文也允许重发：用户可能只想让模型重新回答，不能把这种操作当成取消。
   const send = () => {
-    if (text.trim()) onSubmit(text);
+    if (!disabled && text.trim()) onSubmit(text);
   };
   return (
     <div className="edit-bubble">
@@ -92,7 +92,7 @@ export function EditBubble({ initial, onCancel, onSubmit }: { initial: string; o
       <div className="edit-foot">
         <span>发送后从这里重新生成，原问题和后续回答保存在历史中</span>
         <button type="button" className="edit-cancel" onClick={onCancel}>取消</button>
-        <button type="button" className="edit-send" onClick={send} disabled={!text.trim()}>发送</button>
+        <button type="button" className="edit-send" onClick={send} disabled={disabled || !text.trim()}>发送</button>
       </div>
     </div>
   );

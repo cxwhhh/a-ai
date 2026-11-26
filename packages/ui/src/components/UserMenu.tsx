@@ -6,7 +6,7 @@ import { Avatar as BoardUIAvatar } from "./base/avatar/avatar";
 import { DesktopUpdateButton } from "./DesktopUpdateButton";
 import "./UserMenu.css";
 
-export type SettingsTab = "general" | "model" | "agent" | "memory" | "skills" | "usage" | "keys" | "about";
+export type SettingsTab = "general" | "model" | "agent" | "memory" | "skills" | "usage" | "storage" | "keys" | "about";
 
 /**
  * 左下角：头像 + 名字。点击弹出菜单（仿 Claude），再从菜单进入设置的各个页面。

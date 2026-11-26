@@ -1,16 +1,17 @@
 "use client";
 import { toolStatus, type Artifact, type StoredMessage } from "../../../protocol/src/lib/shared";
-import type { OutputItem, UsedItem, View } from "../../../protocol/src/lib/outputs";
+import { collectChangedPaths, type OutputItem, type UsedItem, type View } from "../../../protocol/src/lib/outputs";
 import { describeStep, rowState, type RowState } from "./Trace";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import { countDiff, diffLines, fileChanges } from "../lib/diff";
 import "./OutputsCard.css";
-import { ICheck, IChevron, IX } from "./Icons";
+import { ICheck, IChevron, IFileEdit, IX } from "./Icons";
 import { KindIcon } from "./KindIcon";
 import { IconPicker } from "./IconPicker";
 import { subagentIcon } from "../../../protocol/src/lib/agentIcons";
 import type { RunningDelegation } from "../../../subagent/src/ownership-claim";
 import { api } from "../lib/client";
+import { WebThumbnail } from "./WebThumbnail";
 
 /** 类型图标带颜色（KindIcon）：代码绿、网页蓝、文档橙、图表粉 */
 const ICON = {
@@ -34,7 +35,6 @@ const ICON = {
  */
 export function OutputsCard(props: {
   id?: string;
-  hidden?: boolean;
   messages: StoredMessage[];
   /** 本对话的产出物全文：输出缩略图里要显示内容开头 */
   artifacts: Artifact[];
@@ -43,6 +43,7 @@ export function OutputsCard(props: {
   outputs: OutputItem[];
   used: UsedItem[];
   active?: View | null;
+  hidden?: boolean;
   subagents?: { sessionId: string; runId: string | null; open(task: RunningDelegation): void };
   onOpen(v: View): void;
   onClose(): void;
@@ -87,19 +88,22 @@ export function OutputsCard(props: {
   }, [outputs, messages]);
 
   const [allOuts, setAllOuts] = useState(false);
-  // 缩略图里的内容：产出物取全文，写入的文件取这次对话里最后一次写进去的内容；都转成一小段纯文字
+  // 网页使用真实首屏，文档和代码保留正文摘要。已部署网页的源码通过应用接口读取。
   const previews = useMemo(() => {
-    const m = new Map<string, { text?: string; svg?: string }>();
+    const m = new Map<string, { text?: string; svg?: string; html?: string; app?: Artifact["workspaceApp"] }>();
+    const artifacts = new Map(props.artifacts.map((artifact) => [artifact.id, artifact]));
     for (const o of outputs) {
       let raw = "";
       if (o.view.type === "artifact") {
-        const id = o.view.id;
-        raw = props.artifacts.find((a) => a.id === id)?.content ?? "";
+        const artifact = artifacts.get(o.view.id);
+        if (artifact?.workspaceApp) { m.set(o.key, { app: artifact.workspaceApp }); continue; }
+        raw = artifact?.content ?? "";
       } else {
         const ch = fileChanges(messages, o.view.path);
         raw = ch.length ? ch[ch.length - 1].after : "";
       }
-      if (o.ext === "svg" && /<svg[\s>]/i.test(raw)) m.set(o.key, { svg: raw });
+      if (raw && /^(html|htm)$/.test(o.ext)) m.set(o.key, { html: raw });
+      else if (o.ext === "svg" && /<svg[\s>]/i.test(raw)) m.set(o.key, { svg: raw });
       else if (raw) m.set(o.key, { text: previewText(raw, o.ext) });
     }
     return m;
@@ -135,8 +139,10 @@ export function OutputsCard(props: {
               const base = o.view.type === "file" && slash >= 0 ? o.name.slice(slash + 1) : o.name;
               return (
                 <button key={o.key} className={`oc-thumb ${isActive(o.view) ? "active" : ""}`} onClick={() => props.onOpen(o.view)} title={o.name}>
-                  <span className={`oc-thumb-pv ${o.icon}`}>
-                    {pv?.svg ? (
+                  <span className={`oc-thumb-pv ${o.icon}${pv?.app || pv?.html ? " has-web-thumbnail" : ""}`}>
+                    {pv?.app ? <WebThumbnail appId={pv.app.id} revision={pv.app.revision} />
+                    : pv?.html ? <WebThumbnail html={pv.html} />
+                    : pv?.svg ? (
                       // SVG 用 <img> 画，里面的脚本不会执行
                       // eslint-disable-next-line @next/next/no-img-element
                       <img src={`data:image/svg+xml;charset=utf-8,${encodeURIComponent(pv.svg)}`} alt="" />
@@ -151,7 +157,7 @@ export function OutputsCard(props: {
                   </span>
                   <span className="oc-thumb-name ellipsis">{base}</span>
                   <span className="oc-thumb-sub ellipsis">
-                    {o.view.type === "artifact" ? "产出物" : st && !st.isNew ? "已修改" : "新建"} · {o.ext.toUpperCase() || "文件"}
+                    {pv?.app ? "云端" : o.view.type === "artifact" ? "产出物" : st && !st.isNew ? "已修改" : "新建"} · {o.ext.toUpperCase() || "文件"}
                   </span>
                 </button>
               );
@@ -185,7 +191,7 @@ export function OutputsCard(props: {
         )}
       </Sec>
 
-      {props.subagents && <Sec k="subagents" open={open} onToggle={toggle} label="子 Agent">
+      {!props.hidden && props.subagents && <Sec k="subagents" open={open} onToggle={toggle} label="子 Agent">
         <RunningSubagents key={`${props.subagents.sessionId}:${props.subagents.runId}`} {...props.subagents} />
       </Sec>}
 
@@ -287,6 +293,84 @@ function Sec(props: {
       {on && <div className="psec-body">{props.children}</div>}
     </section>
   );
+}
+
+/** 按本轮成功的工具结果汇总工作区文件。同一文件被多次写入也只占一行。 */
+export function TurnFileChanges({ steps, artifacts, onOpenView, emptyMessage }: {
+  steps: StoredMessage[];
+  artifacts: Artifact[];
+  onOpenView(view: View): void;
+  emptyMessage?: string;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const listId = useId();
+  const files = useMemo(() => {
+    const referenced = new Set(steps.filter((step) => step.role === "tool" && toolStatus(step) === "ok").map((step) => step.artifactId));
+    const linked = new Map(artifacts.filter((artifact) => artifact.file && referenced.has(artifact.id)).map((artifact) => [artifact.file, artifact]));
+    return collectChangedPaths(steps, artifacts).map((path) => {
+      const artifact = linked.get(path);
+      const view: View = artifact ? { type: "artifact", id: artifact.id } : { type: "file", path };
+      const changes = fileChanges(steps, path);
+      const counts = changes.length && changes.every((change) => change.countable)
+        ? changes.map(({ before, after }) => recordedLineCounts(before, after))
+        : artifact?.fileCreated && steps.some((step) => step.role === "tool" && step.artifactId === artifact.id && step.toolCallId === artifact.sourceToolCallId)
+          ? [recordedLineCounts("", artifact.content)] : [];
+      const stats = counts.length && counts.every((count) => count !== null)
+        ? counts.reduce((total, count) => ({ add: total.add + count!.add, del: total.del + count!.del }), { add: 0, del: 0 }) : null;
+      return { path, view, stats };
+    });
+  }, [artifacts, steps]);
+  if (!files.length) return emptyMessage ? <div className="panel-empty">{emptyMessage}</div> : null;
+
+  const visibleCount = 3;
+  const remaining = files.length - visibleCount;
+  const heading = `已编辑 ${files.length} 个文件`;
+  const visibleFiles = expanded ? files : files.slice(0, visibleCount);
+  const completeCounts = files.every((file) => file.stats);
+  const total = files.reduce((sum, { stats }) => ({ add: sum.add + (stats?.add ?? 0), del: sum.del + (stats?.del ?? 0) }), { add: 0, del: 0 });
+  const review = files.find((file) => file.stats) ?? files[0];
+  return (
+    <section className="turn-files" aria-label={heading}>
+      <div className="turn-files-heading">
+        <span className="turn-files-mark"><IFileEdit width={18} height={18} aria-hidden="true" /></span>
+        <div className="turn-files-summary">
+          <strong>{heading}</strong>
+          {completeCounts ? <ChangeCount {...total} /> : <small>{files.some((file) => file.stats) ? "部分行数未记录" : "行数未记录"}</small>}
+        </div>
+        <button type="button" className="turn-files-review" onClick={() => onOpenView({ ...review.view, source: true })}>查看变更</button>
+      </div>
+      <ul id={listId} className="turn-files-list">
+        {visibleFiles.map(({ path, stats, view }) => (
+          <li key={path}>
+            <button type="button" className="turn-files-entry" title={path} onClick={() => onOpenView({ ...view, source: true })}>
+              <span className="ellipsis turn-files-path"><span>{path.slice(0, path.lastIndexOf("/") + 1)}</span>{path.split("/").at(-1)}</span>
+              {stats ? <ChangeCount {...stats} /> : <span className="turn-files-unmeasured" aria-label="行数未记录">—</span>}
+            </button>
+          </li>
+        ))}
+      </ul>
+      {remaining > 0 && (
+        <button type="button" className="turn-files-toggle" aria-controls={listId} aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>
+          {expanded ? "收起文件" : `再显示 ${remaining} 个文件`}
+          <IChevron width={12} height={12} aria-hidden="true" />
+        </button>
+      )}
+    </section>
+  );
+}
+
+function ChangeCount({ add, del }: { add: number; del: number }) {
+  return <span className="turn-files-count" aria-label={`新增 ${add} 行，删除 ${del} 行`}>
+    <span className="oc-add">+{add}</span><span className="oc-del">−{del}</span>
+  </span>;
+}
+
+/** 超过差异算法的精确比较范围时，不展示估算的增删数。 */
+function recordedLineCounts(before: string, after: string) {
+  const a = before.replace(/\r\n/g, "\n");
+  const b = after.replace(/\r\n/g, "\n");
+  if (a.split("\n").length * b.split("\n").length > 4_000_000) return null;
+  return countDiff(diffLines(a, b));
 }
 
 /** 鼠标停在右上角文件按钮上时弹出的文件列表（只看文件，点一下直接打开） */

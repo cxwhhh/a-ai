@@ -8,12 +8,17 @@ import { Scheduler } from "../../scheduler/src/index";
 import { SubagentOrchestrator } from "../../subagent/src/subagent";
 import { agentSessions } from "../../session/src/agent-session";
 import { builtinAgentPlugins } from "./agent-plugins";
+import path from "node:path";
+import { DATA_DIR } from "../../storage/src/db";
+import { StorageManager } from "../../storage-manager/src/index";
+import { closeEvaluationSandboxes, startSandboxStorage } from "../../sandbox/src/sandbox";
 
 declare module "@A-ai/cordis" {
   interface Context {
     agents: AgentRegistry;
     scheduler: Scheduler;
     subagents: SubagentOrchestrator;
+    storageManager: StorageManager;
   }
 }
 
@@ -22,6 +27,13 @@ const builtinTools = { deferredCatalog, findTool, toolSpecs, toolsFor };
 /** 一个 Host 装配一套服务。会话与运行身份由 Harness 校验，Context 用于装配和释放服务。 */
 export async function bootstrap() {
   const root = new Context();
+  await root.plugin(function storage(ctx) {
+    const service = new StorageManager(process.env.A_STORAGE_MANAGER_DIR || path.join(DATA_DIR, "storage-manager"));
+    service.start();
+    startSandboxStorage();
+    ctx.provide("storageManager", service);
+    ctx.effect(() => () => service.close());
+  });
   await root.plugin(function models(ctx) { ctx.provide("models", getProvider); });
   await root.plugin(function tools(ctx) { ctx.provide("hostTools", builtinTools); });
   await root.plugin(function agentServices(ctx) {
@@ -45,5 +57,8 @@ export async function bootstrap() {
     owner.provide("agents", agents);
     owner.effect(() => () => agents.disposeAll());
   });
-  return { root, close: () => root.fiber.dispose() };
+  return { root, close: async () => {
+    try { await root.fiber.dispose(); }
+    finally { await closeEvaluationSandboxes(); }
+  } };
 }

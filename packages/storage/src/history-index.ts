@@ -46,7 +46,7 @@ function entities(text: string): string[] {
 export function indexHistoryMessage(d: DatabaseSync, sessionId: string, seq: number, message: StoredMessage) {
   if (message.feedback && message.feedback.kind !== "note") return;
   const start = message.role === "user" && !message.feedback;
-  const text = (message.role === "tool" ? "" : message.content).slice(0, 1600);
+  const text = (message.role === "tool" ? "" : message.taskRequirements === undefined ? message.content : "更新当前任务要求").slice(0, 1600);
   if (start) {
     const topic = text.trim().split(/\r?\n/, 1)[0].slice(0, 140);
     d.prepare("INSERT INTO history_segments(input_id,session_id,start_seq,end_seq,topic) VALUES (?,?,?,?,?)")

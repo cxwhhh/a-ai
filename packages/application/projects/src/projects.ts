@@ -21,6 +21,7 @@ function toProject(r: Row): Project {
     id: r.id as string,
     name: r.name as string,
     description: typeof d.description === "string" ? d.description : "",
+    ...(typeof d.rulesFile === "string" && d.rulesFile ? { rulesFile: d.rulesFile } : {}),
     memory: MODES.includes(d.memory as ProjectMemoryMode) ? (d.memory as ProjectMemoryMode) : "global",
     share: d.share === true,
     icon: isAgentIcon(d.icon) ? d.icon : undefined,
@@ -37,13 +38,14 @@ export function cleanProject(input: unknown): Omit<Project, "id" | "createdAt"> 
   return {
     name,
     description: typeof p.description === "string" ? p.description.trim().slice(0, 4000) : "",
+    ...(typeof p.rulesFile === "string" ? { rulesFile: p.rulesFile.trim() } : {}),
     memory: MODES.includes(p.memory as ProjectMemoryMode) ? (p.memory as ProjectMemoryMode) : "global",
     share: p.share === true,
     icon: isAgentIcon(p.icon) ? p.icon : undefined,
   };
 }
 
-const dataOf = (p: Omit<Project, "id" | "createdAt" | "name">) => JSON.stringify({ description: p.description, memory: p.memory, share: p.share, icon: p.icon });
+const dataOf = (p: Omit<Project, "id" | "createdAt" | "name">) => JSON.stringify({ description: p.description, memory: p.memory, share: p.share, icon: p.icon, rulesFile: p.rulesFile || undefined });
 
 export function listProjects(userId: string): Project[] {
   return db().prepare("SELECT id, name, data, created_at, archived_at FROM projects WHERE user_id = ? ORDER BY created_at").all(userId).map(toProject);
@@ -72,8 +74,11 @@ export function createProject(userId: string, p: Omit<Project, "id" | "createdAt
 }
 
 export function updateProject(id: string, userId: string, p: Omit<Project, "id" | "createdAt">): Project | null {
-  // 项目设置弹窗不管图标：没传图标时沿用原来的，免得改个名字图标就没了
-  if (!p.icon) p = { ...p, icon: getProject(id, userId)?.icon };
+  // 老客户端不传规则文件，保留已有绑定。显式传空字符串才解除绑定。
+  if (!p.icon || p.rulesFile === undefined) {
+    const previous = getProject(id, userId);
+    p = { ...p, icon: p.icon ?? previous?.icon, rulesFile: p.rulesFile ?? previous?.rulesFile };
+  }
   const r = db().prepare("UPDATE projects SET name = ?, data = ? WHERE id = ? AND user_id = ?").run(p.name, dataOf(p), id, userId);
   return r.changes ? getProject(id, userId) : null;
 }
@@ -159,13 +164,13 @@ export function projectPrompt(p: Project, userId: string, sessionId: string): st
       .prepare("SELECT id, title, updated_at FROM sessions WHERE project_id = ? AND user_id = ? AND id != ? AND archived_at IS NULL ORDER BY updated_at DESC LIMIT ?")
       .all(p.id, userId, sessionId, SHARE_SESSIONS);
     if (others.length) {
-      out.push("", "同一个项目里其他对话的摘要（项目开启了“对话之间共享内容”。需要时直接引用这些结论，不要让用户重复说明）：");
+      out.push("", "同一项目其他对话的参考资料。可引用已有结论，各对话的临时要求只在原对话内生效：");
       for (const o of others) {
         const msgs = db()
           .prepare("SELECT data FROM messages WHERE session_id = ? AND superseded_by IS NULL ORDER BY seq")
           .all(o.id as string)
           .map((m) => JSON.parse(m.data as string) as StoredMessage);
-        const ask = msgs.find((m) => m.role === "user" && !m.feedback);
+        const ask = msgs.find((m) => m.role === "user" && !m.feedback && m.taskRequirements === undefined);
         const answer = [...msgs].reverse().find((m) => m.role === "assistant" && !m.toolCalls?.length && m.content.trim());
         const day = new Date(Number(o.updated_at)).toISOString().slice(0, 10);
         out.push(`### ${o.title}（${day}）`);

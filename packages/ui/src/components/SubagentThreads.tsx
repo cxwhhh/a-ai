@@ -112,7 +112,8 @@ export function SubagentThreadOverview({ sessionId, layout, onLayout, onSelect, 
 
   const groups = [
     { label: "进行中", tasks: tasks.filter(active) },
-    { label: "已结束", tasks: tasks.filter((task) => !active(task)) },
+    { label: "待命", tasks: tasks.filter((task) => !active(task) && task.chatActive) },
+    { label: "已暂停", tasks: tasks.filter((task) => !active(task) && !task.chatActive) },
   ];
   return <section className="viewer subagent-thread-overview" aria-label="子 Agent 线程汇总">
     <header className="viewer-head">
@@ -139,7 +140,9 @@ export function SubagentThreadOverview({ sessionId, layout, onLayout, onSelect, 
             title={task.name} onClick={() => onSelect(task)}>
             <span className="subagent-thread-entry-head">
               <ThreadName task={task} />
-              <span className="subagent-thread-status">{subagentStatusLabels[task.status]}</span>
+              <span className="subagent-thread-status" title={subagentStatusLabels[task.status]}>
+                {active(task) ? subagentStatusLabels[task.status] : group.label}
+              </span>
             </span>
             {showStats && task.metrics && <ThreadMetrics metrics={task.metrics} />}
           </button>)}

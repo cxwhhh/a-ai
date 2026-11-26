@@ -8,7 +8,7 @@ import { isSvg } from "../../../ui/src/lib/svg";
  * 纯前端计算，不需要额外接口：工具调用和结果本来就在消息里。
  */
 
-export type View = { type: "artifact"; id: string } | { type: "file"; path: string };
+export type View = ({ type: "artifact"; id: string } | { type: "file"; path: string }) & { source?: boolean };
 
 export interface OutputItem {
   key: string;
@@ -55,6 +55,61 @@ export function iconForExt(ext: string): OutputItem["icon"] {
   if (ext === "html" || ext === "htm") return "web";
   if (CODE_EXT.has(ext)) return "code";
   return "file";
+}
+
+const FILE_WRITE_TOOLS = new Set(["write_file", "edit_file", "write_document", "download_file", "make_chart"]);
+
+/** 聊天下方汇总有实际写入记录的文件，独立于看板的产出去重和展示规则。 */
+export function collectChangedPaths(messages: StoredMessage[], artifacts: Artifact[]): string[] {
+  const files = new Set<string>();
+  const byId = new Map(artifacts.map((artifact) => [artifact.id, artifact]));
+  let calls = new Map<string, NonNullable<StoredMessage["toolCalls"]>[number]>();
+
+  const add = (value: unknown) => {
+    if (typeof value !== "string") return;
+    const path = value.replace(/\\/g, "/").replace(/^\/workspace\//, "");
+    if (path.startsWith("/") || /^[a-z]:/i.test(path)) return;
+    const parts = path.split("/").filter((part) => part && part !== ".");
+    if (!parts.length || parts.includes("..")) return;
+    const normalized = parts.join("/");
+    files.delete(normalized);
+    files.add(normalized);
+  };
+
+  for (const message of messages) {
+    if (message.role !== "tool") {
+      // 调用 ID 只用来匹配这一批工具，避免同一会话后续模型响应复用 ID 时覆盖旧结果。
+      if (message.role === "assistant") calls = new Map(message.toolCalls?.map((call) => [call.id, call]));
+      else if (!message.feedback) calls.clear();
+      continue;
+    }
+    const call = message.toolCallId ? calls.get(message.toolCallId) : undefined;
+    if (call) calls.delete(call.id);
+    if (toolStatus(message) !== "ok") continue;
+    if (message.artifactId) add(byId.get(message.artifactId)?.file);
+    const name = call?.name ?? message.toolResult?.name;
+    if (!name) continue;
+    const result = { ...message.toolResult?.fields, ...fileFields(message.content) };
+    if (FILE_WRITE_TOOLS.has(name)) {
+      // 路径以执行结果为准。旧消息只有参数时，再读参数中的路径。
+      add(result.path || (call && fileFields(call.arguments).path));
+    } else if (name === "run_python" || name === "run_command") {
+      if (Array.isArray(result.outputs)) {
+        for (const path of result.outputs) if (typeof path === "string" && path.startsWith("output/")) add(path);
+      }
+    } else if (name === "archive" && call && fileFields(call.arguments).action === "zip") {
+      add(result.path);
+    }
+  }
+  return [...files].reverse();
+}
+
+function fileFields(json: string): Record<string, unknown> {
+  try {
+    return JSON.parse(json) ?? {};
+  } catch {
+    return {};
+  }
 }
 
 export function collectOutputs(messages: StoredMessage[], artifacts: Artifact[]) {
@@ -142,6 +197,15 @@ export function collectOutputs(messages: StoredMessage[], artifacts: Artifact[])
           htmlWrites.push({ callId: c.id, html: String(args.content ?? "").trim() });
         }
         outputs.push({ key: k, name: path, ext: ext || "file", icon: iconForExt(ext), view: { type: "file", path }, ts: r.createdAt });
+      } else if (c.name === "run_python" || c.name === "run_command") {
+        try {
+          const published = JSON.parse(r.content)?.outputs;
+          if (Array.isArray(published)) for (const file of published) {
+            if (typeof file !== "string" || !file.startsWith("output/")) continue;
+            const ext = extOf(file);
+            outputs.push({ key: "f:" + file, name: file, ext: ext || "file", icon: iconForExt(ext), view: { type: "file", path: file }, ts: r.createdAt });
+          }
+        } catch { /* 旧结果或无产出的工具调用 */ }
       } else if (c.name === "read_file" && path && !seen.has("r:" + path)) {
         seen.add("r:" + path);
         used.push({ key: "r:" + path, label: "读取", detail: path, icon: "file", view: { type: "file", path } });
