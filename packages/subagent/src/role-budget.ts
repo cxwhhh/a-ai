@@ -1,6 +1,7 @@
 import type { Usage } from "../../llm/src/types";
 
 const FILE_TOOLS = ["read_file", "read_document", "grep", "glob", "list_files"];
+export const WRITE_TOOLS = new Set(["write_file", "edit_file", "write_document"]);
 export const DEFAULT_IDLE_TIMEOUT_MS = 30_000;
 export const MIN_TASK_TIMEOUT_MS = 10 * 60_000;
 export const MAX_TASK_TIMEOUT_MS = 30 * 60_000;
@@ -21,6 +22,11 @@ export const ROLES = {
     prompt: "整理任务指定的材料，比较方案或指标，说明推导过程、假设及其局限。",
     tools: [...FILE_TOOLS, "calculator"],
     steps: 7,
+  },
+  implementation: {
+    prompt: "负责完成整个分工。先读相关模块，再编写或修改代码、运行脚本和测试，根据失败结果继续修正。交回实际改动、测试命令及结果和剩余问题。",
+    tools: [...FILE_TOOLS, "calculator", ...WRITE_TOOLS, "run_python", "run_command"],
+    steps: 24,
   },
 } as const;
 

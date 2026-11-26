@@ -1,6 +1,6 @@
 import type { ToolSpec } from "../../llm/src/types";
 import { withPurpose } from "../../tool-runtime/src/validate";
-import { DEFAULT_TASK_TOKENS, MAX_TASK_TIMEOUT_MS, MAX_TASK_TOKENS, MIN_TASK_TIMEOUT_MS } from "./role-budget";
+import { DEFAULT_TASK_TOKENS, MAX_TASK_TIMEOUT_MS, MAX_TASK_TOKENS, MIN_TASK_TIMEOUT_MS, ROLES } from "./role-budget";
 import type { BudgetLimits, SubagentRole } from "./role-budget";
 
 export interface TaskContract {
@@ -13,6 +13,7 @@ export interface TaskContract {
   factKeys?: string[];
   tools?: string[];
   paths?: string[];
+  writePaths?: string[];
   hosts?: string[];
   contextMessages?: string[];
   contextArtifacts?: string[];
@@ -44,7 +45,7 @@ export const RESEARCH_SPEC: ToolSpec = withPurpose({
       budget: {
         type: "object",
         properties: {
-          steps: { type: "integer" }, toolCalls: { type: "integer" },
+          steps: { type: "integer", description: "执行角色最多 24 步。按任务规模分配，预留修改、运行测试和修正的步骤。" }, toolCalls: { type: "integer" },
           tokens: { type: "integer", description: `整项累计输入和输出额度。省略时使用模型上下文长度与 ${DEFAULT_TASK_TOKENS} 中的较大值。仅需主动收紧预算时填写，手动值上限 ${MAX_TASK_TOKENS}。` },
           timeoutMs: { type: "integer", description: `单项总时限，单位为毫秒，范围 ${MIN_TASK_TIMEOUT_MS}–${MAX_TASK_TIMEOUT_MS}，省略时用 ${MIN_TASK_TIMEOUT_MS}。` },
           idleTimeoutMs: { type: "integer", description: "单个子任务持续无有效进展的毫秒数。默认 30000。" },
@@ -57,7 +58,7 @@ export const RESEARCH_SPEC: ToolSpec = withPurpose({
 });
 
 const listLimits = {
-  acceptance: [8, 500], plan: [8, 500], factKeys: [8, 120], tools: [12, 64], paths: [12, 500], hosts: [12, 253],
+  acceptance: [8, 500], plan: [8, 500], factKeys: [8, 120], tools: [12, 64], paths: [12, 500], writePaths: [12, 500], hosts: [12, 253],
   contextMessages: [8, 120], contextArtifacts: [8, 120], contextFiles: [8, 500],
 } as const;
 
@@ -80,8 +81,8 @@ export function parseTaskContract(input: unknown): TaskContract {
     contract.name = raw.name.trim().replace(/\s+/g, " ").slice(0, 24);
   }
   if (raw.role !== undefined) {
-    if (raw.role !== "research" && raw.role !== "review" && raw.role !== "analysis") throw new SubagentRequestError("未知子 Agent 角色");
-    contract.role = raw.role;
+    if (typeof raw.role !== "string" || !Object.hasOwn(ROLES, raw.role)) throw new SubagentRequestError("未知子 Agent 角色");
+    contract.role = raw.role as SubagentRole;
   }
   for (const [key, max] of [["purpose", 200], ["idempotencyKey", 120]] as const) {
     const value = raw[key];
@@ -109,7 +110,7 @@ export function parseTaskContract(input: unknown): TaskContract {
   if (raw.budget !== undefined) {
     if (!raw.budget || typeof raw.budget !== "object" || Array.isArray(raw.budget)) throw new SubagentRequestError("budget 必须是对象");
     const limits = {
-      steps: [1, 8], tokens: [512, MAX_TASK_TOKENS], timeoutMs: [MIN_TASK_TIMEOUT_MS, MAX_TASK_TIMEOUT_MS],
+      steps: [1, contract.role === "implementation" ? ROLES.implementation.steps : 8], tokens: [512, MAX_TASK_TOKENS], timeoutMs: [MIN_TASK_TIMEOUT_MS, MAX_TASK_TIMEOUT_MS],
       toolCalls: [0, 24], idleTimeoutMs: [10, 180_000],
     } as const;
     const budget: Partial<BudgetLimits> = {};
@@ -145,13 +146,24 @@ export const DELEGATE_SPEC: ToolSpec = withPurpose({
           ...RESEARCH_SPEC.parameters,
           properties: {
             ...RESEARCH_SPEC.parameters.properties,
+            role: { type: "string", enum: Object.keys(ROLES), description: "调研、审阅、分析，或 implementation 文件制作与验证。" },
+            writePaths: strings("implementation 的精确可写文件，相对工作区。目录或通配符无效。同一批每个文件只有一个负责项。"),
             taskKey: { type: "string", description: "本次分工内唯一的任务标识，例如 requirements。被其它项依赖时必填。" },
             dependsOn: strings("写最多 8 个直接上游的 taskKey。所有上游交付已核验结果后才启动，独立分工省略。"),
           },
-          required: ["task", "role", "plan", "acceptance", "factKeys"],
+          required: ["task", "role", "plan", "acceptance"],
         },
       },
     },
     required: ["objective", "reason", "synthesis", "assignments"],
+  },
+});
+
+export const RECOVER_DELEGATION_SPEC: ToolSpec = withPurpose({
+  name: "recover_subagent_tasks",
+  description: "读取当前主对话上一轮中断时的子任务和已核验结果。用户要求接着做时，传入仍需继续的任务 ID，沿原分工、依赖和权限补齐；省略 taskIds 只检查记录。",
+  parameters: {
+    type: "object",
+    properties: { taskIds: strings("只填检查结果中的任务 ID。已验收的上游会直接复用，仍待补齐的必要上游会先恢复。每次最多选择 40 个任务。") },
   },
 });

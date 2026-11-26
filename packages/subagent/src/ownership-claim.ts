@@ -2,8 +2,9 @@ import { randomUUID } from "node:crypto";
 import type { SQLOutputValue } from "node:sqlite";
 import { db } from "../../storage/src/db";
 import type { StoredMessage } from "../../protocol/src/lib/shared";
+import type { ApprovalNotice } from "../../permissions/src/approvals";
 import { emptyProgress, type TaskProgress, type TaskStatus } from "./progress-blockers";
-import { assessResult, type Evidence, type TaskResult } from "./result-contract";
+import { assessResult, readReviewConcern, savedToolExcerpts, type Evidence, type TaskResult, type TaskVerification } from "./result-contract";
 import { DEFAULT_IDLE_TIMEOUT_MS, type BudgetLimits, type SubagentRole } from "./role-budget";
 import { SubagentRequestError, type TaskContract } from "./task-contract";
 
@@ -19,6 +20,16 @@ export interface TaskOrigin {
   retryOf?: string;
 }
 
+interface TaskAssignment {
+  /** 批内标识与整体目标供线程回读。子 Agent 仍只接收自己的执行契约。 */
+  key?: string;
+  objective?: string;
+  mode?: "retry" | "followup" | "revision";
+  recoveryInputId?: string;
+  tools?: string[];
+  revisionPath?: string;
+}
+
 export interface TaskRecord extends TaskOrigin {
   id: string;
   sessionId: string;
@@ -27,20 +38,34 @@ export interface TaskRecord extends TaskOrigin {
   /** 对话可继续时为 true，执行结果仍由 status 单独记录。 */
   chatActive: boolean;
   contract: TaskContract;
-  /** 只保存同会话内已登记的直接上游 ID，重试时仍需核对原始结果。 */
+  assignment?: TaskAssignment;
+  /** 保存同会话内的直接上游 ID，续跑时沿原分工查找已验收的尝试。 */
   dependencyIds?: string[];
   limits: BudgetLimits;
   progress: TaskProgress;
   evidence: Evidence[];
   messages?: StoredMessage[];
   pendingMessages?: StoredMessage[];
+  /** 活跃执行器内的待审批请求。中断后重新发起审批。 */
+  pendingApproval?: ApprovalNotice;
+  unansweredMessages?: StoredMessage[];
+  interruptedFrom?: "queued" | "running";
+  writeAttempts?: string[];
+  revisionVerification?: { path?: string; status: "matches-expected" | "matches-before" | "changed" | "unreadable" | "not-started" | "unknown" };
   result?: TaskResult;
   createdAt: number;
   updatedAt: number;
 }
 
 type Row = Record<string, SQLOutputValue>;
-type Checkpoint = Pick<TaskRecord, "progress" | "evidence" | "messages" | "pendingMessages">;
+export type TaskFileWrite = { path: string; beforeHash: string | null; expectedHash: string };
+type TaskWrites = { fileWrite?: TaskFileWrite; fileWrites?: TaskFileWrite[]; writtenPaths?: string[]; verification?: TaskVerification[] };
+type Checkpoint = Pick<TaskRecord, "progress" | "evidence" | "messages" | "pendingMessages" | "unansweredMessages" | "interruptedFrom"> & {
+  /** 只记完整结束的候选，半截流和待执行调用没有候选资格。 */
+  candidate?: string;
+  carried?: Pick<TaskResult, "facts" | "acceptance">;
+  references?: [string, string][];
+} & TaskWrites;
 
 const worker = randomUUID();
 const owned = "t.session_id = ? AND EXISTS(SELECT 1 FROM sessions s WHERE s.id = t.session_id AND s.user_id = ?)";
@@ -54,36 +79,85 @@ function chatActive(row: Row) {
 }
 
 function read(row: Row): TaskRecord {
-  const { progress, evidence, messages, pendingMessages } = JSON.parse(String(row.snapshot)) as Checkpoint;
-  const { dependencyIds, ...contract } = JSON.parse(String(row.contract)) as TaskContract & { dependencyIds?: string[] };
+  const { progress, evidence, messages, pendingMessages, unansweredMessages, interruptedFrom, fileWrites } = JSON.parse(String(row.snapshot)) as Checkpoint;
+  const { dependencyIds, assignment, ...contract } = JSON.parse(String(row.contract)) as TaskContract & {
+    dependencyIds?: string[]; assignment?: TaskAssignment;
+  };
   return {
     id: String(row.id), sessionId: String(row.session_id), runId: String(row.run_id), inputId: String(row.input_id),
     parentCallId: row.parent_call_id ? String(row.parent_call_id) : undefined,
     retryOf: row.retry_of ? String(row.retry_of) : undefined,
     role: row.role as SubagentRole, status: row.status as TaskStatus,
     chatActive: chatActive(row),
-    contract, dependencyIds, limits: { idleTimeoutMs: DEFAULT_IDLE_TIMEOUT_MS, ...JSON.parse(String(row.limits)) },
-    progress, evidence, messages, pendingMessages, result: row.result ? JSON.parse(String(row.result)) : undefined,
+    contract, assignment, dependencyIds, limits: { idleTimeoutMs: DEFAULT_IDLE_TIMEOUT_MS, ...JSON.parse(String(row.limits)) },
+    progress, evidence, messages, pendingMessages, interruptedFrom, writeAttempts: fileWrites?.map(({ path }) => path),
+    unansweredMessages: interruptedFrom ? unansweredMessages : undefined, result: row.result ? JSON.parse(String(row.result)) : undefined,
     createdAt: Number(row.created_at), updatedAt: Number(row.updated_at),
   };
 }
 
-/** 当前部署为单个服务进程。重启后上一进程未结算的只读任务标为中断，等待显式重试。 */
+/** 当前部署为单个服务进程。保留上一进程退出前的阶段和可验收内容。 */
 export function settleInterrupted(owner: TaskOwner) {
   const records = db().prepare(`SELECT t.* FROM subagent_tasks t WHERE ${owned} AND executor <> ? AND status IN ('queued','running')`)
     .all(owner.sessionId, owner.userId, worker);
   for (const row of records) {
     const task = read(row);
-    task.progress.blockers.push({ code: "interrupted", detail: "原执行进程已结束，请检查已保存的进度或显式重试" });
-    const result: TaskResult = {
-      status: "interrupted", ...assessResult("", task.contract.acceptance ?? [], task.evidence, task.contract.factKeys),
-      progress: task.progress, evidence: task.evidence,
-    };
+    const snapshot = JSON.parse(String(row.snapshot)) as Checkpoint;
+    const revision = isFileRevision(task);
+    const detail = revision ? "文件微调已中断。请打开当前文件核对实际内容，再发送新的修改要求。"
+      : task.status === "queued" ? "原执行进程在等待上游期间结束，子任务尚未启动" : "原执行进程已结束，可从已保存的证据恢复任务";
+    snapshot.progress.blockers.push({ code: "interrupted", detail });
+    snapshot.interruptedFrom = task.status === "queued" ? "queued" : "running";
+    const evidence = snapshot.evidence;
+    const excerpts = savedToolExcerpts(snapshot.messages);
+    // 最新任务的引用节选保存在检查点，工具正文也能从已配对的回执找回。
+    for (const [id, excerpt] of snapshot.references ?? []) excerpts.set(id, excerpt);
+    const assessed = assessResult(snapshot.candidate ?? "", task.contract.acceptance ?? [], evidence, task.contract.factKeys, excerpts, snapshot.carried);
+    if (snapshot.candidate && readReviewConcern(snapshot.candidate, excerpts)) assessed.unresolved.push("候选结果的证据歧义仍需复核");
+    const result: TaskResult = { status: "interrupted", ...assessed, progress: snapshot.progress, evidence,
+      writtenPaths: snapshot.writtenPaths, verification: snapshot.verification };
     db().prepare(`UPDATE subagent_tasks AS t SET status='interrupted', result=?, snapshot=?, updated_at=?
       WHERE ${owned} AND id=? AND executor=? AND status IN ('queued','running')`).run(
-        JSON.stringify(result), JSON.stringify({ progress: task.progress, evidence: task.evidence, messages: task.messages, pendingMessages: task.pendingMessages }),
+        JSON.stringify(result), JSON.stringify(snapshot),
         Date.now(), owner.sessionId, owner.userId, task.id, row.executor);
   }
+}
+
+/** 旧记录没有执行模式，存在写调用时仍按可能已写入处理。 */
+export function isFileRevision(task: TaskRecord) {
+  return task.assignment?.mode === "revision" || (!task.assignment?.mode &&
+    !!task.messages?.some(({ toolCalls }) => toolCalls?.some(({ name }) => name === "edit_file")));
+}
+
+/** 同一线程的后续聊天可改变目标，上游引用只跟随原契约的重试。 */
+export function latestTaskRetry(owner: TaskOwner, task: TaskRecord): TaskRecord {
+  let latest = task;
+  const next = db().prepare(`SELECT t.* FROM subagent_tasks t WHERE ${owned} AND retry_of=?`);
+  for (let row = next.get(owner.sessionId, owner.userId, latest.id); row; row = next.get(owner.sessionId, owner.userId, latest.id)) {
+    const attempt = read(row);
+    // 未保存执行模式的旧记录用后续用户消息的 ID 区分续聊与重试。缺少历史时保留原分工。
+    const legacyRetry = !attempt.assignment && attempt.contract.task === latest.contract.task &&
+      attempt.messages?.length && !attempt.messages.some(({ id }) => id === `${attempt.id}:followup`);
+    if (attempt.assignment?.mode !== "retry" && !legacyRetry) break;
+    latest = attempt;
+  }
+  return latest;
+}
+
+/** 父轮恢复只读取当前历史链上由服务端识别为中断的输入。连着中断时仍可追溯原分工。 */
+export function listRecoverableDelegations(owner: TaskOwner, inputId: string) {
+  settleInterrupted(owner);
+  const rows = db().prepare(`SELECT t.* FROM subagent_tasks t WHERE ${owned} AND input_id=? AND parent_call_id IS NOT NULL
+    ORDER BY created_at, id`);
+  const previous = rows.all(owner.sessionId, owner.userId, inputId).map(read);
+  const originalInputs = new Set(previous.flatMap(({ assignment }) => assignment?.recoveryInputId ? [assignment.recoveryInputId] : []));
+  const candidates = [...previous, ...[...originalInputs].flatMap((id) => rows.all(owner.sessionId, owner.userId, id).map(read))];
+  const originals = new Map(candidates.filter(({ assignment }) => !assignment?.recoveryInputId).map((task) => [task.id, task]));
+  const chatState = db().prepare(`SELECT chat_active FROM subagent_tasks t WHERE ${owned} AND id=?`);
+  return [...originals.values()].map((task) => {
+    const latest = latestTaskRetry(owner, task);
+    return { task, latest, paused: chatState.get(owner.sessionId, owner.userId, latest.id)?.chat_active === 0 };
+  });
 }
 
 /** 右侧列表仅查询当前运行中的委派分支，正文按任务详情另读。 */
@@ -190,6 +264,12 @@ export function getSubagentTask(owner: TaskOwner, id: string) {
   return lookup(owner, id);
 }
 
+export function getInterruptedWrite(owner: TaskOwner, id: string) {
+  const row = db().prepare(`SELECT snapshot FROM subagent_tasks t WHERE ${owned} AND id=? AND status IN ('interrupted','cancelled','timed-out')`)
+    .get(owner.sessionId, owner.userId, id);
+  return row ? (JSON.parse(String(row.snapshot)) as Checkpoint).fileWrite : undefined;
+}
+
 /** 暂停和恢复仅切换最新尝试的对话状态，保持历史执行结果、时间和预算。 */
 export function setSubagentChatActive(owner: TaskOwner, id: string, active: boolean) {
   const row = db().prepare(`UPDATE subagent_tasks AS t SET chat_active=? WHERE ${owned} AND id=?
@@ -216,7 +296,7 @@ export function listSubagentTasks(owner: TaskOwner, before?: string) {
 /** 同一会话/去重键只登记一次。已有键的合法性由权限和契约快照共同决定。 */
 export function registerTask(owner: TaskOwner, origin: TaskOrigin, contract: TaskContract,
   role: SubagentRole, limits: BudgetLimits, key: string, fingerprint: string,
-  dependencies?: { ids: string[]; queued: boolean }) {
+  dependencies?: { ids: string[]; queued: boolean }, assignment?: TaskAssignment) {
   const id = randomUUID();
   const at = Date.now();
   const inserted = db().prepare(`INSERT INTO subagent_tasks (
@@ -226,7 +306,7 @@ export function registerTask(owner: TaskOwner, origin: TaskOrigin, contract: Tas
     ON CONFLICT(session_id, dedupe_key) DO NOTHING RETURNING *`).get(
     id, origin.runId, origin.inputId, origin.parentCallId ?? null, origin.retryOf ?? null, key,
     fingerprint, worker, role, dependencies?.queued ? "queued" : "running",
-    JSON.stringify(dependencies ? { ...contract, dependencyIds: dependencies.ids } : contract), JSON.stringify(limits),
+    JSON.stringify({ ...contract, dependencyIds: dependencies?.ids, assignment }), JSON.stringify(limits),
     JSON.stringify({ progress: emptyProgress(), evidence: [] }), at, at, owner.sessionId, owner.userId);
   if (inserted) return { record: read(inserted), created: true };
   const row = db().prepare(`SELECT t.* FROM subagent_tasks t WHERE ${owned} AND dedupe_key=?`).get(owner.sessionId, owner.userId, key);
@@ -250,9 +330,9 @@ export function checkpointTask(owner: TaskOwner, id: string, snapshot: Checkpoin
 }
 
 /** 比较状态再结算，迟到的进度或重复取消无法覆盖已经提交的结果。 */
-export function settleTask(owner: TaskOwner, id: string, result: TaskResult, messages?: StoredMessage[]) {
+export function settleTask(owner: TaskOwner, id: string, result: TaskResult, messages?: StoredMessage[], writes?: TaskWrites) {
   return !!db().prepare(`UPDATE subagent_tasks AS t SET status=?, snapshot=?, result=?, updated_at=?
     WHERE ${owned} AND id=? AND executor=? AND status IN ('queued','running')`).run(
-    result.status, JSON.stringify({ progress: result.progress, evidence: result.evidence, messages }), JSON.stringify(result),
+    result.status, JSON.stringify({ progress: result.progress, evidence: result.evidence, messages, ...writes }), JSON.stringify(result),
       Date.now(), owner.sessionId, owner.userId, id, worker).changes;
 }

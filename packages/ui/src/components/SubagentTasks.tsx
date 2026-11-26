@@ -6,13 +6,14 @@ import type { SubagentRole } from "../../../subagent/src/role-budget";
 import { api } from "../lib/client";
 import { IChevron, IRetry } from "./Icons";
 import { TraceMarkdown, TraceSection } from "./TraceDetailContent";
+import { ApprovalCard } from "./ApprovalDock";
 import "./SessionTrace.css";
 
 export const subagentStatusLabels: Record<TaskRecord["status"], string> = {
   queued: "等待上游", running: "运行中", completed: "已完成", partial: "部分完成",
   blocked: "受阻", failed: "失败", "timed-out": "已超时", cancelled: "已取消", interrupted: "已中断",
 };
-export const subagentRoleLabels: Record<SubagentRole, string> = { research: "调研", review: "审阅", analysis: "分析" };
+export const subagentRoleLabels: Record<SubagentRole, string> = { research: "调研", review: "审阅", analysis: "分析", implementation: "执行与验证" };
 const active = (task: TaskRecord) => task.status === "queued" || task.status === "running";
 const lines = (text: string) => text.split("\n").map((item) => item.trim()).filter(Boolean);
 
@@ -29,6 +30,8 @@ export function SubagentTasks({ sessionId, archived, streaming, enabled }: { ses
   const [task, setTask] = useState("");
   const [role, setRole] = useState<SubagentRole>("research");
   const [paths, setPaths] = useState("");
+  const [writePaths, setWritePaths] = useState("");
+  const [contextFiles, setContextFiles] = useState("");
   const [plan, setPlan] = useState("");
   const [acceptance, setAcceptance] = useState("");
 
@@ -69,16 +72,20 @@ export function SubagentTasks({ sessionId, archived, streaming, enabled }: { ses
       await api.submitSubagentTask(sessionId, {
         task: task.trim(), role,
         ...(paths.trim() ? { paths: lines(paths) } : {}),
+        ...(role === "implementation" && writePaths.trim() ? { writePaths: lines(writePaths) } : {}),
+        ...(role === "implementation" && contextFiles.trim() ? { contextFiles: lines(contextFiles) } : {}),
         ...(plan.trim() ? { plan: lines(plan) } : {}),
         ...(acceptance.trim() ? { acceptance: lines(acceptance) } : {}),
       });
       setShowForm(false);
       setTask(""); setPaths(""); setPlan(""); setAcceptance("");
+      setWritePaths(""); setContextFiles("");
     });
   }
 
   const visible = [...new Map([...older, ...(tasks ?? [])].map((item) => [item.id, item])).values()]
     .sort((a, b) => b.createdAt - a.createdAt || b.id.localeCompare(a.id));
+  const pending = visible.flatMap(({ pendingApproval }) => pendingApproval ? [pendingApproval] : []);
   return <section className="session-trace" aria-label="子任务管理">
     <div className="trace-scope">
       <span className="trace-count">{tasks ? `${visible.length} 项子任务` : "子任务"}</span>
@@ -90,6 +97,9 @@ export function SubagentTasks({ sessionId, archived, streaming, enabled }: { ses
       </button>
     </div>
     <div className="trace-statistics">
+      {pending[0] && <div className="subagent-approvals">
+        <ApprovalCard key={pending[0].approvalId} {...pending[0]} more={pending.length - 1} />
+      </div>}
       {enabled && showForm && <form className="subagent-form" onSubmit={submit}>
         <label>任务目标<textarea className="set-input area" rows={3} maxLength={4000} value={task} onChange={(e) => setTask(e.target.value)} required /></label>
         <label>角色<select className="set-input select" value={role} onChange={(e) => setRole(e.target.value as SubagentRole)}>
@@ -99,6 +109,10 @@ export function SubagentTasks({ sessionId, archived, streaming, enabled }: { ses
           <summary>计划、范围和验收</summary>
           <label>执行步骤（每行一项）<textarea className="set-input area" rows={2} value={plan} onChange={(e) => setPlan(e.target.value)} /></label>
           <label>允许读取的文件或目录（每行一项）<textarea className="set-input area" rows={2} value={paths} onChange={(e) => setPaths(e.target.value)} /></label>
+          {role === "implementation" && <>
+            <label>允许写入的具体文件（每行一项）<textarea className="set-input area" rows={2} value={writePaths} onChange={(e) => setWritePaths(e.target.value)} /></label>
+            <label>引用的输入文件（每行一项）<textarea className="set-input area" rows={2} value={contextFiles} onChange={(e) => setContextFiles(e.target.value)} /></label>
+          </>}
           <label>验收条件（每行一项）<textarea className="set-input area" rows={2} value={acceptance} onChange={(e) => setAcceptance(e.target.value)} /></label>
         </details>
         <button className="btn primary" type="submit" disabled={busy || !task.trim()}>提交任务</button>
@@ -114,10 +128,14 @@ export function SubagentTasks({ sessionId, archived, streaming, enabled }: { ses
           </summary>
           <div className="subagent-result">
             <p className="trace-stats-note">{item.parentCallId ? "由父 Agent 委派" : "独立任务"} · {item.progress.steps}/{item.limits.steps} 步 · {item.progress.toolCalls} 次工具</p>
+            {item.interruptedFrom && <p className="trace-stats-note">{item.interruptedFrom === "queued" ? "等待上游时中断" : "执行期间中断"}</p>}
             {item.contract.plan?.length ? <TraceSection title="执行计划">
               <ol>{item.contract.plan.map((step) => <li key={step}>{step}</li>)}</ol>
             </TraceSection> : null}
             {item.result?.summary && <TraceSection title="结果"><TraceMarkdown text={item.result.summary} /></TraceSection>}
+            {!!item.result?.writtenPaths?.length && <TraceSection title="已写入文件">
+              <ul>{item.result.writtenPaths.map((file) => <li key={file}><code>{file}</code></li>)}</ul>
+            </TraceSection>}
             {item.result?.acceptance.length ? <TraceSection title="逐项验收">
               <ul>{item.result.acceptance.map((criterion) => <li key={criterion.criterion}>{criterion.met ? "已确认" : "待核对"} · {criterion.criterion}</li>)}</ul>
             </TraceSection> : null}
@@ -129,8 +147,11 @@ export function SubagentTasks({ sessionId, archived, streaming, enabled }: { ses
             </TraceSection>}
             {active(item) && <button type="button" className="btn ghost" disabled={busy}
               onClick={() => void action(() => api.stopSubagentTask(sessionId, item.id))}>停止任务</button>}
-            {enabled && !active(item) && !archived && item.status !== "completed" && <button type="button" className="btn ghost" disabled={busy}
-              onClick={() => void action(async () => { await api.submitSubagentTask(sessionId, { retryTaskId: item.id }); })}>重试任务</button>}
+            {enabled && !active(item) && !archived && item.status !== "completed" && item.assignment?.mode !== "revision" && !item.writeAttempts?.length &&
+              !visible.some(({ retryOf }) => retryOf === item.id) && <button type="button" className="btn ghost" disabled={busy}
+                onClick={() => void action(async () => { await api.submitSubagentTask(sessionId, { retryTaskId: item.id }); })}>
+                {item.status === "interrupted" ? "恢复任务" : "重试任务"}
+              </button>}
           </div>
         </details>)}
       </div>

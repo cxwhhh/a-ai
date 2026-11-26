@@ -4,7 +4,7 @@ import path from "node:path";
 import { DATA_DIR } from "../../storage/src/db";
 import { resolvePath } from "../../workspace/src/access";
 import { hashFileBytes, readFileHash } from "../../workspace/src/file-fingerprint";
-import { replaceWorkspaceFile } from "../../workspace/src/file-write";
+import { commitWorkspaceFile, readWorkspaceFile, replaceWorkspaceFile } from "../../workspace/src/file-write";
 import type { Tool } from "../../tool-runtime/src/types";
 
 /**
@@ -183,7 +183,7 @@ export const editFile: Tool<{
     },
   },
   async run({ path: p, old_string, new_string, replace_all }, ctx) {
-    const { full, shown, inWorkspace } = resolvePath(ctx.workspace, p, "write");
+    const { full, shown, inWorkspace } = ctx.writePath ? ctx.writePath(p) : resolvePath(ctx.workspace, p, "write");
     let original: Buffer;
     try {
       original = await fs.readFile(/*turbopackIgnore: true*/ full);
@@ -218,6 +218,7 @@ export const editFile: Tool<{
     for (let attempt = 0; ; attempt++) {
       ctx.signal?.throwIfAborted();
       try {
+        if (ctx.writePath && ctx.writePath(p).full !== full) throw new Error("写入目标已变化");
         const replaced = replaceWorkspaceFile(full, original, bytes, () => {
           if (inWorkspace && !checkpointed) ctx.checkpointFileWrite?.(shown, hashFileBytes(original), hashFileBytes(bytes));
           checkpointed = true;
@@ -303,8 +304,15 @@ export const writeFile: Tool<{
     },
   },
   async run({ path: p, content }, ctx) {
-    const { full, shown, inWorkspace } = resolvePath(ctx.workspace, p, "write");
     const bytes = Buffer.from(String(content ?? ""), "utf8");
+    if (ctx.writePath) {
+      ctx.signal?.throwIfAborted();
+      const { full, shown } = ctx.writePath(p);
+      const previous = readWorkspaceFile(full);
+      commitWorkspaceFile(full, previous, bytes, (before, expected) => ctx.checkpointFileWrite?.(shown, before, expected));
+      return { content: JSON.stringify({ path: shown, bytes: bytes.length, created: previous === null }) };
+    }
+    const { full, shown, inWorkspace } = resolvePath(ctx.workspace, p, "write");
     let created: boolean | undefined;
     if (inWorkspace && ctx.checkpointFileWrite) {
       const beforeHash = await readFileHash(full, ctx.signal);

@@ -4,6 +4,7 @@ import { audit } from "../../telemetry/src/audit";
 import { checkCommand, networkHint, runInSandbox, sandboxEnv, sandboxInfo, sandboxRoot, within } from "../../sandbox/src/sandbox";
 import type { Tool, ToolContext } from "../../tool-runtime/src/types";
 import { useTemporaryStorage } from "../../storage-manager/src/index";
+import { commandOutputs, publishCommandOutputs, scopedCommandWorkspace } from "./isolated-command-workspace";
 
 const DEFAULT_TIMEOUT = 30_000;
 const MAX_TIMEOUT = 120_000;
@@ -74,6 +75,10 @@ export const runCommand: Tool<{
   async run({ command, purpose, description, timeout_ms, temporary: requested, outputs }, ctx) {
     const cmd = String(command ?? "").trim();
     if (!cmd) throw new Error("command 不能为空：写要执行的 bash 命令，例：python -m unittest discover -s tests");
+    if (ctx.isolatedCommand) {
+      if (requested === false) throw new Error("子任务的命令使用隔离项目副本");
+      return runScopedCommand(cmd, String(purpose ?? description ?? ""), timeout_ms, outputs ?? [], ctx);
+    }
     const info = sandboxInfo();
     const temporary = useTemporaryStorage(requested);
     if (temporary && info.mode !== "docker") throw new Error("临时执行模式需要 Docker 沙箱");
@@ -199,6 +204,49 @@ export const runCommand: Tool<{
     };
   },
 };
+
+/** 保留原终端的审批与日志协议。命令结束后只提交明确列出的文件。 */
+async function runScopedCommand(command: string, purpose: string, timeoutMs: number | undefined, outputs: string[], ctx: ToolContext) {
+  const info = sandboxInfo();
+  if (info.mode === "local") throw new Error("子任务的命令需要 Docker 或 macOS Seatbelt 隔离环境");
+  if (!Array.isArray(outputs) || outputs.length > 12 || outputs.some((item) => typeof item !== "string" || !item.trim())) {
+    throw new Error("outputs 必须是最多 12 个明确的工作区文件路径");
+  }
+  if (outputs.length && info.mode !== "docker") throw new Error("Seatbelt 命令用于运行和验证。工作区文件请通过 write_file 或 edit_file 修改");
+  const root = sandboxRoot(ctx.workspace);
+  const level = classify(command);
+  const blocked = level.deny ?? checkCommand(command, root, root);
+  const log = { userId: ctx.userId ?? "", sessionId: ctx.sessionId, tool: "run_command", command, cwd: "子任务项目副本", sandbox: info.mode };
+  if (blocked) {
+    audit({ ...log, decision: "blocked", reason: blocked });
+    throw new Error(`不允许执行：${blocked}`);
+  }
+  const accepted = await commandOutputs(ctx, outputs);
+  const reason = [purpose.trim() || "在子任务的项目副本运行命令", accepted.size && `完成后提交：${[...accepted.keys()].join("、")}`].filter(Boolean).join("\n");
+  if (!ctx.confirm || !(await ctx.confirm({ command, reason, readonly: level.readonly && accepted.size === 0 }))) {
+    audit({ ...log, decision: "denied", reason: "命令未获批准" });
+    return { content: JSON.stringify({ denied: true, message: "子任务命令未获批准" }) };
+  }
+  return scopedCommandWorkspace(ctx, async (workspace) => {
+    const cwd = sandboxRoot(workspace);
+    const localHome = path.join(workspace, ".task-home");
+    const output = new HeadTail(HEAD, TAIL);
+    const started = Date.now();
+    const modeEnv = sandboxEnv(cwd, true);
+    const result = await runInSandbox({ sessionId: ctx.sessionId, workspace, cwd, isolatedWorkspace: true, script: command,
+      env: { ...modeEnv, HOME: localHome, TMPDIR: localHome, TMP: localHome, TEMP: localHome }, signal: ctx.signal,
+      timeoutMs: Math.min(Math.max(Number(timeoutMs) || DEFAULT_TIMEOUT, 1_000), MAX_TIMEOUT),
+      onData: (stream, text) => { output.push(text); ctx.onOutput?.(stripAnsi(text), stream); },
+    });
+    audit({ ...log, decision: "allowed", exitCode: result.code, timedOut: result.timedOut,
+      durationMs: Date.now() - started, outputChars: output.total });
+    ctx.signal?.throwIfAborted();
+    const written = result.code === 0 && !result.timedOut ? await publishCommandOutputs(workspace, accepted, ctx) : [];
+    const text = clean(output.text());
+    return { content: JSON.stringify({ exitCode: result.code, ...(result.signal && { signal: result.signal }), timedOut: result.timedOut, output: text, truncated: output.dropped > 0,
+      ranIn: ".", cwd: ".", sandbox: info.mode, ...(written.length && { outputs: written }) }) };
+  });
+}
 
 /** 目录标记：\x1e（记录分隔符）开头，正常输出里几乎不会出现 */
 const MARK = "\x1eA_AI_CWD:";

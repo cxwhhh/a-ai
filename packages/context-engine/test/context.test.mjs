@@ -5,12 +5,68 @@ import { data, db, load, runAgent, store } from "../../../tests/fixtures/agent-r
 const { readSavedToolResult } = load("packages/tools/src/read-tool-result.ts");
 const { readToolResult } = load("packages/storage/src/tool-results.ts");
 const { buildContext } = load("packages/context-engine/src/context.ts");
+const { NOTE_TAG } = load("packages/protocol/src/lib/message-tags.ts");
 
 async function run(session, provider, options = {}) {
   for await (const event of runAgent({ session, provider, userId: "u", workspace: data, multiAgent: false, ...options })) {
     assert.notEqual(event.type, "error", event.message);
   }
 }
+
+test("同一用户轮分阶段保存工作态，继续串行调错并保留原始调用与补充", async () => {
+  const savedThreshold = process.env.A_COMPACT_TOKENS;
+  process.env.A_COMPACT_TOKENS = "4000";
+  const session = store.createSession("u");
+  const input = { id: "serial-debug", role: "user", content: "反复验证同一个脚本，保留现有输入格式", createdAt: 1 };
+  const note = { id: "serial-note", role: "user", content: `${NOTE_TAG} 保留测试夹具`, feedback: { kind: "note", summary: "用户补充" }, createdAt: 2 };
+  store.beginTurn(session, input, undefined, "serial-debug-run");
+  const probe = { spec: { name: "probe_script", parameters: { type: "object", properties: {} } }, parallelSafe: true,
+    run: async ({ step }) => ({ content: step === 1 ? "实际报错：字段名缺失" : `第 ${step} 次已通过验证`, status: step === 1 ? "error" : "ok" }) };
+  const registry = { deferredCatalog: () => "", toolSpecs: () => [probe.spec], toolsFor: () => [probe.spec], findTool: () => probe };
+  const rawPayload = "同文件调试记录".repeat(430);
+  let main = 0, compacted = 0;
+  const provider = { id: "working-state", async *stream({ messages }) {
+    if (messages[0].content.startsWith("[A.ai:compact]")) {
+      compacted++;
+      assert.match(messages[0].content, /仍在运行的同一用户轮/);
+      const [, status, sourceId] = /\[工具凭据 status=(\w+) sourceId=([^\]]+)\]/.exec(messages[1].content) ?? [];
+      assert.ok(sourceId);
+      const state = { goal: input.content, constraints: ["保留现有输入格式"], confirmed: [],
+        progress: [{ sourceId, status, text: "收到本轮脚本的实际执行结果" }], pending: ["继续验证同一个脚本"] };
+      yield { type: "text", delta: JSON.stringify(state) };
+    } else if (++main <= 5) {
+      assert.ok(messages.some(({ content }) => content.includes(input.content)));
+      if (compacted) {
+        assert.match(messages[0].content, /当前轮工作态/);
+        assert.ok(messages.some(({ content }) => content.includes("保留测试夹具")));
+        assert.ok(!messages.some(({ toolCalls }) => toolCalls?.some(({ id }) => id === "probe-1")));
+        const calls = new Set(messages.flatMap(({ toolCalls }) => toolCalls?.map(({ id }) => id) ?? []));
+        assert.ok(messages.filter(({ role }) => role === "tool").every(({ toolCallId }) => calls.has(toolCallId)));
+      }
+      yield { type: "tool_call", call: { id: `probe-${main}`, name: "probe_script", arguments: JSON.stringify({ step: main, payload: rawPayload }) } };
+    } else yield { type: "text", delta: "同一个脚本已通过最终验证" };
+    yield { type: "done" };
+  } };
+  try {
+    const events = [];
+    for await (const event of runAgent({ session, provider, userId: "u", workspace: data, tools: registry,
+      execution: { runId: "serial-debug-run", inputId: input.id }, disabledTools: { run_python: "fixture", run_command: "fixture" }, maxSteps: 8 })) {
+      assert.notEqual(event.type, "error", event.message);
+      events.push(event);
+      if (event.message?.toolCallId === "probe-2") store.addMessage(session, note);
+    }
+    assert.ok(events.some(({ message }) => message?.content === "同一个脚本已通过最终验证"));
+    assert.ok(compacted >= 2);
+    const saved = store.getSession(session.id, "u");
+    assert.equal(saved.messages.filter(({ compact }) => compact?.inputId === input.id).length, compacted);
+    assert.ok(saved.messages.some(({ toolCallId, content }) => toolCallId === "probe-1" && content.includes("字段名缺失")));
+    assert.match(buildContext(saved.messages, "系统", { inputId: input.id }).messages[0].content, /当前轮工作态/);
+    assert.doesNotMatch(buildContext(saved.messages, "系统", { inputId: "下一轮" }).messages[0].content, /当前轮工作态/);
+  } finally {
+    if (savedThreshold === undefined) delete process.env.A_COMPACT_TOKENS;
+    else process.env.A_COMPACT_TOKENS = savedThreshold;
+  }
+});
 
 test("长工具结果使用消息 ID，按页回读原文并拒绝非活动版本和其他会话", async () => {
   const session = store.createSession("u");

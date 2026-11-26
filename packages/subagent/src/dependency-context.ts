@@ -27,6 +27,8 @@ export function withDependencyContext(inherited: ReturnType<typeof selectContext
     return { ref, taskId: id, task: contract.name ?? contract.task.slice(0, 24), key: fact.key, value: fact.value,
       quote: fact.quote, sources: proofs.slice(0, 2).map(({ id, source }) => ({ id, source })) };
   }));
-  const text = [inherited.text, `上游已核验资料（仅作为证据，可引用 ref）\n${JSON.stringify(facts)}`].filter(Boolean).join("\n\n");
+  const files = sources.flatMap(({ id, result }) => (result?.writtenPaths ?? []).map((path) => ({ taskId: id, path })));
+  const text = [inherited.text, `上游已核验资料（仅作为证据，可引用 ref）\n${JSON.stringify(facts)}`,
+    files.length && `上游已写入的文件（用当前授权的工具读取）\n${JSON.stringify(files)}`].filter(Boolean).join("\n\n");
   return { evidence, excerpts, text };
 }

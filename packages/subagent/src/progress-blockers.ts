@@ -50,13 +50,25 @@ export async function waitForCleanup<T>(work: Promise<T>, signal: AbortSignal): 
 export class TaskWatchdog {
   private activityAt = performance.now();
   private timer?: ReturnType<typeof setTimeout>;
+  private waits = 0;
+  private closed = false;
 
   constructor(private readonly idleMs: number, private readonly stop: AbortController) {
     this.arm(idleMs);
   }
 
   progress() { this.activityAt = performance.now(); }
-  close() { clearTimeout(this.timer); }
+  /** 用户审批属于等待状态。审批返回后再从该时点计算无进展时限。 */
+  pause() {
+    this.waits++;
+    clearTimeout(this.timer);
+    return () => {
+      if (--this.waits > 0 || this.closed || this.stop.signal.aborted) return;
+      this.progress();
+      this.arm(this.idleMs);
+    };
+  }
+  close() { this.closed = true; clearTimeout(this.timer); }
   stopLoop(code: LoopCode, detail: string) { this.stop.abort(new TaskLoopStop(code, detail)); }
 
   private arm(delay: number) {

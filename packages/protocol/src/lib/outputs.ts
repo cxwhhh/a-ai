@@ -85,6 +85,7 @@ export function collectChangedPaths(messages: StoredMessage[], artifacts: Artifa
     }
     const call = message.toolCallId ? calls.get(message.toolCallId) : undefined;
     if (call) calls.delete(call.id);
+    for (const file of message.outputFiles ?? []) add(file);
     if (toolStatus(message) !== "ok") continue;
     if (message.artifactId) add(byId.get(message.artifactId)?.file);
     const name = call?.name ?? message.toolResult?.name;
@@ -158,6 +159,14 @@ export function collectOutputs(messages: StoredMessage[], artifacts: Artifact[])
   // 工具调用：写入的文件算“输出”，读取 / 目录 / 网页算“已使用”
   for (const m of messages) {
     if (m.role === "user" && !m.feedback) finishRound();
+    for (const file of m.outputFiles ?? []) {
+      const k = "f:" + file;
+      const i = outputs.findIndex((item) => item.key === k);
+      if (i >= 0) outputs.splice(i, 1);
+      latestFileCall.set(k, m.toolCallId ?? m.id);
+      const ext = extOf(file);
+      outputs.push({ key: k, name: file, ext: ext || "file", icon: iconForExt(ext), view: { type: "file", path: file }, ts: m.createdAt });
+    }
     for (const c of m.toolCalls ?? []) {
       const r = results.get(c.id);
       if (!r || toolStatus(r) !== "ok") continue;

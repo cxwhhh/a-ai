@@ -26,11 +26,11 @@ export function ApprovalDock() {
 
 const CHOICES = [
   { d: "allow", label: "允许" },
-  { d: "allow_session", label: "本会话都允许", hint: "这次对话里后面的命令不再询问" },
+  { d: "allow_session", label: "本会话都允许", hint: "本会话的后续操作沿用这项决定" },
   { d: "deny", label: "拒绝" },
 ] as const;
 
-function ApprovalCard({ approvalId, command, reason, more }: PendingApproval & { more: number }) {
+export function ApprovalCard({ approvalId, command, reason, more = 0 }: PendingApproval & { more?: number }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const answer = async (d: (typeof CHOICES)[number]["d"]) => {
@@ -50,7 +50,7 @@ function ApprovalCard({ approvalId, command, reason, more }: PendingApproval & {
         {more > 0 && <span className="apd-more">还有 {more} 条</span>}
       </div>
       {reason && <div className="apd-reason">{reason}</div>}
-      <pre className="apd-cmd">{/^删除 /.test(command) ? command : `$ ${command}`}</pre>
+      <pre className="apd-cmd">{/^(删除|创建文件|替换文件|局部编辑) /.test(command) ? command : `$ ${command}`}</pre>
       <div className="apd-actions">
         {CHOICES.map((c, i) => (
           <button key={c.d} className={`apd-btn ${c.d === "allow" ? "primary" : ""}`} disabled={busy} onClick={() => answer(c.d)}>

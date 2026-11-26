@@ -1,4 +1,4 @@
-import type { ToolStatus } from "../../protocol/src/lib/shared";
+import type { StoredMessage, ToolStatus } from "../../protocol/src/lib/shared";
 import type { TaskProgress, TerminalTaskStatus } from "./progress-blockers";
 import { normalizeFactKey } from "./task-contract";
 
@@ -26,6 +26,12 @@ export interface AcceptanceResult {
   evidenceIds: string[];
 }
 
+export interface TaskVerification {
+  command: string;
+  exitCode: number | null;
+  timedOut: boolean;
+}
+
 export interface TaskResult {
   status: TerminalTaskStatus;
   summary: string;
@@ -34,6 +40,8 @@ export interface TaskResult {
   unresolved: string[];
   progress: TaskProgress;
   facts: VerifiedFact[];
+  writtenPaths?: string[];
+  verification?: TaskVerification[];
   /** 用户在运行期间直接发给这个分支的内容，随结算结果交给父轮。 */
   dialogue?: { messages: string[]; reply?: string; unanswered: number };
 }
@@ -50,6 +58,17 @@ function readResultBody(text: string): ResultBody | undefined {
 export function readSubagentReply(text: string) {
   const reply = readResultBody(text)?.reply;
   return typeof reply === "string" ? reply.trim().slice(0, 4_000) : "";
+}
+
+/** 只有正文回执能支持旧证据。重复查询的简短提示和失败回执不含可引用原文。 */
+export function savedToolExcerpts(messages: readonly StoredMessage[] = []) {
+  const excerpts = new Map<string, string>();
+  for (const message of messages) {
+    if (message.role !== "tool" || message.isError) continue;
+    const proof = /^\[(E\d+\.\d+)\]\n([\s\S]*)/.exec(message.content);
+    if (proof) excerpts.set(proof[1], proof[2].split("\n（文档下一段", 1)[0]);
+  }
+  return excerpts;
 }
 
 /** 复核只读取分工自己标记的口径歧义和实际存在的证据节选。 */
@@ -74,13 +93,13 @@ export function readReviewDecision(text: string) {
 
 /** 验收项只有在引用确实存在的证据时才接受模型的完成声明。证据是否充分仍由父轮或用户判断。 */
 export function assessResult(text: string, criteria: string[], evidence: Evidence[], factKeys: string[] = [],
-  excerpts: ReadonlyMap<string, string> = new Map()) {
+  excerpts: ReadonlyMap<string, string> = new Map(), carried?: Pick<TaskResult, "facts" | "acceptance">) {
   const body = criteria.length || factKeys.length ? readResultBody(text) : undefined;
   const known = new Set(evidence.map(({ id }) => id));
   const checks = Array.isArray(body?.checks) ? body.checks : [];
   const acceptance = criteria.map((criterion, index): AcceptanceResult => {
     const entries = checks.filter((check) => check && typeof check === "object" && check.index === index + 1);
-    const check = entries.length === 1 ? entries[0] : undefined;
+    const check = entries.length === 1 ? entries[0] : entries.length === 0 ? carried?.acceptance[index] : undefined;
     const evidenceIds = Array.isArray(check?.evidenceIds)
       ? [...new Set<string>(check.evidenceIds.filter((id: unknown): id is string => typeof id === "string" && known.has(id)))]
       : [];
@@ -103,6 +122,11 @@ export function assessResult(text: string, criteria: string[], evidence: Evidenc
   }
   for (const key of factKeys) {
     const results = claims.filter((claim) => claimKey(claim) === key);
+    // 只填补本轮省略的已核验事实。模型给出新值或新引文时，仍按本轮的证据规则验收。
+    if (!results.length) {
+      const saved = carried?.facts.find((fact) => fact.key === key);
+      if (saved) results.push(saved);
+    }
     const values = new Set(results.map((claim) => typeof claim.value === "string" ? claim.value.trim() : ""));
     if (values.size > 1) {
       unresolved.push(`${key} 有互相冲突的值，需核对原始证据`);

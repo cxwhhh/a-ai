@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { agents, createRegistry, data, db, load, overrides, readRun, routeFixture, routeState, runAgent, store, tool } from "../../../tests/fixtures/agent-runtime.mjs";
+import { agents, createRegistry, data, db, fixtureSettings, load, overrides, readRun, routeFixture, routeState, runAgent, store, tool } from "../../../tests/fixtures/agent-runtime.mjs";
 
 const { runSubagentTool, SubagentOrchestrator } = load("packages/subagent/src/subagent.ts");
 const { ParentDelegation } = load("packages/subagent/src/delegation-policy.ts");
@@ -72,7 +72,7 @@ test("简单天气任务由父轮直接查询并简短回应，不登记子任�
   assert.deepEqual(listSubagentTasks({ sessionId: run.sessionId, userId: "u" }), []);
 });
 
-test("普通对话默认禁用委派，开启后保留设置，项目自动使用多 Agent", async () => {
+test("新对话默认开启委派，显式关闭后保留设置，项目自动使用多 Agent", async () => {
   const service = new SubagentOrchestrator();
   const fixture = routeFixture({ agents, agentSessions, subagents: service });
   const { createProject } = load("packages/application/projects/src/projects.ts");
@@ -92,21 +92,25 @@ test("普通对话默认禁用委派，开启后保留设置，项目自动使�
   });
   try {
     const plain = await readRun(await fixture.request({ message: "普通对话" }));
-    const ordinary = await plain.rest();
-    assert.ok(ordinary.some(({ message }) => message?.role === "tool" && message.status === "denied"));
-    assert.equal(listSubagentTasks({ sessionId: plain.sessionId, userId: "u" }).length, 0);
-    assert.equal((await fixture.patch("sessions", plain.sessionId, { multiAgent: true })).status, 200);
-    const enabled = await readRun(await fixture.request({ sessionId: plain.sessionId, message: "继续协作" }));
-    await enabled.rest();
+    await plain.rest();
     assert.equal(store.getSession(plain.sessionId, "u").multiAgent, true);
-    assert.equal(listSubagentTasks({ sessionId: plain.sessionId, userId: "u" })[0].contract.name, "搜索日期");
+    assert.equal(listSubagentTasks({ sessionId: plain.sessionId, userId: "u" }).length, 1);
+    const optedOut = await readRun(await fixture.request({ message: "这轮不要分工", multiAgent: false }));
+    const ordinary = await optedOut.rest();
+    assert.ok(ordinary.some(({ message }) => message?.role === "tool" && message.status === "denied"));
+    assert.equal(listSubagentTasks({ sessionId: optedOut.sessionId, userId: "u" }).length, 0);
+    assert.equal((await fixture.patch("sessions", optedOut.sessionId, { multiAgent: true })).status, 200);
+    const enabled = await readRun(await fixture.request({ sessionId: optedOut.sessionId, message: "继续协作" }));
+    await enabled.rest();
+    assert.equal(store.getSession(optedOut.sessionId, "u").multiAgent, true);
+    assert.equal(listSubagentTasks({ sessionId: optedOut.sessionId, userId: "u" })[0].contract.name, "搜索日期");
 
     const project = createProject("u", { name: "测试项目", description: "", memory: "off", share: false });
     const auto = await readRun(await fixture.request({ projectId: project.id, message: "项目任务" }));
     await auto.rest();
     assert.equal((await fixture.patch("sessions", auto.sessionId, { multiAgent: false })).status, 409);
     assert.equal(listSubagentTasks({ sessionId: auto.sessionId, userId: "u" }).length, 1);
-    assert.deepEqual(available, [false, true, true]);
+    assert.deepEqual(available, [true, false, true, true]);
   } finally { await service.close(); }
 });
 
@@ -1356,7 +1360,18 @@ test("子线程单文件微调沿用历史，对其它文件和父对话没有�
   catalog.findTool = (name) => name === "edit_file" ? editTool : name === "read_file" ? readTool : old.findTool(name);
   catalog.toolSpecs = () => [readTool.spec, editTool.spec];
   const input = "把标题改为 Revised";
-  const provider = model(async function* ({ messages, tools }) {
+  const secondInput = "把标题改为 Checked";
+  const written = Promise.withResolvers();
+  const provider = model(async function* ({ messages, tools, signal }) {
+    if (messages[1].content === secondInput) {
+      const results = messages.filter(({ role }) => role === "tool");
+      if (!results.length) { yield toolCall("read_file", { path: "report.md" }, "verify-first"); yield toolEnd; }
+      else if (results.length === 1) {
+        yield toolCall("edit_file", { path: "report.md", old_string: "Revised", new_string: "Checked" }, "before-crash");
+        yield toolEnd;
+      } else { written.resolve(); await untilAborted(signal); }
+      return;
+    }
     const revised = messages[1].content === input;
     const results = messages.filter(({ role }) => role === "tool");
     if (!revised) {
@@ -1387,6 +1402,8 @@ test("子线程单文件微调沿用历史，对其它文件和父对话没有�
   const { GET, POST } = load("apps/server/src/routes/api/sessions/[id]/agent/subagents/route.ts");
   const context = { params: Promise.resolve({ id: session.id }), runtime };
   const post = (body) => POST(new Request("http://localhost/subagents", { method: "POST", body: JSON.stringify(body) }), context);
+  const approvalMode = fixtureSettings.commandApproval;
+  fixtureSettings.commandApproval = "auto";
   try {
     const initial = await post({ task: "读取报告", name: "报告核对", paths: ["report.md"] });
     assert.equal(initial.status, 202);
@@ -1412,7 +1429,24 @@ test("子线程单文件微调沿用历史，对其它文件和父对话没有�
     const refreshed = await (await GET(new Request("http://localhost/subagents?threads=1"), context)).json();
     assert.deepEqual(refreshed.tasks.map(({ id, name }) => ({ id, name })), [{ id: revision.id, name: "报告核对" }]);
     assert.equal(refreshed.tasks[0].metrics.dialogue.user, 1);
-  } finally { Object.assign(catalog, old); await service.close(); }
+
+    const response = await post({ continueTaskId: revision.id, message: secondInput, path: "report.md" });
+    assert.equal(response.status, 202);
+    const { task: inFlight } = await response.json();
+    await written.promise;
+    const snapshot = JSON.parse(db().prepare("SELECT snapshot FROM subagent_tasks WHERE id=?").get(inFlight.id).snapshot);
+    assert.equal(snapshot.fileWrite.path, "report.md");
+    db().prepare("UPDATE subagent_tasks SET executor='dead-worker' WHERE id=?").run(inFlight.id);
+    const detail = async () => (await (await GET(new Request(`http://localhost/subagents?taskId=${inFlight.id}`), context)).json()).task;
+    assert.deepEqual((await detail()).revisionVerification, { path: "report.md", status: "matches-expected" });
+    assert.equal((await post({ retryTaskId: inFlight.id })).status, 409);
+    assert.equal(await readFile(path.join(workspace, "report.md"), "utf8"), "# Checked\n");
+    await writeFile(path.join(workspace, "report.md"), "# Revised\n");
+    assert.equal((await detail()).revisionVerification.status, "matches-before");
+    await writeFile(path.join(workspace, "report.md"), "# User changed\n");
+    assert.equal((await detail()).revisionVerification.status, "changed");
+    assert.equal((await detail()).status, "interrupted");
+  } finally { fixtureSettings.commandApproval = approvalMode; Object.assign(catalog, old); await service.close(); }
 });
 
 function gate() {

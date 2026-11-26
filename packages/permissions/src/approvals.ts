@@ -13,6 +13,27 @@
  * 存在内存里，只适合单进程部署（现在就是）；多实例时要换成 Redis 发布/订阅之类。
  */
 export type ApprovalDecision = "allow" | "allow_session" | "deny";
+export type ApprovalNotice = { approvalId: string; command: string; reason: string };
+
+/** 主轮推流和独立子任务轮询共用决策语义。执行器的取消信号结束本次等待。 */
+export async function requestOperationApproval(options: {
+  userId: string; sessionId: string; mode?: "auto" | "readonly" | "ask"; signal?: AbortSignal;
+  request: Omit<ApprovalNotice, "approvalId"> & { readonly: boolean };
+  opened(notice: ApprovalNotice): void;
+  closed(allowed: boolean): void;
+}) {
+  const { userId, sessionId, request, signal } = options;
+  if (signal?.aborted) return false;
+  if (options.mode === "auto" || ((options.mode ?? "readonly") === "readonly" && request.readonly) || isSessionAllowed(sessionId)) return true;
+  const notice = { approvalId: crypto.randomUUID(), command: request.command, reason: request.reason };
+  const wait = waitApproval(userId, notice.approvalId, signal);
+  options.opened(notice);
+  const decision = await wait;
+  if (decision === "allow_session") allowSession(sessionId);
+  const allowed = decision !== "deny" && !signal?.aborted;
+  options.closed(allowed);
+  return allowed;
+}
 
 const WAIT_MS = 5 * 60_000;
 const waiting = new Map<string, (d: ApprovalDecision) => void>();

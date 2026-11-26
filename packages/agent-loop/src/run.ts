@@ -5,7 +5,7 @@ import { addArtifact, addMessage, newId, replaceArtifact } from "../../storage/s
 import { describeToolResult } from "../../storage/src/tool-results";
 import { searchHistory } from "../../storage/src/history";
 import { historyReaders } from "../../storage/src/history-index";
-import { allowSession, isSessionAllowed, waitApproval } from "../../permissions/src/approvals";
+import { requestOperationApproval } from "../../permissions/src/approvals";
 import { DEFAULT_MODEL_CONTEXT_WINDOW, type Settings } from "../../protocol/src/lib/settings";
 import { DELEGATION_PROMPT, SYSTEM_PROMPT } from "../../system-prompt/src/prompt";
 import { deferredCatalog, findTool, toolSpecs, toolsFor } from "../../tool-runtime/src/index";
@@ -18,10 +18,11 @@ import { recordFileWrite, type FileRecovery } from "../../session/session-recove
 import { normalizeArgs, parseToolArgs } from "./args";
 import { CallGuard } from "./guard";
 import { logUsage } from "../../application/usage/src/usage";
-import { buildContext, compactThreshold, estimateRequest, estimateUsage, planCompact, summarize, withFileRecoveries } from "../../context-engine/src/context";
+import { buildContext, compactThreshold, estimateRequest, estimateUsage, planCompact, planWorkingState, summarize, withFileRecoveries } from "../../context-engine/src/context";
 import { envPrompt, turnEnv } from "./env";
 import { budgetHint, isPlanOnly, Progress, selfCheck } from "./steer";
-import { DELEGATE_SPEC, RESEARCH_SPEC, runSubagentTool, type SubagentOrchestrator } from "../../subagent/src/subagent";
+import { DELEGATE_SPEC, RESEARCH_SPEC, RECOVER_DELEGATION_SPEC, runSubagentTool, type SubagentOrchestrator } from "../../subagent/src/subagent";
+import { listRecoverableDelegations, subagentName } from "../../subagent/src/ownership-claim";
 import { ParentDelegation } from "../../subagent/src/delegation-policy";
 import { mkdirSync, writeFileSync, existsSync } from "node:fs";
 import nodePath from "node:path";
@@ -37,7 +38,7 @@ const DEFAULT_MAX_FIX_ROUNDS = 3;
 const STEPS_PER_FIX = 2;
 /** 一组最多同时跑几个只读工具：模型一次发 20 个网页抓取时分几组跑，避免占满连接和内存（M1-03） */
 const MAX_PARALLEL = 6;
-const isDelegation = (name: string) => name === RESEARCH_SPEC.name || name === DELEGATE_SPEC.name;
+const isDelegation = (name: string) => name === RESEARCH_SPEC.name || name === DELEGATE_SPEC.name || name === RECOVER_DELEGATION_SPEC.name;
 // 这些工具的正文用于当前步骤的指令、交付或有界回读，沿用原协议。
 const inlineToolResults = new Set(["load_skill", "load_tools", "ask_user", "todo_write", ...historyReaders]);
 
@@ -66,7 +67,7 @@ const inlineToolResults = new Set(["load_skill", "load_tools", "ask_user", "todo
  * 每条消息生成完就写进数据库（addMessage），中途点“停止”也不会丢消息。
  *
  * 上下文管理（context.ts）：第 1 步发给模型的不是完整历史，而是“瘦身”后的历史；
- * 预计超过阈值时先把更早的对话压缩成摘要（prepareContext），再调用模型。
+ * 预计超过阈值时，可整理更早的对话和当前轮已结算阶段，再调用模型继续原任务。
  *
  * 让模型少走弯路（env.ts、steer.ts、subagent.ts）：
  * - 环境：日期、沙箱里的包接在系统提示词后面；当前时间和工作区文件附在本轮用户消息后面。
@@ -140,14 +141,19 @@ async function* executeTurn(opts: {
   const env = await envPrompt(opts.workspace).catch(() => "");
   const registry = opts.tools ?? { deferredCatalog, findTool, toolSpecs, toolsFor };
   const catalog = registry.deferredCatalog(disabled);
-  const recoveryHint = opts.recovery?.interruptedInputId
+  const interruptedInputId = opts.recovery?.interruptedInputId;
+  const canRecoverDelegation = interruptedInputId && !disabled.research && !disabled.recover_subagent_tasks &&
+    listRecoverableDelegations({ sessionId: session.id, userId: opts.userId }, interruptedInputId).length > 0;
+  const recoveryHint = interruptedInputId
     ? "\n\n上一轮运行已中断。用户若要继续，请从保存的消息、工具结果和恢复核验结论接着处理。先核对结果未知的操作，避免重复写入。"
+      + (canRecoverDelegation ? "\n如果继续原分工，先调用 recover_subagent_tasks 查看上一轮实际结果、依赖和缺口。已验收的分支直接复用，仍需要的分支按原任务 ID 恢复。" : "")
     : "";
   const custom = opts.systemPrompt?.trim();
   const prompt = (custom || SYSTEM_PROMPT) + (disabled.research ? "" : `\n\n子任务规则\n${DELEGATION_PROMPT}`);
   const system = [prompt, opts.projectRules, catalog, env, opts.memory].filter(Boolean).join("\n\n") + disabledNote(disabled) + recoveryHint;
   /** 这一步发给模型的工具：每一步重新从历史里算（上一步刚调用了 load_tools，这一步就带上新加载的说明书） */
-  const delegationSpecs = disabled.research ? [] : [RESEARCH_SPEC, ...(!disabled.delegate_tasks ? [DELEGATE_SPEC] : [])];
+  const delegationSpecs = disabled.research ? [] : [RESEARCH_SPEC, ...(!disabled.delegate_tasks ? [DELEGATE_SPEC] : []),
+    ...(canRecoverDelegation ? [RECOVER_DELEGATION_SPEC] : [])];
   const toolsNow = () => [...registry.toolsFor(session.messages, disabled).filter(({ name }) => !isDelegation(name)), ...delegationSpecs];
   // 本轮的环境快照只取一次：同一轮的每一步都一样，请求前缀不变，缓存才能命中
   const snapshot = await turnEnv(opts.workspace).catch(() => "");
@@ -162,7 +168,7 @@ async function* executeTurn(opts: {
   const verifier = new Verifier(canRun ? (opts.maxFixRounds ?? DEFAULT_MAX_FIX_ROUNDS) : 0);
   const guard = new CallGuard();
   const progress = new Progress();
-  let failedCompactKeepFrom: string | undefined;
+  const failedCompactKeepFrom = new Set<string>();
   let recalled: { retainedFrom: string; cards: ReturnType<typeof searchHistory> } | undefined;
   let planned = false; // 这一轮第一步写了规划
   let warmup = 0; // 本轮开头只读了技能（load_skill）的步数：读完技能后的第一步仍然可以只写规划
@@ -187,27 +193,11 @@ async function* executeTurn(opts: {
     wake();
   };
   /** 工具请求确认：按设置决定直接放行还是问用户（问的话循环停在这里，等 /api/approve） */
-  const confirm = async (callId: string, req: ApprovalRequest) => {
-    const mode = opts.commandApproval ?? "readonly";
-    if (mode === "auto" || (mode === "readonly" && req.readonly) || isSessionAllowed(session.id)) return true;
-    // 模型的 callId 可能在不同会话重复。用服务端生成的确认 ID 唤醒本次等待。
-    const approvalId = crypto.randomUUID();
-    emit({
-      type: "approval",
-      callId,
-      approvalId,
-      command: req.command,
-      reason: req.reason
-    });
-    const d = await waitApproval(opts.userId, approvalId, signal);
-    if (d === "allow_session") allowSession(session.id);
-    emit({
-      type: "approval_end",
-      callId,
-      allowed: d !== "deny"
-    });
-    return d !== "deny";
-  };
+  const confirm = (callId: string, req: ApprovalRequest, waitSignal = signal) => requestOperationApproval({
+    userId: opts.userId, sessionId: session.id, mode: opts.commandApproval, signal: waitSignal, request: req,
+    opened: (notice) => emit({ type: "approval", callId, ...notice }),
+    closed: (allowed) => emit({ type: "approval_end", callId, allowed }),
+  });
 
   for (let step = 0; step < budget; step++) {
     if (signal?.aborted) break;
@@ -513,6 +503,7 @@ async function* executeTurn(opts: {
           const exec = isDelegation(call.name)
             ? executeDelegation(call, ctx, session, {
               orchestrator: opts.subagents, parent: parentDelegation, contextWindow,
+              interruptedInputId: canRecoverDelegation ? interruptedInputId : undefined,
               projectRules: opts.projectRules,
               origin: { ...subagentOrigin, parentCallId: `${assistant.id}:${call.id}` },
               trace: opts.conversationTrace && { recorder: opts.conversationTrace, step: step + 1 },
@@ -531,12 +522,12 @@ async function* executeTurn(opts: {
           for (const { call, result } of completed.splice(0)) {
             running--;
             if (signal?.aborted) markStopped(call, result, registry);
-            if (result.status !== "ok" && !isReadOnly(call.name, registry)) failed ??= call;
+            if (result.status !== "ok" && !isReadOnly(call, registry)) failed ??= call;
             verifier.observe(call, result);
             progress.observe(call, result);
             toolRuns++;
             while (pending.length) yield { type: "artifact", artifact: pending.shift()! };
-            if (!inlineToolResults.has(call.name) && !isDelegation(call.name)) {
+            if (!inlineToolResults.has(call.name)) {
               const reference = describeToolResult(call.name, result.content);
               if (reference) result.toolResult = reference;
             }
@@ -578,7 +569,7 @@ async function* executeTurn(opts: {
   /**
    * 准备这一步发给模型的历史（第 1 步）。
    * 先瘦身；预计仍超过阈值就做摘要压缩（多一次模型调用，摘要存进会话，之后的步骤都复用）；
-   * 还是太长（例如单独一轮就很长，没有可以摘要的旧轮次），就把当前轮更早的工具结果截得更短。
+   * 本轮积累了多组已结算调用时也能生成工作态，继续使用原轮次的预算、工具和文件。
    */
   async function* prepareContext(step: number, stepTools?: ToolSpec[]): AsyncGenerator<AgentEvent, ReturnType<typeof buildContext>> {
     const context = yield* compactIfNeeded(step, stepTools);
@@ -621,15 +612,14 @@ async function* executeTurn(opts: {
    * 摘要仍不足以降低体积时，进一步裁剪本次请求的副本，历史正文继续保留。
    */
   async function* compactIfNeeded(step: number, stepTools?: ToolSpec[]): AsyncGenerator<AgentEvent, ReturnType<typeof buildContext>> {
-    const history = withFileRecoveries(session.messages, opts.recovery?.files ?? []);
-    let activeHistory = history;
+    let activeHistory = withFileRecoveries(session.messages, opts.recovery?.files ?? []);
     const inputId = currentInputId;
-    let context = buildContext(history, system, { inputId });
-    const before = estimateRequest(context.messages, stepTools);
-    if (before <= threshold) return context;
-
-    const plan = planCompact(history);
-    if (plan && plan.keepFrom !== failedCompactKeepFrom) {
+    let context = buildContext(activeHistory, system, { inputId });
+    for (const inTurn of [false, true]) {
+      const before = estimateRequest(context.messages, stepTools);
+      if (before <= threshold) return context;
+      const plan = inTurn ? planWorkingState(activeHistory, inputId) : planCompact(activeHistory);
+      if (!plan || failedCompactKeepFrom.has(plan.keepFrom)) continue;
       const startedAt = Date.now();
       try {
         const trace = opts.conversationTrace;
@@ -644,7 +634,7 @@ async function* executeTurn(opts: {
             },
           }).stream,
         } : provider;
-        const { summary, usage } = await summarize(summarizer, plan, signal);
+        const { summary, usage } = await summarize(summarizer, plan, signal, inTurn ? contextWindow : undefined);
         logUsage(opts.userId, session.id, "compact", usage, startedAt);
         const m: StoredMessage = {
           id: newId("m"),
@@ -652,10 +642,11 @@ async function* executeTurn(opts: {
           content: summary,
           feedback: {
             kind: "compact",
-            summary: `更早的 ${plan.part.length} 条消息已整理成摘要`
+            summary: inTurn ? "已保存当前轮的阶段工作态" : `更早的 ${plan.part.length} 条消息已整理成摘要`
           },
           compact: {
             keepFrom: plan.keepFrom,
+            ...(inTurn && { inputId }),
             messages: plan.part.length,
             tokensBefore: before,
             tokensAfter: 0
@@ -664,7 +655,7 @@ async function* executeTurn(opts: {
           createdAt: startedAt,
           durationMs: Date.now() - startedAt,
         };
-        const nextHistory = [...history, m];
+        const nextHistory = [...activeHistory, m];
         const candidate = buildContext(nextHistory, system, { inputId });
         m.compact!.tokensAfter = estimateRequest(candidate.messages, stepTools);
         if (m.compact!.tokensAfter >= before) throw new Error("摘要未缩小请求上下文");
@@ -679,7 +670,7 @@ async function* executeTurn(opts: {
         };
       } catch (e) {
         if (signal?.aborted) throw e;
-        failedCompactKeepFrom = plan.keepFrom;
+        failedCompactKeepFrom.add(plan.keepFrom);
         // 摘要失败不影响回答：用瘦身后的历史继续，只打日志
         console.warn("[context] 压缩失败：", e instanceof Error ? e.message : e);
       }
@@ -779,7 +770,7 @@ function toBatches(calls: ToolCall[], registry: ToolRegistry): ToolCall[][] {
     ordinary = 0;
   };
   for (const call of calls) {
-    if (!isReadOnly(call.name, registry)) {
+    if (!isReadOnly(call, registry)) {
       flush();
       batches.push([call]);
     } else if (isDelegation(call.name) || ordinary++ < MAX_PARALLEL) first.push(call);
@@ -800,7 +791,7 @@ interface ExecCtx {
   /** 这一轮已经做出的产出物（“类型:标题” → id）。同一轮里同类型同标题再提交 = 修改那一份，不新建 */
   made: Map<string, string>;
   emit(e: AgentEvent): void;
-  confirm(callId: string, req: ApprovalRequest): Promise<boolean>;
+  confirm(callId: string, req: ApprovalRequest, signal?: AbortSignal): Promise<boolean>;
   checkpointFileWrite?(callId: string, path: string, before: string | null, expected: string): void;
   disabled: Record<string, string>;
   provider: LLMProvider;
@@ -808,7 +799,7 @@ interface ExecCtx {
 
 /** 委派结果沿用主工具消息格式；实时进度归属发起委派的工具调用。 */
 async function executeDelegation(call: ToolCall, ctx: ExecCtx, session: Session, options: Pick<Parameters<typeof runSubagentTool>[1],
-  "orchestrator" | "parent" | "origin" | "trace" | "contextWindow" | "projectRules">): Promise<StoredMessage> {
+  "orchestrator" | "parent" | "origin" | "trace" | "contextWindow" | "projectRules" | "interruptedInputId">): Promise<StoredMessage> {
   const startedAt = Date.now();
   const r = await runSubagentTool(call, {
     ...options,
@@ -820,6 +811,8 @@ async function executeDelegation(call: ToolCall, ctx: ExecCtx, session: Session,
     disabled: ctx.disabled,
     session,
     registry: ctx.registry,
+    confirm: (task, childCall, req, signal) => ctx.confirm(`${call.id}:${task.id}:${childCall.id}`,
+      { ...req, reason: `子任务「${subagentName(task.contract)}」 · ${req.reason}` }, signal),
     onOutput: (text) => ctx.emit({
       type: "tool_output",
       callId: call.id,
@@ -839,6 +832,7 @@ async function executeDelegation(call: ToolCall, ctx: ExecCtx, session: Session,
     role: "tool",
     toolCallId: call.id,
     content: r.content,
+    ...("writtenPaths" in r && r.writtenPaths?.length ? { outputFiles: [...new Set(r.writtenPaths)] } : {}),
     isError: r.isError,
     status: r.status,
     ...(r.isError ? { errorKind: r.errorKind ?? "tool" as const } : {}),
@@ -868,7 +862,18 @@ function errorResult(call: ToolCall, content: string, errorKind: ErrorKind = "to
 }
 
 /** 只读工具（可以并行的那些）：停止或失败都不会改坏东西 */
-const isReadOnly = (name: string, registry: ToolRegistry) => isDelegation(name) || !!registry.findTool(name)?.parallelSafe;
+function isReadOnly(call: ToolCall, registry: ToolRegistry) {
+  if (call.name === DELEGATE_SPEC.name) {
+    const parsed = parseToolArgs(call.arguments);
+    if (parsed.ok && Array.isArray(parsed.args.assignments) && parsed.args.assignments.some((item) => item?.role === "implementation")) return false;
+  }
+  // 恢复工具可能启动还未发生写入的执行分支，和主轮的文件操作顺序执行。
+  if (call.name === RECOVER_DELEGATION_SPEC.name) {
+    const parsed = parseToolArgs(call.arguments);
+    return !parsed.ok || !Array.isArray(parsed.args.taskIds) || parsed.args.taskIds.length === 0;
+  }
+  return isDelegation(call.name) || !!registry.findTool(call.name)?.parallelSafe;
+}
 
 /**
  * 工具执行期间用户点了停止，工具带着失败结果返回：
@@ -877,7 +882,7 @@ const isReadOnly = (name: string, registry: ToolRegistry) => isDelegation(name) 
  */
 function markStopped(call: ToolCall, r: StoredMessage, registry: ToolRegistry) {
   if (r.status === "ok") return;
-  if (isReadOnly(call.name, registry)) {
+  if (isReadOnly(call, registry)) {
     r.status = "cancelled";
     return;
   }

@@ -27,7 +27,7 @@ import { SkillToast } from "./SkillToast";
 import type { SettingsTab } from "./UserMenu";
 import "./OutputPreview.css";
 
-const emptySession = (): Session => ({ id: "", title: "", createdAt: 0, updatedAt: 0, messages: [], artifacts: [] });
+const emptySession = (): Session => ({ id: "", title: "", createdAt: 0, updatedAt: 0, messages: [], artifacts: [], multiAgent: true });
 const noTools: Record<string, number> = {};
 const SIDEBAR_DEFAULT = 288;
 const SIDEBAR_MIN = 200;

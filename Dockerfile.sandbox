@@ -6,6 +6,8 @@ FROM python:3.12-slim-bookworm
 
 # 命令工具可运行 Node.js。账号应用数据库由主服务在容器挂载范围外管理。
 COPY --from=app-runtime /usr/local/bin/node /usr/local/bin/node
+COPY --from=app-runtime /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
+RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm
 
 # 软件源走 https（443 端口），不走 http（80 端口）：有的公司网络 / 服务器只放行 443，http 会连接超时。
 # python 官方镜像自带 ca-certificates，所以一开始就能用 https。

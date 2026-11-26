@@ -26,8 +26,8 @@ export function parseDelegationPlan(raw: Record<string, unknown>) {
       [objective, reason, synthesis].some((text) => !text.trim() || text.length > 2_000)) {
     throw new SubagentRequestError("分工计划需要整体目标、分工理由和汇总方式");
   }
-  if (!Array.isArray(assignments) || assignments.length < 2) {
-    throw new SubagentRequestError("分工计划至少需要两项任务");
+  if (!Array.isArray(assignments) || !assignments.length) {
+    throw new SubagentRequestError("分工计划需要至少一个任务");
   }
   const entries = assignments.map((assignment: unknown) => {
     if (!assignment || typeof assignment !== "object" || Array.isArray(assignment)) {
@@ -42,7 +42,8 @@ export function parseDelegationPlan(raw: Record<string, unknown>) {
     return { taskKey, dependsOn: (dependsOn ?? []) as string[], contract: parseTaskContract(contract) };
   });
   const tasks = entries.map(({ contract }) => contract);
-  if (tasks.some((task) => !task.role || !task.plan?.length || !task.acceptance?.length || !task.factKeys?.length)) {
+  if (tasks.length === 1 && tasks[0].role !== "implementation") throw new SubagentRequestError("单项只读调研请用 research");
+  if (tasks.some((task) => !task.role || !task.plan?.length || !task.acceptance?.length || (task.role !== "implementation" && !task.factKeys?.length))) {
     throw new SubagentRequestError("每项分工需要角色、步骤、验收项和负责的事实键");
   }
   const keys = tasks.flatMap((task) => task.factKeys ?? []);
@@ -74,7 +75,8 @@ export function parseDelegationPlan(raw: Record<string, unknown>) {
     }
   }
   if (order.length !== tasks.length) throw new SubagentRequestError("分工存在循环依赖，请检查 taskKey 和 dependsOn");
-  return { objective: objective.trim(), reason: reason.trim(), synthesis: synthesis.trim(), tasks, dependencies, order };
+  return { objective: objective.trim(), reason: reason.trim(), synthesis: synthesis.trim(), tasks,
+    taskKeys: entries.map(({ taskKey }) => taskKey as string | undefined), dependencies, order };
 }
 
 function validTaskKey(value: unknown): value is string {
@@ -125,10 +127,12 @@ export class ParentDelegation {
   }
 
   validate(records: { id: string; contract: TaskContract }[]) {
+    const owners = new Map(this.owners);
     for (const { id, contract } of records) {
       for (const key of contract.factKeys ?? []) {
-        const owner = this.owners.get(key);
+        const owner = owners.get(key);
         if (owner && owner !== id) throw new SubagentRequestError(`事实 ${key} 已分配给本轮的另一子任务`, 409);
+        owners.set(key, id);
       }
     }
   }

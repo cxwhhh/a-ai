@@ -3,7 +3,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { audit } from "../../telemetry/src/audit";
 import { networkHint, runInSandbox, sandboxEnv, sandboxInfo, sandboxRoot } from "../../sandbox/src/sandbox";
-import type { Tool } from "../../tool-runtime/src/types";
+import type { Tool, ToolContext } from "../../tool-runtime/src/types";
 import { useTemporaryStorage } from "../../storage-manager/src/index";
 
 const TIMEOUT_MS = 20000;
@@ -43,6 +43,10 @@ export const runPython: Tool<{
     },
   },
   async run({ code, temporary: requested, outputs }, ctx) {
+    if (ctx.isolatedPython) {
+      if (requested === false || outputs?.length) throw new Error("子任务的 Python 用于隔离计算和验证。持久文件请用授权的文件工具保存");
+      return isolatedPython(String(code ?? ""), ctx, ctx.isolatedPython);
+    }
     const info = sandboxInfo();
     const temporary = useTemporaryStorage(requested);
     if (temporary && info.mode !== "docker") throw new Error("临时执行模式需要 Docker 沙箱");
@@ -103,5 +107,41 @@ export const runPython: Tool<{
     };
   },
 };
+
+/** 只复制明确引用的材料和已生成的授权文件。模型代码没有挂载工作区的能力。 */
+async function isolatedPython(code: string, ctx: ToolContext, scope: NonNullable<ToolContext["isolatedPython"]>) {
+  const files = new Map<string, string>();
+  let remaining = 2 * 1024 * 1024;
+  for (const requested of [...scope.inputs, ...scope.optionalOutputs]) {
+    ctx.signal?.throwIfAborted();
+    const file = ctx.readPath?.(requested);
+    if (!file?.inWorkspace || file.shown === ".") throw new Error("Python 只能接收明确引用的工作区文件");
+    if (files.has(file.shown)) continue;
+    const stat = await fs.stat(file.full).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT" && !scope.inputs.includes(requested)) return null;
+      throw error;
+    });
+    if (!stat) continue;
+    if (!stat.isFile() || stat.size > remaining) throw new Error("Python 输入必须是普通文件，合计最多 2 MiB");
+    const bytes = await fs.readFile(file.full, { signal: ctx.signal });
+    remaining -= bytes.length;
+    if (remaining < 0) throw new Error("Python 输入合计最多 2 MiB");
+    files.set(file.shown, bytes.toString("base64"));
+  }
+  const captured = { out: "", err: "" };
+  const t0 = Date.now();
+  const result = await runInSandbox({
+    sessionId: ctx.sessionId, workspace: ctx.workspace, cwd: "/tmp", script: "", env: {}, isolatedPython: true,
+    input: JSON.stringify({ code, files: [...files] }), signal: ctx.signal, timeoutMs: TIMEOUT_MS,
+    onData: (stream, delta) => {
+      captured[stream] = (captured[stream] + delta).slice(-MAX_OUT);
+      ctx.onOutput?.(delta, stream);
+    },
+  });
+  audit({ userId: ctx.userId ?? "", sessionId: ctx.sessionId, tool: "run_python", command: code, cwd: "子任务临时目录",
+    sandbox: "docker", decision: "allowed", exitCode: result.code, timedOut: result.timedOut, durationMs: Date.now() - t0,
+    outputChars: captured.out.length + captured.err.length });
+  return { content: JSON.stringify({ exitCode: result.code, timedOut: result.timedOut, stdout: captured.out, stderr: captured.err }) };
+}
 
 const shellQuote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;

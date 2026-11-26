@@ -29,11 +29,12 @@ const toMeta = (r: Row): SessionMeta => ({
 });
 
 export function listSessions(userId: string): SessionMeta[] {
-  // has_files：有产出物，或者有一条 assistant 消息调用过 write_file（消息存的是 JSON，用 LIKE 粗查即可）
+  // 子任务回执带有执行层确认的文件路径。旧会话仍能识别此前的写入调用和产出物。
   return db().prepare(
     `SELECT s.id, s.title, s.created_at, s.updated_at, s.project_id, s.archived_at, s.history_revision, s.multi_agent,
        EXISTS(SELECT 1 FROM artifacts a WHERE a.session_id = s.id AND a.superseded_by IS NULL)
-       OR EXISTS(SELECT 1 FROM messages m WHERE m.session_id = s.id AND m.superseded_by IS NULL AND m.role = 'assistant' AND m.data LIKE '%"name":"write_file"%') AS has_files
+       OR EXISTS(SELECT 1 FROM messages m WHERE m.session_id = s.id AND m.superseded_by IS NULL
+           AND ((m.role = 'assistant' AND m.data LIKE '%"name":"write_file"%') OR (m.role = 'tool' AND json_array_length(m.data, '$.outputFiles') > 0))) AS has_files
      FROM sessions s WHERE user_id = ? ORDER BY updated_at DESC`,
   )
     .all(userId)
@@ -55,7 +56,7 @@ export function getSession(id: string, userId: string): Session | null {
 }
 
 /** projectId 要先确认是这个用户自己的项目（见 api/chat 里的 getProject），这里不再检查 */
-export function createSession(userId: string, title = "新对话", projectId?: string, multiAgent = false): Session {
+export function createSession(userId: string, title = "新对话", projectId?: string, multiAgent = true): Session {
   const now = Date.now();
   const s: Session = { id: newId("s"), revision: 0, title, createdAt: now, updatedAt: now, messages: [], artifacts: [], ...(projectId ? { projectId } : {}), ...(multiAgent ? { multiAgent } : {}) };
   db().prepare("INSERT INTO sessions (id, user_id, title, created_at, updated_at, project_id, multi_agent, workspace_ready_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")

@@ -117,6 +117,10 @@ const TOOLS: Record<string, { done: string; run: string; label: string; opensFil
     done: "已汇报分工结果", run: "子 Agent 分工执行中", label: "任务分工",
     target: ({ a }) => clip(str(a.objective).replace(/\s+/g, " "), 80),
   },
+  recover_subagent_tasks: {
+    done: "已读取子任务恢复结果", run: "正在检查子任务恢复状态", label: "恢复子任务",
+    target: ({ a }) => Array.isArray(a.taskIds) && a.taskIds.length ? `${a.taskIds.length} 项待恢复` : "读取已保存的分工",
+  },
   web_search: {
     done: "已搜索网页", run: "正在搜索网页", label: "搜索网页",
     target: ({ a, r }) => (
@@ -577,6 +581,7 @@ function toolBody({ call, a, r, result, onOpenFile }: { call: ToolCall; a: R; r:
       ) : null;
     case "research":
     case "delegate_tasks":
+    case "recover_subagent_tasks":
       // 结果是子 agent 写的 Markdown（结论、要点、来源），末尾附着它调用过的工具
       return result?.content ? <Markdown text={result.content} /> : null;
     case "calculator":

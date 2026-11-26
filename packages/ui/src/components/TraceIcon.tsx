@@ -14,6 +14,7 @@ const ICONS = {
   write_file: IFileEdit, edit_file: IFileEdit, file_op: IFolder, write_document: IFileEdit,
   run_command: ITerminal, run_python: ICode,
   glob: ISearch, grep: ISearch, web_search: ISearch, research: ISearch, delegate_tasks: ISearch,
+  recover_subagent_tasks: IWrench,
   web_fetch: IGlobe, http_request: IGlobe, download_file: IDownload,
   calculator: ICalc, current_time: IClock, query_data: ICalc, make_chart: IChart,
   create_artifact: IFile, archive: ILayers, ask_user: IInfo,

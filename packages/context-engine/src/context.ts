@@ -5,6 +5,7 @@ import { STATUS_LABEL, toolStatus } from "../../protocol/src/lib/shared";
 import { estimateTokens } from "../../protocol/src/lib/tokens";
 import { FEEDBACK_TAG } from "../../verifier/src/verify";
 import { fileRecoveryMessage, type FileRecovery } from "../../session/session-recovery/src/file-recovery";
+import { delegationResultTools, describeToolResult } from "../../storage/src/tool-results";
 import { SUMMARY_FORMAT, validateSummary } from "./summary";
 
 /**
@@ -23,6 +24,7 @@ import { SUMMARY_FORMAT, validateSummary } from "./summary";
  *
  * 第 2 层 摘要压缩（瘦身后仍超过阈值时才做，调用一次模型，结果落库）
  *   - 最近 KEEP_TURNS 轮保留在摘要范围外，更早的对话整理成经校验的结构化摘要
+ *   - 同一轮累积较多步骤时生成该轮工作态，保留原用户输入和最近的完整工具调用组
  *   - 摘要作为一条 feedback.kind = "compact" 的消息存进会话，之后每一步都用“摘要 + 保留部分”代替完整历史
  *   - 数据库里的原始消息一条都不删，界面照常显示；只是不再发给模型
  */
@@ -94,10 +96,16 @@ function requirementUpdateNotice(message: StoredMessage) {
 /** 组装模型上下文，同时保留轨迹所需的本轮起点。配对可能增删工具消息，所以在配对后定位原输入的副本。 */
 export function buildContext(messages: StoredMessage[], system: string, opts: { tight?: boolean; inputId?: string } = {}) {
   const c = lastCompact(messages);
+  const working = workingState(messages, opts.inputId);
   const requirements = taskRequirementsPrompt(messages);
   const summary = c ? `${COMPACT_TITLE}\n\n${c.message.content}` : "";
-  const sys = [system, summary, requirements].filter(Boolean).join("\n\n");
-  const kept = c ? messages.slice(c.keepIndex).filter((m) => m.feedback?.kind !== "compact") : messages.filter((m) => m.feedback?.kind !== "compact");
+  const state = working ? `## 当前轮工作态\n以下是已结算阶段的结构化资料。沿同一轮继续，必要时按消息 ID 回读原工具结果。\n${working.message.content}` : "";
+  const sys = [system, summary, state, requirements].filter(Boolean).join("\n\n");
+  const kept = messages.slice(c?.keepIndex ?? 0).filter((m, index) => {
+    const position = index + (c?.keepIndex ?? 0);
+    return m.feedback?.kind !== "compact" && (!working || position <= working.inputIndex ||
+      position >= working.keepIndex || m.feedback?.kind === "note");
+  });
   const slimmed = slim(kept, opts.tight);
   const input = kept.findIndex((message) => message.id === opts.inputId && message.role === "user" && !message.feedback);
   const context: ChatMessage[] = [{
@@ -187,7 +195,7 @@ export function estimateRequest(msgs: ChatMessage[], tools?: ToolSpec[]) {
 function lastCompact(messages: StoredMessage[]) {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
-    if (m.feedback?.kind !== "compact" || !m.compact) continue;
+    if (m.feedback?.kind !== "compact" || !m.compact || m.compact.inputId) continue;
     const keepIndex = messages.findIndex((x) => x.id === m.compact!.keepFrom && x.role === "user" && !x.feedback);
     // 无效的保留起点不能遮蔽历史，继续查找上一个仍可用的摘要。
     if (keepIndex < 0 || keepIndex >= i) continue;
@@ -197,6 +205,19 @@ function lastCompact(messages: StoredMessage[]) {
     };
   }
   return null;
+}
+
+/** 单轮检查点关联原输入和保留的助手步骤。不同用户轮次各自保留原始消息。 */
+function workingState(messages: StoredMessage[], inputId?: string) {
+  if (!inputId) return;
+  const inputIndex = messages.findIndex((m) => m.id === inputId && m.role === "user" && !m.feedback);
+  if (inputIndex < 0) return;
+  for (let i = messages.length - 1; i > inputIndex; i--) {
+    const message = messages[i];
+    if (message.feedback?.kind !== "compact" || message.compact?.inputId !== inputId) continue;
+    const keepIndex = messages.findIndex((m) => m.id === message.compact?.keepFrom && m.role === "assistant");
+    if (keepIndex > inputIndex && keepIndex < i) return { message, inputIndex, keepIndex };
+  }
 }
 
 /** 第 1 层：瘦身。只改发给模型的副本，不改数据库里的消息 */
@@ -210,6 +231,7 @@ function slim(messages: StoredMessage[], tight = false): ChatMessage[] {
     }
   const toolIdx = messages.map((m, i) => (m.role === "tool" && i > turnStart ? i : -1)).filter((i) => i >= 0);
   const recent = new Set(toolIdx.slice(-RECENT_TOOLS));
+  let calls = new Map<string, string>();
 
   return messages.map((m, i): ChatMessage => {
     const old = i < turnStart;
@@ -222,6 +244,7 @@ function slim(messages: StoredMessage[], tight = false): ChatMessage[] {
       raw: m.raw
     };
     if (m.role === "assistant") {
+      calls = new Map(m.toolCalls?.map(({ id, name }) => [id, name]));
       if (old) {
         out.reasoning = undefined;
         out.raw = undefined; // 旧轮次的思考也不再发回（Claude 允许从最前面开始去掉思考块）
@@ -232,10 +255,13 @@ function slim(messages: StoredMessage[], tight = false): ChatMessage[] {
       }
     } else if (m.role === "tool") {
       const limit = old ? OLD_TOOL_CHARS : recent.has(i) ? Infinity : tight ? TIGHT_TOOL_CHARS : CUR_TOOL_CHARS;
-      out.content = m.toolResult
-        ? `${toolStatus(m) === "ok" ? "已完成" : STATUS_LABEL[toolStatus(m)]} ${m.toolResult.name}，结果存储在 ${m.id}（用 read_tool_result 回读）。`
+      const name = calls.get(m.toolCallId ?? "");
+      // 旧版委派消息没有登记回读信息，投影到请求时按相同规则缩短。
+      const ref = m.toolResult ?? (name && delegationResultTools.has(name) ? describeToolResult(name, m.content) : undefined);
+      out.content = ref
+        ? `${toolStatus(m) === "ok" ? "已完成" : STATUS_LABEL[toolStatus(m)]} ${ref.name}，结果存储在 ${m.id}（用 read_tool_result 回读）。${ref.preview ? `\n${ref.preview}` : ""}`
         : clip(m.content, limit);
-    }
+    } else if (!m.feedback) calls.clear();
     return out;
   });
 }
@@ -292,16 +318,47 @@ export function planCompact(messages: StoredMessage[]) {
   };
 }
 
+/** 只在已结算助手步骤的边界切分。原用户输入、补充消息和最后两个调用组继续随原轮发送。 */
+export function planWorkingState(messages: StoredMessage[], inputId?: string) {
+  if (!inputId) return null;
+  const start = messages.findIndex((m) => m.id === inputId && m.role === "user" && !m.feedback);
+  if (start < 0) return null;
+  const saved = workingState(messages, inputId);
+  const from = saved?.keepIndex ?? start + 1;
+  const steps: number[] = [];
+  for (let i = from; i < messages.length; i++) {
+    const m = messages[i];
+    if (m.role === "user" && !m.feedback) return null;
+    if (m.role === "assistant") steps.push(i);
+  }
+  if (steps.length <= 2) return null;
+  const keepIndex = steps[steps.length - 2];
+  const part = messages.slice(from, keepIndex).filter((m) => m.feedback?.kind !== "compact");
+  const tokens = estimateRequest(part);
+  if (tokens < MIN_COMPACT_TOKENS) return null;
+  return {
+    previous: saved?.message.content ?? "", part: [messages[start], ...part], inputId,
+    sources: new Map(messages.slice(start, keepIndex).filter((m) => m.feedback?.kind !== "compact" && !m.id.startsWith("recovery:"))
+      .map((m) => [m.id, m])), keepFrom: messages[keepIndex].id, tokens,
+  };
+}
+
 /** 调用模型生成摘要。返回摘要正文和这次调用的用量（用量也要计入统计） */
-export async function summarize(provider: LLMProvider, plan: NonNullable<ReturnType<typeof planCompact>>, signal?: AbortSignal) {
-  const input = `${plan.previous ? `之前的摘要：\n${plan.previous}\n\n` : ""}需要合并的对话：\n${transcript(plan.part)}`;
+export async function summarize(provider: LLMProvider, plan: NonNullable<ReturnType<typeof planCompact>> & { inputId?: string }, signal?: AbortSignal,
+  contextWindow?: number) {
+  const prompt = plan.inputId ? `${COMPACT_PROMPT}\n本次整理的是仍在运行的同一用户轮。goal 保留目标，progress 记录实际经过的检查，pending 写当前卡点和下一步动作，保留可回读的文件及消息 ID。` : COMPACT_PROMPT;
+  const prefix = `${plan.previous ? `之前的摘要：\n${plan.previous}\n\n` : ""}需要合并的对话：\n`;
+  const maxOutputTokens = contextWindow ? Math.min(2_048, Math.floor(contextWindow / 4)) : 2_048;
+  const allowance = contextWindow ? contextWindow - estimateTokens(prompt + prefix) - maxOutputTokens - 64 : SUMMARY_INPUT_CHARS;
+  if (allowance < 256) throw new Error("上下文空间不足以生成结构化工作态");
+  const input = prefix + transcript(plan.part, allowance);
   let text = "";
   let usage: Usage | undefined;
   for await (const chunk of requireModelEnd(provider.stream({
     messages: [
       {
         role: "system",
-        content: COMPACT_PROMPT
+        content: prompt
       },
       {
         role: "user",
@@ -309,7 +366,7 @@ export async function summarize(provider: LLMProvider, plan: NonNullable<ReturnT
       },
     ],
     temperature: 0,
-    maxOutputTokens: 2_048,
+    maxOutputTokens,
     signal,
   }), signal)) {
     if (chunk.type === "text") text += chunk.delta;
@@ -325,7 +382,7 @@ export async function summarize(provider: LLMProvider, plan: NonNullable<ReturnT
   const summary = validateSummary(text.replace(/<think>[\s\S]*?<\/think>/g, "").trim(), plan.sources);
   return {
     summary,
-    usage: usage ?? estimateUsage(COMPACT_PROMPT + input, text)
+    usage: usage ?? estimateUsage(prompt + input, text)
   };
 }
 
@@ -338,7 +395,7 @@ export function estimateUsage(input: string, output: string): Usage {
   };
 }
 
-function transcript(part: StoredMessage[]) {
+function transcript(part: StoredMessage[], budget = SUMMARY_INPUT_CHARS) {
   const cut = (s: string, n: number) => (s.length > n ? s.slice(0, n) + "…" : s);
   const lines: string[] = [];
   for (const m of part) {
@@ -354,7 +411,8 @@ function transcript(part: StoredMessage[]) {
     }
   }
   const all = lines.join("\n");
-  if (all.length <= SUMMARY_INPUT_CHARS) return all;
-  const head = Math.floor(SUMMARY_INPUT_CHARS / 3);
-  return all.slice(0, head) + "\n…（中间省略）…\n" + all.slice(-(SUMMARY_INPUT_CHARS - head));
+  if (all.length <= SUMMARY_INPUT_CHARS && estimateTokens(all) <= budget) return all;
+  const chars = Math.min(SUMMARY_INPUT_CHARS, budget - 24);
+  const head = Math.floor(chars / 3);
+  return all.slice(0, head) + "\n…（中间省略）…\n" + all.slice(-(chars - head));
 }

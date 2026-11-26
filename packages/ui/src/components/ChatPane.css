@@ -120,6 +120,10 @@ main.chat > .composer-wrap:has(> .prompt-composer) { max-width: min(728px, var(-
 /* 正文和输入区叠在同一行。只让卡片和按钮接收点击，两侧留白还能滚动和选中文字。 */
 .chat.composer-overlay { display: grid; grid-template: auto minmax(0, 1fr) / minmax(0, 1fr); }
 .composer-overlay > .chat-scroll, .composer-overlay > .composer-wrap { grid-area: 2 / 1; }
+.chat.composer-overlay:has(> .chat-embedded-notice) { grid-template-rows: auto auto minmax(0, 1fr); }
+.composer-overlay:has(> .chat-embedded-notice) > :is(.chat-scroll, .composer-wrap) { grid-area: 3 / 1; }
+.chat-embedded-notice { border-bottom: 1px solid var(--edge); }
+.chat-embedded-notice > .panel-empty { margin: 0; padding: 6px 14px; }
 .composer-overlay > .chat-scroll {
   /* 输入框下方的上下文指示器占独立空间，滚动区只延伸到表单底边。 */
   margin-bottom: var(--composer-footer-height, 0px);

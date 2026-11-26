@@ -1,5 +1,5 @@
 import { execFile, execFileSync, spawn, type ChildProcess } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
@@ -231,6 +231,10 @@ export interface ExecOptions {
   env: Record<string, string | undefined>;
   /** 固定应用运行器使用标准输入，应用数据不会进入命令行。 */
   input?: string;
+  /** 子任务的 Python 仅使用标准输入传递资料。容器没有任何工作区挂载。 */
+  isolatedPython?: boolean;
+  /** 命令只接触单次执行的项目副本。没有附加目录或网络授权。 */
+  isolatedWorkspace?: boolean;
   signal?: AbortSignal;
 }
 
@@ -247,12 +251,20 @@ export const sandboxRoot = (workspace: string) => (sandboxInfo().mode === "docke
 
 export async function sandboxExec(o: ExecOptions): Promise<Exec> {
   const info = sandboxInfo();
+  if (o.isolatedPython) {
+    if (info.mode !== "docker") throw new Error("子任务的 Python 需要 Docker 隔离环境");
+    return isolatedPythonExec(o);
+  }
+  if (o.isolatedWorkspace) {
+    if (info.mode === "docker") return isolatedWorkspaceExec(o);
+    if (info.mode !== "seatbelt") throw new Error("子任务的命令需要 Docker 或 macOS Seatbelt 隔离环境");
+  }
   if (info.mode === "docker") return dockerExec(o, info);
 
   if (process.platform === "win32") return windowsExec(o);
 
   const args = ["-c", o.script];
-  const [bin, argv] = info.mode === "seatbelt" ? ["/usr/bin/sandbox-exec", ["-p", seatbeltProfile(o.workspace, info), "/bin/bash", ...args]] : ["bash", args];
+  const [bin, argv] = info.mode === "seatbelt" ? ["/usr/bin/sandbox-exec", ["-p", seatbeltProfile(o.workspace, info, o.isolatedWorkspace), "/bin/bash", ...args]] : ["bash", args];
   const proc = spawn(bin, argv, {
     cwd: o.cwd,
     detached: true, // 自成一个进程组：kill(-pid) 能把命令里起的子进程一起结束
@@ -266,7 +278,64 @@ export async function sandboxExec(o: ExecOptions): Promise<Exec> {
       /* 已经结束 */
     }
   };
-  return { proc, kill };
+  return { proc, kill, ...(o.isolatedWorkspace && { dispose: async () => kill() }) };
+}
+
+/** 临时项目副本单独挂载，命令退出后先回收容器，调用方随后校验和提交选中的文件。 */
+async function isolatedWorkspaceExec(o: ExecOptions): Promise<Exec> {
+  const volume = process.env.A_SANDBOX_DATA_VOLUME;
+  const relative = path.relative(path.resolve(process.env.A_SANDBOX_VOLUME_ROOT || DATA_DIR), o.workspace);
+  if (volume && (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative))) {
+    throw new Error("子任务的项目副本必须位于 Docker 数据卷内");
+  }
+  const mount = volume ? `type=volume,src=${volume},dst=/workspace,volume-subpath=${relative.split(path.sep).join("/")}` : `type=bind,src=${o.workspace},dst=/workspace`;
+  return isolatedDockerExec(o, ["--init", "--mount", mount, "--workdir", o.cwd, "--env", "HOME=/tmp", "--entrypoint", "bash"], ["-c", o.script]);
+}
+
+// 标准输入是固定格式的数据。工作区路径、网络和其他分支均不进入执行容器。
+const isolatedPythonBootstrap = [
+  "import base64, json, pathlib, sys",
+  "request = json.load(sys.stdin)",
+  "for name, contents in request['files']:",
+  "    file = pathlib.Path(name)",
+  "    file.parent.mkdir(parents=True, exist_ok=True)",
+  "    file.write_bytes(base64.b64decode(contents))",
+  "sys.path.insert(0, str(pathlib.Path.cwd()))",
+  "exec(compile(request['code'], '<subagent>', 'exec'), {'__name__': '__main__'})",
+].join("\n");
+
+async function isolatedPythonExec(o: ExecOptions): Promise<Exec> {
+  return isolatedDockerExec(o, ["--workdir", "/tmp", "--env", "HOME=/tmp", "--entrypoint", "python3"],
+    ["-I", "-B", "-c", isolatedPythonBootstrap]);
+}
+
+async function isolatedDockerExec(o: ExecOptions, options: string[], args: string[]): Promise<Exec> {
+  const name = `${sandboxPrefix}task-${randomUUID()}`;
+  isolatedContainers.add(name);
+  const cleanup = async () => {
+    try { await docker(["rm", "-f", name], 10_000); }
+    catch (error) { if (!/No such container/i.test((error as Error).message)) throw error; }
+    finally { isolatedContainers.delete(name); }
+  };
+  const input = o.input !== undefined;
+  try {
+    await docker(["create", ...(input ? ["-i"] : []), "--name", name, "--label", `${sandboxLabel}.task`, "--network", "none", "--ipc", "none",
+      "--memory", process.env.A_SANDBOX_MEMORY || "1g", "--cpus", process.env.A_SANDBOX_CPUS || "1", "--pids-limit", "64",
+      "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", "1000:1000", "--read-only", "--tmpfs", `${dockerTemporaryMount},mode=1777`,
+      ...options, IMAGE(), ...args]);
+    o.signal?.throwIfAborted();
+    const proc = spawn("docker", ["start", input ? "-ai" : "-a", name], { stdio: [input ? "pipe" : "ignore", "pipe", "pipe"] });
+    let removal: Promise<void> | undefined;
+    let removalError: unknown;
+    const stop = () => removal ??= cleanup().catch((error) => { removalError = error; });
+    return { proc, kill: stop, dispose: async () => {
+      await stop();
+      if (removalError && o.isolatedWorkspace) throw new Error("无法确认隔离项目进程已结束，文件未提交");
+    } };
+  } catch (error) {
+    await cleanup().catch(() => {});
+    throw error;
+  }
 }
 
 /**
@@ -307,13 +376,13 @@ const SEATBELT_SECRET_RE = [
   "/\\.config/gcloud(/|$)",
   "/\\.aai-apps(/|$)",
   "/Library/Keychains(/|$)",
-  "/\\.env(\\.[A-Za-z0-9_.-]+)?$",
+  "/\\.env($|\\.)",
   "/\\.netrc$",
   "/id_(rsa|dsa|ecdsa|ed25519)(\\.pub)?$",
   "\\.(pem|key|p12|pfx)$",
 ];
 
-export function seatbeltProfile(workspace: string, info: SandboxInfo) {
+export function seatbeltProfile(workspace: string, info: SandboxInfo, isolatedWorkspace = false) {
   const q = (p: string) => `"${p.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
   const real = (p: string) => (existsSync(/*turbopackIgnore: true*/ p) ? realpathSync(/*turbopackIgnore: true*/ p) : p);
   const ws = real(workspace);
@@ -332,6 +401,16 @@ export function seatbeltProfile(workspace: string, info: SandboxInfo) {
   }
   const sub = (ps: Iterable<string>) => [...ps].map((p) => `(subpath ${q(p)})`).join(" ");
   const privateRoots = PRIVATE_ROOTS.filter((r) => existsSync(/*turbopackIgnore: true*/ r)).map(real);
+
+  if (isolatedWorkspace) return [
+    "(version 1)", "(allow default)", "(deny network*)",
+    "(deny file-read-data file-write*)",
+    // 允许确切的系统库及启动时读取根目录。/System/Volumes/Data 下还有用户数据，不能整棵开放。
+    `(allow file-read-data ${sub([ws, "/System/Library", "/System/Cryptexes", "/System/Volumes/Preboot/Cryptexes",
+      "/usr", "/bin", "/sbin", "/Library/Developer", "/Library/Frameworks/Python.framework", "/opt/homebrew", ...toolchain])} (literal "/") (literal "/dev/null") (literal "/dev/urandom") (literal "/dev/zero"))`,
+    `(allow file-write* ${sub([ws])} (literal "/dev/null") (regex #"^/dev/fd/"))`,
+    `(deny file-read* file-write* ${SEATBELT_SECRET_RE.map((r) => `(regex #"${r}")`).join(" ")})`,
+  ].join("\n");
 
   return [
     "(version 1)",
@@ -361,6 +440,7 @@ const namespace = process.env.A_SANDBOX_NAMESPACE || "1";
 const sandboxLabel = `a-ai.sandbox=${namespace}`;
 const sandboxPrefix = namespace === "1" ? "a-ai-sbx-" : `a-ai-sbx-${namespace}-`;
 const containers = new Map<string, { lastUsed: number; active: number; ready: Promise<void>; workspace: string; scoped: boolean; retired?: boolean; removing?: Promise<void> }>();
+const isolatedContainers = new Set<string>();
 let sweeper: ReturnType<typeof setInterval> | undefined;
 let activeDockerRuns = 0;
 
@@ -596,6 +676,9 @@ function startSweeper() {
   // 服务重启前留下的沙箱容器（不在 containers 里）也清掉
   docker(["ps", "-a", "--filter", `label=${sandboxLabel}`, "--format", "{{.Names}}"])
     .then((out) => out.split("\n").filter((n) => n && !containers.has(n)).forEach((n) => docker(["rm", "-f", n]).catch(() => {})))
+    .catch(() => {});
+  docker(["ps", "-a", "--filter", `label=${sandboxLabel}.task`, "--format", "{{.Names}}"])
+    .then((out) => out.split("\n").filter((name) => name && !isolatedContainers.has(name)).forEach((name) => docker(["rm", "-f", name]).catch(() => {})))
     .catch(() => {});
 }
 

@@ -10,7 +10,10 @@ import { resolveModelSelection } from "../../../../../../../../../packages/sessi
 import { createConversationTrace } from "../../../../../../../../../packages/conversation-trace/src/recorder";
 import { workspaceOf } from "../../../../../../../../../packages/tools/src/files";
 import { openSessionWorkspace } from "../../../../../../../../../packages/workspace/src/session-workspace";
-import { canAccessTasks, getSubagentTask, listRunningDelegations, listSubagentTasks, listSubagentThreads, setSubagentChatActive } from "../../../../../../../../../packages/subagent/src/ownership-claim";
+import { resolvePath } from "../../../../../../../../../packages/workspace/src/access";
+import { readFileHash } from "../../../../../../../../../packages/workspace/src/file-fingerprint";
+import { canAccessTasks, getInterruptedWrite, getSubagentTask, isFileRevision, listRunningDelegations, listSubagentTasks,
+  listSubagentThreads, setSubagentChatActive, type TaskOwner, type TaskRecord } from "../../../../../../../../../packages/subagent/src/ownership-claim";
 import { SubagentRequestError } from "../../../../../../../../../packages/subagent/src/task-contract";
 
 const json = (body: unknown, status = 200) => Response.json(body, { status, headers: { "Cache-Control": "private, no-store" } });
@@ -20,7 +23,23 @@ function requestFailure(error: unknown) {
   throw error;
 }
 
-export async function GET(req: Request, { params }: RouteContext) {
+/** 详情查询按当前字节核验最近一次写入，不提交修改或改变中断终态。 */
+async function verifyRevision(owner: TaskOwner, task: TaskRecord, signal: AbortSignal): Promise<TaskRecord["revisionVerification"]> {
+  if (!["interrupted", "cancelled", "timed-out"].includes(task.status) || !isFileRevision(task)) return;
+  const write = getInterruptedWrite(owner, task.id);
+  if (!write) return { path: task.assignment?.revisionPath, status: task.assignment?.mode === "revision" ? "not-started" : "unknown" };
+  const path = write.path;
+  try {
+    const scope = openSessionWorkspace(owner.userId, owner.sessionId);
+    if (!scope) return { path, status: "unreadable" };
+    const file = resolvePath(scope.workspace, path, "read");
+    if (!file.inWorkspace || file.shown !== path) return { path, status: "unreadable" };
+    const hash = await readFileHash(file.full, signal);
+    return { path, status: hash === write.expectedHash ? "matches-expected" : hash === write.beforeHash ? "matches-before" : "changed" };
+  } catch { return { path, status: "unreadable" }; }
+}
+
+export async function GET(req: Request, { params, runtime }: RouteContext) {
   const user = await currentUser(req);
   if (!user) return unauthorized();
   const owner = { sessionId: (await params).id, userId: user.id };
@@ -29,7 +48,9 @@ export async function GET(req: Request, { params }: RouteContext) {
   const id = query.get("taskId");
   if (id) {
     const task = getSubagentTask(owner, id);
-    return task ? json({ task }) : notFound();
+    if (!task) return notFound();
+    return json({ task: { ...task, pendingApproval: runtime?.subagents?.pendingApproval(owner, id),
+      revisionVerification: await verifyRevision(owner, task, req.signal) } });
   }
   const runId = query.get("runId");
   if (runId) return json({ tasks: listRunningDelegations(owner, runId) });
@@ -38,7 +59,8 @@ export async function GET(req: Request, { params }: RouteContext) {
     const threadMode = query.get("threads");
     const tasks = threadMode === "active" || threadMode === "1" ? listSubagentThreads(owner, before, threadMode === "active")
       : listSubagentTasks(owner, before)
-      .map(({ messages: _messages, pendingMessages: _pending, ...task }) => task);
+      .map(({ messages: _messages, pendingMessages: _pending, unansweredMessages: _unanswered, ...task }) =>
+        ({ ...task, pendingApproval: runtime?.subagents?.pendingApproval(owner, task.id) }));
     return json({ tasks, nextBefore: tasks.length === 50 ? tasks.at(-1)?.id : undefined });
   } catch (error) {
     return requestFailure(error);
@@ -97,6 +119,7 @@ export async function POST(req: Request, { params, runtime }: RouteContext) {
   try {
     const context = {
       ...owner, session, disabled, workspace, projectRules, provider: runtime.models(settings),
+      commandApproval: settings.commandApproval,
       contextWindow: currentOption(settings).contextWindow,
       trace: { recorder: createConversationTrace({ sessionId: session.id, runId, inputId, ...selection }), step: 1 },
     };

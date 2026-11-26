@@ -88,7 +88,7 @@ export async function submitChat(req: Request, userId: string, services: {
   }
   if (body.revision !== undefined && body.revision !== restored?.revision)
     return historyConflictResponse();
-  const opened = await openChatAgent(sessions, registry, userId, restored, titleFrom(text), project?.id, !project && body.multiAgent === true).catch((error) => {
+  const opened = await openChatAgent(sessions, registry, userId, restored, titleFrom(text), project?.id, project ? undefined : body.multiAgent).catch((error) => {
     if (error instanceof AgentUnavailable) return null;
     throw error;
   });

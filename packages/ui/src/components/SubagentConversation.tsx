@@ -14,6 +14,14 @@ import type { SubagentSelection } from "./SubagentThreads";
 import "./SubagentConversation.css";
 
 const noop = () => {};
+const revisionStatus = {
+  "matches-expected": "当前文件与最近一次写入的预期内容一致。",
+  "matches-before": "当前文件与最近一次写入前的内容一致。",
+  changed: "文件已变化，请核对实际内容。",
+  unreadable: "无法读取文件，请核对路径和权限。",
+  "not-started": "微调在保存写入检查点前中断。",
+  unknown: "旧记录缺少写入检查点，请核对文件的实际内容。",
+};
 
 /** 右侧复用主对话的气泡、调用过程和输入框。每个分支有自己的消息与停止入口。 */
 export function SubagentConversation({ sessionId, selected, sendKey, modKey, archived, canResume, artifacts, onClose }: {
@@ -43,6 +51,8 @@ export function SubagentConversation({ sessionId, selected, sendKey, modKey, arc
   const loadingFile = view?.type === "file" && fileEditable === null;
   const canSend = !!task?.chatActive && (running || canResume && task.status !== "queued" && !loadingFile);
   const revisionPath = fileEditable && view?.type === "file" ? view.path : undefined;
+  const verification = task?.revisionVerification;
+  const verificationPath = verification?.path;
   const messages = useMemo(() => {
     const items = [...(task?.messages ?? []), ...(task?.pendingMessages ?? [])];
     const known = new Set(items.map(({ id }) => id));
@@ -95,10 +105,20 @@ export function SubagentConversation({ sessionId, selected, sendKey, modKey, arc
     else setView({ type: "artifact", id });
   }
 
-  function openAttempt(next: TaskRecord, content: string) {
+  function openAttempt(next: TaskRecord, content?: string) {
     setAccepted([]);
-    setTask({ ...next, messages: next.messages ?? [...messages, { id: `${next.id}:followup`, role: "user", content, createdAt: next.createdAt }] });
+    const followup = content ? [{ id: `${next.id}:followup`, role: "user" as const, content, createdAt: next.createdAt }] : [];
+    setTask({ ...next, messages: next.messages ?? [...messages, ...followup] });
     setAttemptId(next.id);
+  }
+
+  async function recoverTask() {
+    setSending(true);
+    setError(null);
+    try {
+      openAttempt(await api.submitSubagentTask(sessionId, { retryTaskId: attemptId }));
+    } catch (error) { setError(error instanceof Error ? error.message : "无法恢复子任务"); }
+    finally { setSending(false); }
   }
 
   async function send() {
@@ -126,7 +146,7 @@ export function SubagentConversation({ sessionId, selected, sendKey, modKey, arc
       if (active) {
         const { task: resumed } = await api.resumeSubagentConversation(sessionId, attemptId);
         focusAfterResume.current = true;
-        setTask(resumed);
+        setTask((current) => ({ ...resumed, revisionVerification: current?.revisionVerification }));
       } else {
         await api.stopSubagentTask(sessionId, attemptId);
         setTask((current) => current?.id === attemptId ? { ...current, chatActive: false } : current);
@@ -139,12 +159,20 @@ export function SubagentConversation({ sessionId, selected, sendKey, modKey, arc
   const chat = <section className="viewer subagent-chat-view" aria-label="子 Agent 对话">
     <LiveStoreContext.Provider value={emptyLiveStore}>
       <ChatPane title={selected.name} embedded={{ icon: subagentIcon(selected.id), close: popupOpen ? closePopup : onClose, ended: !canSend,
+        approval: task?.pendingApproval,
         placeholder: task && !task.chatActive ? "恢复对话后即可继续发送消息" : running ? "给子 Agent 补充说明…" : loadingFile ? "正在读取所选文件…"
           : revisionPath ? "告诉子 Agent 要怎样调整这个文件…" : "给子 Agent 发消息…",
-        action: task && !running && task.status !== "queued" && canResume
-          ? <button type="button" className="btn ghost" disabled={sending} onClick={() => void setChatActive(!task.chatActive)}>
+        notice: verification && <p className="panel-empty" role="status">
+          {revisionStatus[verification.status]} {verificationPath && <button type="button" className="btn ghost"
+            onClick={() => openFile(verificationPath)}>打开文件</button>}
+        </p>,
+        action: task && !running && task.status !== "queued" && canResume ? <>
+          {task.status === "interrupted" && !verification && task.assignment?.mode !== "revision" && !task.writeAttempts?.length &&
+            <button type="button" className="btn ghost" disabled={sending} onClick={() => void recoverTask()}>恢复任务</button>}
+          <button type="button" className="btn ghost" disabled={sending} onClick={() => void setChatActive(!task.chatActive)}>
             {task.chatActive ? "暂停对话" : "恢复对话"}
-          </button> : undefined }} messages={messages}
+          </button>
+        </> : undefined }} messages={messages}
         sessionId={attemptId} conversationView="chat" onConversationView={noop} traceSessions={[]} traceProjects={[]}
         artifacts={artifacts} outputs={[]} running={{}} streaming={running} archived={archived} loading={!task && !loadError}
         error={error || loadError} onDismissError={() => { setError(null); setLoadError(null); }} draft={draft} setDraft={setDraft} inputRef={inputRef}

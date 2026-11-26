@@ -2,6 +2,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import JSZip from "jszip";
 import { resolvePath } from "../../workspace/src/access";
+import { commitWorkspaceFile, readWorkspaceFile } from "../../workspace/src/file-write";
 import type { Tool } from "../../tool-runtime/src/types";
 
 /**
@@ -69,8 +70,9 @@ export const writeDocument: Tool<Args> = {
     const ext = path.extname(String(p ?? "")).toLowerCase();
     if (![".docx", ".xlsx", ".pptx"].includes(ext))
       throw new Error(`path 的扩展名必须是 .docx、.xlsx 或 .pptx，收到：${p}。纯文本、Markdown、CSV 用 write_file`);
-    const dst = resolvePath(ctx.workspace, p, "write");
-    if (!overwrite && (await fs.stat(/*turbopackIgnore: true*/ dst.full).catch(() => null)))
+    const dst = ctx.writePath ? ctx.writePath(p) : resolvePath(ctx.workspace, p, "write");
+    const previous = ctx.writePath ? readWorkspaceFile(dst.full) : null;
+    if (!overwrite && (ctx.writePath ? previous !== null : await fs.stat(/*turbopackIgnore: true*/ dst.full).catch(() => null)))
       throw new Error(`${dst.shown} 已存在。要覆盖就设 overwrite=true（覆盖用户的文件前先确认），或者换一个文件名`);
 
     let buf: Buffer;
@@ -90,8 +92,14 @@ export const writeDocument: Tool<Args> = {
         info.slides = r.slides;
       }
     }
-    await fs.mkdir(/*turbopackIgnore: true*/ path.dirname(dst.full), { recursive: true });
-    await fs.writeFile(/*turbopackIgnore: true*/ dst.full, buf);
+    if (ctx.writePath) {
+      ctx.signal?.throwIfAborted();
+      if (ctx.writePath(p).full !== dst.full) throw new Error("写入目标已变化");
+      commitWorkspaceFile(dst.full, previous, buf, (before, expected) => ctx.checkpointFileWrite?.(dst.shown, before, expected));
+    } else {
+      await fs.mkdir(/*turbopackIgnore: true*/ path.dirname(dst.full), { recursive: true });
+      await fs.writeFile(/*turbopackIgnore: true*/ dst.full, buf);
+    }
     return { content: JSON.stringify({
       path: dst.shown,
       bytes: buf.length,

@@ -57,8 +57,10 @@ export interface StoredMessage extends ChatMessage {
   usage?: Usage;
   /** role=tool 时，若该工具生成了产出物，记录其 id，便于中栏点击打开 */
   artifactId?: string;
-  /** 大型工具结果的可回读信息。正文仍在这条消息上，请求视图只发送消息 ID。 */
-  toolResult?: { name: string; fields: Record<string, string | number | boolean | null | string[]> };
+  /** 委派分支实际写入的工作区文件，可用于打开产出。 */
+  outputFiles?: string[];
+  /** 大型工具结果的可回读信息。请求视图使用消息 ID 和可选的短回执。 */
+  toolResult?: { name: string; fields: Record<string, string | number | boolean | null | string[]>; preview?: string };
   /** 用户显式替换的任务要求。空字符串表示清除，旧消息没有此字段。随当前会话分支生效。 */
   taskRequirements?: string;
   /**
@@ -82,7 +84,7 @@ export interface StoredMessage extends ChatMessage {
    * feedback.kind = "compact" 时：上下文压缩的信息。content 是摘要正文。
    * keepFrom 这条消息（含）之后的内容原样保留，之前的都由摘要代替。见 src/lib/agent/context.ts
    */
-  compact?: { keepFrom: string; messages: number; tokensBefore: number; tokensAfter: number };
+  compact?: { keepFrom: string; messages: number; tokensBefore: number; tokensAfter: number; inputId?: string };
 }
 
 export interface Feedback {
@@ -155,7 +157,7 @@ export interface Skill {
 }
 
 export interface SessionMeta {
-  /** 普通对话的选择；项目会话由服务端自动启用协作。旧会话默认关闭。 */
+  /** 新对话默认开启。既有对话沿用自己的设置，项目会话自动启用协作。 */
   multiAgent?: boolean;
   /** 自身归档时间；项目归档状态由所属项目决定。 */
   archivedAt?: number;

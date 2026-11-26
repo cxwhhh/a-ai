@@ -193,6 +193,40 @@ test("Docker 临时验证与账号工作区分开，Python 源码通过标准输
   assert.ok(commands.slice(start).some((args) => args.includes("/tmp:rw,exec,size=512m")));
 });
 
+test("子任务 Python 只接收所选文件，不挂载工作区，断网且退出后回收容器", async () => {
+  const { runPython } = load("packages/tools/src/run-python.ts");
+  const workspace = path.join(data, "isolated-python");
+  mkdirSync(workspace, { recursive: true });
+  writeFileSync(path.join(workspace, "allowed.txt"), "核验内容");
+  writeFileSync(path.join(workspace, "private.txt"), "未授权内容");
+  const code = "from pathlib import Path\nprint(Path('allowed.txt').read_text())";
+  const context = { sessionId: "isolated-python", userId: "owner", workspace,
+    readPath: (shown) => ({ shown, full: path.join(workspace, shown), inWorkspace: true }),
+    isolatedPython: { inputs: ["allowed.txt"], optionalOutputs: ["not-written.txt"] } };
+  const start = commands.length;
+  const ready = once(spawns, "spawn");
+  const running = runPython.run({ code }, context);
+  await Promise.race([ready, running.then(() => assert.fail("Python 应启动隔离进程"))]);
+  const child = children.at(-1);
+  const dockerArgs = commands.slice(start).find(([action]) => action === "create");
+  assert.equal(dockerArgs[dockerArgs.indexOf("--network") + 1], "none");
+  assert.ok(dockerArgs.includes("--read-only"));
+  assert.ok(!dockerArgs.includes("--mount"));
+  assert.ok(!dockerArgs.includes("--volume"));
+  assert.ok(!dockerArgs.join(" ").includes(code));
+  const name = dockerArgs[dockerArgs.indexOf("--name") + 1];
+  assert.deepEqual(execs.at(-1), ["start", "-ai", name]);
+  let input = "";
+  for await (const chunk of child.stdin) input += chunk.toString();
+  assert.deepEqual(JSON.parse(input), { code, files: [["allowed.txt", Buffer.from("核验内容").toString("base64")]] });
+  child.stdout.write("核验内容\n");
+  child.emit("close", 0, null);
+  assert.match(JSON.parse((await running).content).stdout, /核验内容/);
+  assert.ok(commands.slice(start).some(([action, flag, target]) => action === "rm" && flag === "-f" && target === name));
+  await assert.rejects(runPython.run({ code, temporary: false }, context), /隔离计算/);
+  await assert.rejects(runPython.run({ code, outputs: ["new.txt"] }, context), /隔离计算/);
+});
+
 test("Docker 取消先通知进程组，收尾只回收对应调用的临时文件", async () => {
   const { runInSandbox } = load("packages/sandbox/src/sandbox.ts");
   const abort = new AbortController();
@@ -210,6 +244,68 @@ test("Docker 取消先通知进程组，收尾只回收对应调用的临时文�
   assert.match(actions[0], /\.cancelled[\s\S]*kill -KILL/);
   assert.match(actions[1], /kill -KILL[\s\S]*rm -rf/);
   assert.ok(!actions[1].includes("/workspace"));
+});
+
+test("执行分支终端只挂载项目副本，成功时提交获准文件，失败和版本冲突时保留原工作区", async () => {
+  const { runCommand } = load("packages/tools/src/run-command.ts");
+  const { realpathSync } = await import("node:fs");
+  const workspace = path.join(data, "isolated-project");
+  mkdirSync(path.join(workspace, "src"), { recursive: true });
+  const source = path.join(workspace, "src", "math.cjs");
+  writeFileSync(source, "旧实现");
+  writeFileSync(path.join(workspace, "src", ".env"), "示例私密输入");
+  writeFileSync(path.join(workspace, "outside.txt"), "范围之外");
+  const changes = [];
+  const approvals = [];
+  const ctx = { sessionId: "isolated-project", userId: "owner", workspace,
+    isolatedCommand: { inputs: ["src"], ownedFiles: ["src/math.cjs"] },
+    readPath: (shown) => ({ shown, inWorkspace: true, full: path.join(workspace, shown) }),
+    writePath(shown) {
+      if (shown !== "src/math.cjs") throw new Error("超出写入范围");
+      return { shown, full: source, inWorkspace: true };
+    },
+    checkpointFileWrite: (file, old, next) => changes.push([file, old, next]),
+    confirm: async (request) => { approvals.push(request); return true; },
+  };
+  const args = { command: "node --test", outputs: ["src/math.cjs"] };
+  await assert.rejects(runCommand.run({ ...args, outputs: ["outside.txt"] }, ctx), /超出写入范围/);
+  assert.equal(approvals.length, 0);
+
+  async function execute({ exitCode = 0, conflict = false } = {}) {
+    const from = commands.length;
+    const spawned = once(spawns, "spawn");
+    const operation = runCommand.run(args, ctx);
+    const completion = operation.then((value) => ({ value }), (error) => ({ error }));
+    await Promise.race([spawned, completion.then(() => assert.fail("应在隔离副本启动命令"))]);
+    await new Promise(setImmediate);
+    const create = commands.slice(from).find(([action]) => action === "create");
+    const mounts = create.flatMap((arg, i) => arg === "--mount" ? [create[i + 1]] : []);
+    assert.equal(mounts.length, 1);
+    const copy = /^type=bind,src=(.*),dst=\/workspace$/.exec(mounts[0])[1];
+    assert.notEqual(copy, realpathSync(workspace));
+    assert.equal(create[create.indexOf("--network") + 1], "none");
+    assert.deepEqual(execs.at(-1).slice(0, 2), ["start", "-a"]);
+    assert.equal(readFileSync(path.join(copy, "src", "math.cjs"), "utf8"), readFileSync(source, "utf8"));
+    assert.ok(!existsSync(path.join(copy, "src", ".env")));
+    assert.ok(!existsSync(path.join(copy, "outside.txt")));
+    writeFileSync(path.join(copy, "src", "math.cjs"), "修改后的实现");
+    writeFileSync(path.join(copy, "src", "scratch.txt"), "之于测试副本");
+    if (conflict) writeFileSync(source, "用户更新");
+    children.at(-1).emit("close", exitCode, null);
+    const result = await completion;
+    assert.ok(!existsSync(copy));
+    assert.ok(!existsSync(path.join(workspace, "src", "scratch.txt")));
+    return result;
+  }
+
+  assert.equal(JSON.parse((await execute({ exitCode: 1 })).value.content).exitCode, 1);
+  assert.equal(readFileSync(source, "utf8"), "旧实现");
+  assert.match((await execute({ conflict: true })).error.message, /执行期间发生变化/);
+  assert.equal(readFileSync(source, "utf8"), "用户更新");
+  assert.deepEqual(JSON.parse((await execute()).value.content).outputs, ["src/math.cjs"]);
+  assert.equal(readFileSync(source, "utf8"), "修改后的实现");
+  assert.equal(changes.length, 1);
+  assert.ok(approvals.every(({ readonly, reason }) => !readonly && reason.includes("src/math.cjs")));
 });
 
 test("同轮临时命令复用只读工作区容器，配额来自服务，正式产出经服务交付", async () => {

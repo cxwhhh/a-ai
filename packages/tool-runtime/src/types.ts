@@ -22,6 +22,12 @@ export interface ToolContext {
   workspace: string;
   /** 子任务附加的资源边界。文件仍沿用工作区解析，网页跳转逐次检查。 */
   readPath?(path?: string): import("../../workspace/src/access").Resolved;
+  writePath?(path: string): import("../../workspace/src/access").Resolved;
+  /** 子任务的 Python 在独立环境运行，仅传入明确列出的工作区文件。 */
+  isolatedPython?: { inputs: readonly string[]; optionalOutputs: readonly string[] };
+  /** 执行分支只将这些目录或文件复制进终端的独立项目副本。 */
+  isolatedCommand?: { inputs: readonly string[]; ownedFiles: readonly string[] };
+  fileCommitted?(path: string): void;
   checkWebUrl?(url: URL): void;
   /** 把内容推到右栏，并返回保存后的产出物 */
   emitArtifact(a: Omit<Artifact, "id" | "createdAt">): Artifact;

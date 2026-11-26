@@ -9,7 +9,7 @@ import { Trace } from "./Trace";
 import { SessionTrace } from "./SessionTrace";
 import { SubagentTasks } from "./SubagentTasks";
 import { AskCard, findAsk } from "./AskCard";
-import { ApprovalDock } from "./ApprovalDock";
+import { ApprovalCard, ApprovalDock } from "./ApprovalDock";
 import { Loader3D } from "./Loader3D";
 import { IconPicker } from "./IconPicker";
 import { RingSpinner } from "./RingSpinner";
@@ -50,7 +50,8 @@ function toTurns(messages: StoredMessage[]): Turn[] {
 
 export function ChatPane(props: {
   title?: string;
-  embedded?: { icon: string; ended?: boolean; placeholder?: string; action?: ReactNode; close(): void };
+  embedded?: { icon: string; ended?: boolean; placeholder?: string; action?: ReactNode; notice?: ReactNode;
+    approval?: import("../lib/live").PendingApproval; close(): void };
   threadControl?: ReactNode;
   workspaceTabControl?: ReactNode;
   multiAgent?: boolean;
@@ -314,6 +315,7 @@ export function ChatPane(props: {
           </div>
         </div>
       </header>}
+      {props.embedded?.notice && <div className="chat-embedded-notice">{props.embedded.notice}</div>}
       {viewingTrace && conversationView === "subagents" && <SubagentTasks key={props.sessionId} sessionId={props.sessionId}
         archived={props.archived} streaming={streaming} enabled={props.multiAgent} />}
       {viewingTrace && conversationView !== "subagents" && <SessionTrace key={`${props.sessionId}:${props.traceScopeVersion}`} sessionId={props.sessionId} sessions={props.traceSessions}
@@ -434,7 +436,7 @@ export function ChatPane(props: {
             </button>
           </div>
         )}
-        <ApprovalDock />
+        {props.embedded?.approval ? <ApprovalCard key={props.embedded.approval.approvalId} {...props.embedded.approval} /> : <ApprovalDock />}
         {props.archived && <div className="error-bar" role="status">已归档。可以阅读历史，恢复后可继续发送。</div>}
         {!props.embedded && props.queue.length > 0 && (
           <section className="chat-queue" aria-label="排队消息">

@@ -425,7 +425,8 @@
 .trace-stat-muted { color: var(--trace-muted); }
 .trace-stat-more { margin: 0 22px 10px; font-size: 12px; }
 
-.subagent-form { display: grid; gap: 10px; margin: 0 14px 12px; max-width: 680px; }
+:is(.subagent-form, .subagent-approvals) { margin: 0 14px 12px; max-width: 680px; }
+.subagent-form { display: grid; gap: 10px; }
 .subagent-form label { display: grid; gap: 4px; color: var(--trace-secondary); }
 .subagent-form .btn { justify-self: start; }
 .subagent-form summary { margin: 0 0 6px; cursor: pointer; }
