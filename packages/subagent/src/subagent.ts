@@ -1002,8 +1002,9 @@ export class SubagentOrchestrator {
           const evidenceId = `E${stepOffset + step}.${index + 1}`;
           const document = !result.isError && call.name === "read_document" ? documentExcerpt(result.content, parsed.ok ? parsed.args.offset : undefined) : undefined;
           const content = document?.text ?? result.content.slice(0, MAX_TOOL_RECEIPT_CHARS);
+          // 文件发生过修改后，重新读取文件或重新运行测试即使返回相同输出也是新版本的有效验证，不能复用修改前的重复键。
           const resultKey = createHash("sha256")
-            .update(JSON.stringify([signature, factKey, result.status, result.isError]))
+            .update(JSON.stringify([signature, factKey, result.status, result.isError, changes]))
             .update(result.content.trim()).digest("hex");
           const previous = toolRepetition.previous(resultKey);
           if (previous !== undefined) {
