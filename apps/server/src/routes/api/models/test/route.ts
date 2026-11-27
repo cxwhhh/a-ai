@@ -2,8 +2,9 @@ import { getSettings } from "../../../../../../../packages/application/settings/
 import { isMasked } from "../../../../../../../packages/protocol/src/lib/settings";
 import { currentUser, unauthorized } from "../../../../../../../packages/application/users/src/auth";
 import { joinUrl, readError } from "../../../../../../../packages/llm/src/providers/openai-compatible";
-import { fetchModel } from "../../../../../../../packages/llm/src/providers/provider-fetch";
+import { createModelFetch } from "../../../../../../../packages/llm/src/providers/provider-fetch";
 import { httpUrl, PrivateAddressError, readBoundedText } from "../../../../../../../packages/sandbox/src/public-fetch";
+import { canManageNetwork } from "../../../../../../../packages/sandbox/src/sandbox-network";
 import Anthropic from "@anthropic-ai/sdk";
 
 
@@ -36,10 +37,13 @@ export async function POST(req: Request) {
   if (!key) return Response.json({ ok: false, error: "请先填写 API Key" });
 
   const t0 = Date.now();
-  if (b?.preset === "anthropic") return Response.json(await testAnthropic(base, key, t0));
+  // 管理账号在新增内网模型表单里点击“测试连接”时尚未保存设置，允许直接测试并在保存后持久生效；
+  // 普通账号仍只能测试公网地址、环境变量白名单或管理账号已保存的内网服务 origin。
+  const modelFetch = createModelFetch({ allowPrivate: canManageNetwork(user.id) });
+  if (b?.preset === "anthropic") return Response.json(await testAnthropic(base, key, t0, modelFetch));
   let res: Response;
   try {
-    res = await fetchModel(joinUrl(base, "/models"), {
+    res = await modelFetch(joinUrl(base, "/models"), {
       headers: { Authorization: `Bearer ${key}` },
       signal: AbortSignal.timeout(15000),
     });
@@ -67,9 +71,9 @@ export async function POST(req: Request) {
 }
 
 /** Claude：用官方 SDK 列出模型（Anthropic 的 /v1/models 和 OpenAI 的格式、鉴权方式都不一样） */
-async function testAnthropic(base: string, key: string, t0: number) {
+async function testAnthropic(base: string, key: string, t0: number, modelFetch: typeof fetch) {
   const fetchModelList: typeof fetch = async (input, init) => {
-    const response = await fetchModel(input, init);
+    const response = await modelFetch(input, init);
     return new Response(response.body ? await readBoundedText(response) : null, { status: response.status, headers: response.headers });
   };
   const client = new Anthropic({ apiKey: key, baseURL: base.replace(/\/+$/, "").replace(/\/v1$/, ""), timeout: 15000, maxRetries: 0, fetch: fetchModelList });

@@ -75,7 +75,7 @@ docker compose ps a-ai
 
 默认 Compose 配置将 3000 端口映射到宿主机，并挂载 Docker socket 以启动工具沙箱。用于服务器部署时，建议将端口绑定至 `127.0.0.1` 并通过 HTTPS 反向代理访问。创建账号后可在 Compose 中将 `A_ALLOW_SIGNUP` 设为 `0`，再执行 `docker compose up -d a-ai` 生效。
 
-桌面本机可直接连接回环地址上的模型。服务端如需连接内网 Ollama 等模型，由部署者在 `.env`（Compose）或 `.env.local`（直接启动）设置 `A_PRIVATE_MODEL_ORIGINS`。填写带协议和端口的完整 origin，多个用逗号隔开，例如 `http://host.docker.internal:11434`。模型设置里填最终服务地址，例如 `http://host.docker.internal:11434/v1`。
+桌面本机可直接连接回环地址上的模型。服务端连接内网 Ollama / vLLM 等模型时，**最早注册的管理账号**可在「设置 → 模型」中直接测试并保存内网服务地址（保存后自动放行对应 origin，删除后自动收回，无需重启）；部署者也可额外在 `.env`（Compose）或 `.env.local`（直接启动）设置 `A_PRIVATE_MODEL_ORIGINS` 预授权指定 origin（多个用逗号隔开，例如 `http://host.docker.internal:11434`）。模型设置里填最终服务地址，例如 `http://host.docker.internal:11434/v1`。
 
 服务器测评使用 `docker compose exec a-ai node evals/run.mjs --only Q01`。命令会启动独立实例，使用持久卷中的 `storage-manager` 保存报告。测试通过后回收现场，失败现场满 24 小时后由服务清扫。使用 `--baseline` 固定本轮报告，`--keep-reports 10` 可调整最近报告数量。主动传入 `--base` 时使用指定的已有实例，测试现场由该实例管理员管理。
 
