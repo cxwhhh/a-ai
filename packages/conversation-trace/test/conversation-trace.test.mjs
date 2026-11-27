@@ -201,20 +201,21 @@ test("请求对比只使用同轮同阶段同父调用的上一快照，并保�
   const { readTraceEntry } = load("packages/conversation-trace/src/store.ts");
   const s = store.createSession("u");
   const provider = { id: "mock", async *stream() { yield { type: "done", finishReason: "stop" }; } };
-  async function record(inputId, phase, step, parentId, system, names) {
+  async function record(inputId, phase, step, parentId, system, names, subagentKind) {
     const recorder = createConversationTrace({ sessionId: s.id, runId: "shared", inputId, model: "mock", effort: "default" });
     const { id, stream } = recorder.request(provider, {
       messages: [{ role: "system", content: system }, { role: "user", content: inputId }],
       tools: names.map((name) => ({ name, description: name === "retained" ? system : name, parameters: { type: "object" } })),
-    }, { phase, step, parentId });
+    }, { phase, subagentKind, step, parentId });
     for await (const _ of stream) { /* 收尾后再读取。 */ }
     return id;
   }
-  const first = await record("turn-a", "research", 1, "parent-a", "旧提示", ["retained", "old", "common"]);
-  await record("turn-a", "research", 1, "parent-b", "其他子 Agent", []);
+  const first = await record("turn-a", "research", 1, "parent-a", "旧提示", ["retained", "old", "common"], "implementation");
+  await record("turn-a", "research", 1, "parent-a", "收尾复核提示", [], "review-check");
+  await record("turn-a", "research", 1, "parent-b", "其他子 Agent", [], "implementation");
   await record("turn-a", "compact", 1, undefined, "压缩", []);
-  const queued = await record("turn-b", "research", 1, "parent-a", "另一个排队输入", []);
-  const next = await record("turn-a", "research", 2, "parent-a", "新提示", ["common", "retained", "new"]);
+  const queued = await record("turn-b", "research", 1, "parent-a", "另一个排队输入", [], "implementation");
+  const next = await record("turn-a", "research", 2, "parent-a", "新提示", ["common", "retained", "new"], "implementation");
   assert.equal(readTraceEntry(s.id, "u", queued, true).context.previous, undefined);
   const previous = readTraceEntry(s.id, "u", next, true).context.previous;
   assert.deepEqual(previous, {

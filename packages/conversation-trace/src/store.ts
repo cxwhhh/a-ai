@@ -109,15 +109,16 @@ export function readTraceEntry(sessionId: string, userId: string, id: string, co
   if (result && !result.usage && typeof row.message_usage === "string") result.usage = JSON.parse(row.message_usage);
   let baseline: { entry: TraceEntry; request: RequestSnapshot } | undefined;
   if (compare) {
-    const { runId, inputId, phase, parentId, taskId } = entry.meta;
-    // 排队输入可共享 runId，子 Agent 可共享步骤号。对比必须同时匹配输入、阶段与父调用。
+    const { runId, inputId, phase, subagentKind, parentId, taskId } = entry.meta;
+    // 排队输入可共享 runId，子 Agent 可共享步骤号。对比必须同时匹配输入、阶段、子任务细分类型与父调用，避免复核/压缩和主步骤串台。
     const previous = db().prepare(`SELECT p.id,p.at,p.finished_at,p.outcome,p.meta,p.payload
       FROM conversation_trace_entries p JOIN sessions s ON s.id=p.session_id
       WHERE p.session_id=? AND s.user_id=? AND p.rowid<?
         AND json_extract(p.meta,'$.kind')='request' AND json_extract(p.meta,'$.runId')=?
         AND json_extract(p.meta,'$.inputId')=? AND json_extract(p.meta,'$.phase')=?
+        AND json_extract(p.meta,'$.subagentKind') IS ?
         AND json_extract(p.meta,'$.parentId') IS ? AND json_extract(p.meta,'$.taskId') IS ? ORDER BY p.rowid DESC LIMIT 1`)
-      .get(sessionId, userId, row.sequence, runId, inputId, phase, parentId ?? null, taskId ?? null);
+      .get(sessionId, userId, row.sequence, runId, inputId, phase, subagentKind ?? null, parentId ?? null, taskId ?? null);
     if (previous) {
       try { baseline = { entry: toEntry(previous), request: decode(previous.payload) }; }
       catch { /* 旧快照损坏不影响查看当前请求。 */ }

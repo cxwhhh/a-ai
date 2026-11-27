@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { db, agents, data as workspace, load, store, tool, routeFixture, routeState, readRun } from "../../../tests/fixtures/agent-runtime.mjs";
+import { readFile, writeFile as saveFixture } from "node:fs/promises";
+import path from "node:path";
+import { db, agents, data as workspace, load, overrides, store, tool, routeFixture, routeState, readRun } from "../../../tests/fixtures/agent-runtime.mjs";
 
 const { SubagentOrchestrator, runSubagentTool } = load("packages/subagent/src/subagent.ts");
 const { ParentDelegation } = load("packages/subagent/src/delegation-policy.ts");
@@ -8,6 +10,9 @@ const { checkpointTask, getSubagentTask, listSubagentTasks, registerTask, settle
 const { emptyProgress } = load("packages/subagent/src/progress-blockers.ts");
 const { budgetLimits } = load("packages/subagent/src/role-budget.ts");
 const { agentSessions } = load("packages/session/src/agent-session.ts");
+const { openSessionWorkspace } = load("packages/workspace/src/session-workspace.ts");
+const { hashFileBytes } = load("packages/workspace/src/file-fingerprint.ts");
+const { writeFile } = load("packages/tools/src/files.ts");
 
 const done = { type: "done", finishReason: "stop" };
 const call = (name, args, id = name) => ({ type: "tool_call", call: { id, name, arguments: JSON.stringify(args) } });
@@ -165,4 +170,118 @@ test("并行读取先保存已返回的正文，重试只接收仍获准的历�
     await assert.rejects(old.finished);
     assert.equal(getSubagentTask(owner, wait.id).status, "interrupted");
   } finally { slow.resolve(); tool.run = original; await service.close(); }
+});
+
+test("多文件执行分支中断后逐文件核验，安全状态允许受控恢复，外部修改则拒绝恢复", async () => {
+  const service = new SubagentOrchestrator();
+  const session = store.createSession("u", undefined, undefined, true);
+  const owner = { sessionId: session.id, userId: "u" };
+  const { workspace: sessionWs } = openSessionWorkspace("u", session.id);
+  const registry = overrides["packages/tool-runtime/src/index.ts"];
+  const savedRegistry = { ...registry };
+  registry.findTool = (name) => name === "write_file" ? writeFile : savedRegistry.findTool(name);
+  registry.toolSpecs = () => [...savedRegistry.toolSpecs().filter(({ name }) => name !== "write_file"), writeFile.spec];
+
+  const runtime = { agents, agentSessions, subagents: service, models: () => routeState.provider };
+  routeFixture(runtime);
+  const { GET, POST } = load("apps/server/src/routes/api/sessions/[id]/agent/subagents/route.ts");
+  const routeCtx = { runtime, params: Promise.resolve({ id: session.id }) };
+
+  const origin = { runId: "impl-old-run", inputId: "impl-old-input", parentCallId: "old-asst:batch" };
+  store.beginTurn(session, { id: origin.inputId, role: "user", content: "写入两份代码文件", createdAt: 1 }, undefined, origin.runId);
+  const budget = budgetLimits("implementation", {}, 128_000);
+  const contract = {
+    name: "双文件实现", task: "写入 a.txt 和 b.txt", role: "implementation",
+    tools: ["write_file"], writePaths: ["a.txt", "b.txt"],
+    plan: ["写入两个文件"], acceptance: ["两份文件已写入"],
+  };
+  const { record: safeTask } = registerTask(owner, origin, contract, "implementation", budget, "safe-impl", "safe-impl", undefined, { key: "impl", tools: ["write_file"] });
+  const aContent = Buffer.from("A 已落盘");
+  const bBefore = Buffer.from("B 原始内容");
+  await saveFixture(path.join(sessionWs, "a.txt"), aContent);
+  await saveFixture(path.join(sessionWs, "b.txt"), bBefore);
+  assert.ok(checkpointTask(owner, safeTask.id, {
+    progress: { ...emptyProgress(), steps: 1, toolCalls: 1 },
+    evidence: [],
+    writtenPaths: ["a.txt"],
+    fileWrites: [
+      { path: "a.txt", beforeHash: null, expectedHash: hashFileBytes(aContent) },
+      { path: "b.txt", beforeHash: hashFileBytes(bBefore), expectedHash: hashFileBytes(Buffer.from("B 预期内容")) },
+    ],
+  }));
+  db().prepare("UPDATE subagent_tasks SET executor='dead-worker' WHERE id=?").run(safeTask.id);
+
+  // 1) 详情接口应返回多文件核验结果
+  const detailRes = await GET(new Request(`http://localhost/subagents?taskId=${safeTask.id}`), routeCtx);
+  assert.equal(detailRes.status, 200);
+  const { task: inspectedTask } = await detailRes.json();
+  assert.equal(inspectedTask.status, "interrupted");
+  assert.deepEqual(inspectedTask.writeVerifications, [
+    { path: "a.txt", status: "matches-expected" },
+    { path: "b.txt", status: "matches-before" },
+  ]);
+
+  // 2) recover_subagent_tasks 检查与受控恢复
+  let seenVerifications = false;
+  const provider = { id: "recover-impl-mock", async *stream({ messages }) {
+    const toolMsgs = messages.filter(({ role }) => role === "tool");
+    if (!toolMsgs.length) {
+      assert.ok(messages.some(({ content }) => content.includes("writeVerifications") && content.includes("matches-expected") && content.includes("matches-before")));
+      seenVerifications = true;
+      yield call("write_file", { path: "b.txt", content: "B 补齐完成" });
+      yield { type: "done", finishReason: "tool_calls" };
+    } else {
+      yield { type: "text", delta: JSON.stringify({ summary: "已补齐 b.txt", checks: [{ index: 1, met: true, evidenceIds: ["E1.1"] }], facts: [], unresolved: [] }) };
+      yield done;
+    }
+  } };
+  const parent = new ParentDelegation();
+  try {
+    const toolCtx = {
+      ...owner, workspace: sessionWs, disabled: {}, provider, orchestrator: service, parent,
+      commandApproval: "auto", interruptedInputId: origin.inputId,
+      origin: { runId: "new-run", inputId: "new-input", parentCallId: "new-asst:recover" },
+    };
+    const preview = await runSubagentTool(call("recover_subagent_tasks", {}).call, toolCtx);
+    const { results: previewRows } = json(preview.content);
+    const row = previewRows.find(({ taskId }) => taskId === safeTask.id);
+    assert.equal(row.canRecover, true);
+    assert.deepEqual(row.writeVerifications, [
+      { path: "a.txt", status: "matches-expected" },
+      { path: "b.txt", status: "matches-before" },
+    ]);
+
+    const recovered = await runSubagentTool(call("recover_subagent_tasks", { taskIds: [safeTask.id] }).call, toolCtx);
+    assert.equal(recovered.status, "ok");
+    assert.ok(seenVerifications);
+    assert.equal(await readFile(path.join(sessionWs, "b.txt"), "utf8"), "B 补齐完成");
+    const { results: afterRows } = json(recovered.content);
+    assert.equal(afterRows[0].status, "completed");
+    assert.deepEqual(new Set(afterRows[0].writtenPaths), new Set(["a.txt", "b.txt"]));
+
+    // 3) 若磁盘文件被外部改动，必须禁止恢复
+    const { record: dirtyTask } = registerTask(owner, origin, { ...contract, name: "被改动的分支" }, "implementation", budget, "dirty-impl", "dirty-impl", undefined, { key: "dirty", tools: ["write_file"] });
+    assert.ok(checkpointTask(owner, dirtyTask.id, {
+      progress: { ...emptyProgress(), steps: 1, toolCalls: 1 },
+      evidence: [],
+      fileWrites: [{ path: "a.txt", beforeHash: null, expectedHash: hashFileBytes(Buffer.from("旧预期")) }],
+    }));
+    db().prepare("UPDATE subagent_tasks SET executor='dead-worker' WHERE id=?").run(dirtyTask.id);
+    const dirtyPreview = await runSubagentTool(call("recover_subagent_tasks", {}).call, toolCtx);
+    const dirtyRow = json(dirtyPreview.content).results.find(({ taskId }) => taskId === dirtyTask.id);
+    assert.equal(dirtyRow.canRecover, false);
+    assert.deepEqual(dirtyRow.writeVerifications, [{ path: "a.txt", status: "changed" }]);
+
+    const deniedRecover = await runSubagentTool(call("recover_subagent_tasks", { taskIds: [dirtyTask.id] }).call, toolCtx);
+    assert.equal(deniedRecover.isError, true);
+    assert.match(deniedRecover.content, /已被外部修改或不可读/);
+
+    routeState.provider = provider;
+    const deniedRetry = await POST(new Request("http://localhost/subagents", { method: "POST", body: JSON.stringify({ retryTaskId: dirtyTask.id }) }), routeCtx);
+    assert.equal(deniedRetry.status, 409);
+  } finally {
+    await parent.close();
+    Object.assign(registry, savedRegistry);
+    await service.close();
+  }
 });

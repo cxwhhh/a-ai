@@ -20,6 +20,8 @@ export interface TraceLocation {
 }
 
 export type TracePhase = "chat" | "compact" | "research";
+/** 子 Agent 请求的细分类型，向后兼容旧记录（旧记录省略此字段，统一按原“子 Agent”展示）。 */
+export type SubagentTraceKind = "research" | "review" | "analysis" | "implementation" | "revision" | "followup" | "review-check" | "compact";
 
 /** 列表快照只存数量和短片段，完整请求与响应仍在压缩正文。 */
 export interface TracePreview {
@@ -31,7 +33,7 @@ export interface TracePreview {
 }
 
 export type TraceEntryMeta = Omit<TraceScope, "sessionId"> & TraceLocation & { preview?: TracePreview } & (
-  | { kind: "request"; phase: TracePhase; assistantId?: string; metrics?: RequestMetrics }
+  | { kind: "request"; phase: TracePhase; subagentKind?: SubagentTraceKind; assistantId?: string; metrics?: RequestMetrics }
   | { kind: "tool"; callId: string; name: string; toolStatus?: ToolStatus; errorKind?: ErrorKind }
 );
 
@@ -141,6 +143,7 @@ export interface TraceRow {
   callId?: string;
   requestState?: TraceRequestState;
   requestPhase?: TracePhase;
+  subagentKind?: SubagentTraceKind;
   toolState?: TraceToolState;
   toolStarted?: boolean;
   preview?: TracePreview;
@@ -163,6 +166,7 @@ export interface TraceUsageTotal {
 export interface TraceRequestTotals {
   count: number;
   phases: Record<TracePhase, number>;
+  subagentKinds?: Partial<Record<SubagentTraceKind, number>>;
   states: Partial<Record<TraceRequestState, number>>;
   elapsed: TraceDurationTotal;
   firstOutput: TraceDurationTotal;

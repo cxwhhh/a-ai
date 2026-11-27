@@ -8,7 +8,12 @@ import { agents, data, fixtureSettings, load, overrides, readRun, routeFixture, 
 const { SubagentOrchestrator, runSubagentTool } = load("packages/subagent/src/subagent.ts");
 const { ParentDelegation } = load("packages/subagent/src/delegation-policy.ts");
 const { listSubagentTasks } = load("packages/subagent/src/ownership-claim.ts");
+const { budgetLimits, MAX_TASK_TOKENS } = load("packages/subagent/src/role-budget.ts");
+const { parseTaskContract } = load("packages/subagent/src/task-contract.ts");
 const { openSessionWorkspace } = load("packages/workspace/src/session-workspace.ts");
+const { createConversationTrace } = load("packages/conversation-trace/src/recorder.ts");
+const { readSessionTrace } = load("packages/conversation-trace/src/projection.ts");
+const { readTraceRecordView } = load("packages/conversation-trace/src/store.ts");
 const { agentSessions } = load("packages/session/src/agent-session.ts");
 const { estimateTokens } = load("packages/protocol/src/lib/tokens.ts");
 const { collectOutputs } = load("packages/protocol/src/lib/outputs.ts");
@@ -407,4 +412,265 @@ test("独立写入的审批可按权限轮询，文件变更或停止后旧审�
       }
     }
   } finally { routeState.caller = "u"; await service.close(); restore(); }
+});
+
+test("implementation 普通续聊收敛为只读权限与只读提示词，不再暴露执行工具", async () => {
+  const service = new SubagentOrchestrator();
+  const session = store.createSession("u");
+  const owner = { sessionId: session.id, userId: "u" };
+  const { workspace } = openSessionWorkspace("u", session.id);
+  await saveFixture(path.join(workspace, "app.ts"), "export const v = 1;\n");
+  const realMode = sandbox.sandboxInfo;
+  sandbox.sandboxInfo = () => ({ ...realMode(), mode: "docker" });
+  const restore = useTools([readText, writeFile, editFile, runPython, runCommand]);
+  try {
+    const initialProvider = { id: "impl-init", async *stream({ messages }) {
+      if (!messages.some(({ role }) => role === "tool")) {
+        yield call("write_file", { path: "app.ts", content: "export const v = 2;\n" });
+        yield toolsDone;
+      } else { yield reply("已更新 app.ts"); yield done; }
+    } };
+    // 省略 tools，验证原契约未显式传 tools 时，普通续聊依然会被收敛为只读工具。
+    const first = await service.start(
+      { role: "implementation", name: "更新应用", task: "更新 app.ts", paths: ["app.ts"], writePaths: ["app.ts"] },
+      { ...owner, workspace, provider: initialProvider, disabled: {}, session, commandApproval: "auto" },
+      { runId: "r1", inputId: "i1" },
+    ).finished;
+    assert.equal(first.status, "completed");
+
+    let seenTools = [];
+    let seenSystem = "";
+    const followupProvider = { id: "impl-followup", async *stream({ messages, tools }) {
+      seenSystem = messages[0].content;
+      seenTools = (tools ?? []).map(({ name }) => name);
+      yield reply("刚才把 v 从 1 改成了 2。");
+      yield done;
+    } };
+    const followup = await service.continueTask("刚才具体改了什么？", undefined,
+      { ...owner, workspace, provider: followupProvider, disabled: {}, session, commandApproval: "auto" },
+      { runId: "r2", inputId: "i2", retryOf: first.id },
+    ).finished;
+    assert.equal(followup.status, "completed");
+    assert.ok(seenTools.includes("read_file"));
+    for (const forbidden of ["write_file", "edit_file", "write_document", "run_command", "run_python"]) {
+      assert.ok(!seenTools.includes(forbidden), `普通续聊不应暴露 ${forbidden}`);
+    }
+    assert.match(seenSystem, /本次续聊只读，不得修改文件或执行命令/);
+    assert.doesNotMatch(seenSystem, /明确可写的文件为 \[\]/);
+  } finally { sandbox.sandboxInfo = realMode; restore(); await service.close(); }
+});
+
+test("implementation 预算与大参数写入放宽，未验证或测试失败时步内自动纠偏", async () => {
+  const implDefaults = budgetLimits("implementation", {}, 128_000);
+  assert.equal(implDefaults.steps, 24);
+  assert.equal(implDefaults.toolCalls, 36);
+  assert.equal(implDefaults.tokens, Math.min(MAX_TASK_TOKENS, 256_000));
+  assert.equal(parseTaskContract({ task: "大预算执行", role: "implementation", budget: { toolCalls: 48, tokens: 200_000 } }).budget.toolCalls, 48);
+  assert.throws(() => parseTaskContract({ task: "只读超工具上限", role: "research", budget: { toolCalls: 30 } }), /toolCalls/);
+
+  const service = new SubagentOrchestrator();
+  const session = store.createSession("u");
+  const owner = { sessionId: session.id, userId: "u" };
+  const { workspace } = openSessionWorkspace("u", session.id);
+  const realMode = sandbox.sandboxInfo;
+  sandbox.sandboxInfo = () => ({ ...realMode(), mode: "docker" });
+  const bigBody = "export const line = '0123456789abcdef';\n".repeat(520); // > 20,000 chars
+  let commandRuns = 0;
+  const terminal = { ...runCommand, async run() {
+    commandRuns++;
+    return { content: JSON.stringify({ exitCode: commandRuns === 1 ? 1 : 0, timedOut: false, output: commandRuns === 1 ? "测试失败" : "全部通过" }) };
+  } };
+  const restore = useTools([writeFile, terminal]);
+  let maxOutSeen = 0;
+  let reminded = false;
+  let turn = 0;
+  const provider = { id: "impl-verify-loop", async *stream({ messages, maxOutputTokens }) {
+    maxOutSeen = Math.max(maxOutSeen, maxOutputTokens ?? 0);
+    turn++;
+    if (turn === 1) {
+      // 写入超过旧 16k 参数限制的文件并跑一次失败的测试
+      yield call("write_file", { path: "large.ts", content: bigBody }, "write-big");
+      yield call("run_command", { command: "npm test" }, "test-1");
+      yield toolsDone;
+    } else if (turn === 2) {
+      // 模型在测试失败后试图直接结束 -> 应触发步内自动纠偏，不直接结算为 partial
+      yield reply(jsonReport([], ["E1.1"], "先交付一次"));
+      yield done;
+    } else if (turn === 3) {
+      assert.ok(messages.some(({ content }) => content.includes("最近一次命令或脚本执行未通过")));
+      reminded = true;
+      yield call("run_command", { command: "npm test" }, "test-2");
+      yield toolsDone;
+    } else {
+      yield reply(jsonReport([], ["E1.1", "E3.1"], "修复并复测通过"));
+      yield done;
+    }
+  } };
+  try {
+    const task = await service.start(
+      { role: "implementation", name: "大文件与验证闭环", task: "写入并验证 large.ts", tools: ["write_file", "run_command"],
+        writePaths: ["large.ts"], acceptance: ["文件写入并通过测试"] },
+      { ...owner, workspace, provider, disabled: {}, session, commandApproval: "auto" },
+      { runId: "big-run", inputId: "big-input" },
+    ).finished;
+    assert.equal(task.status, "completed");
+    assert.ok(reminded);
+    assert.ok(maxOutSeen > 4_096);
+    assert.equal(commandRuns, 2);
+    assert.equal((await readFile(path.join(workspace, "large.ts"), "utf8")).length, bigBody.length);
+  } finally { sandbox.sandboxInfo = realMode; restore(); await service.close(); }
+});
+
+test("长子任务独立压缩早期上下文，过滤编造引文并仍可通过 read_evidence 回读原文", async () => {
+  const service = new SubagentOrchestrator();
+  const session = store.createSession("u");
+  const owner = { sessionId: session.id, userId: "u" };
+  const original = tool.run;
+  const secret = "VERIFIED-FACT-42";
+  tool.run = async ({ path: file }) => ({ content: `${file}:${secret}:` + "冗余正文数据段".repeat(120) });
+  let compactCalls = 0;
+  let sawStateMessage = false;
+  let readBackOk = false;
+  let childSteps = 0;
+  const trace = createConversationTrace({ sessionId: session.id, runId: "compact-run", inputId: "compact-input", model: "mock", effort: "low" });
+  const provider = { id: "child-compact-mock", async *stream({ messages, tools }) {
+    if (messages[0].content.includes("子任务上下文整理器")) {
+      compactCalls++;
+      yield reply(JSON.stringify({
+        summary: "已读取前两份文件并提取关键事实",
+        confirmedEvidence: [
+          { id: "E1.1", quote: secret },
+          { id: "E1.1", quote: "编造的幻觉引文" },
+        ],
+        completedSteps: ["读取 part1 与 part2"],
+        writtenFiles: [],
+        pending: ["继续核对并汇总"],
+      }));
+      yield done;
+      return;
+    }
+    childSteps++;
+    if (childSteps <= 4) {
+      yield call("read_file", { path: `part${childSteps}.txt`, factKey: "doc:fact" }, `r-${childSteps}`);
+      yield toolsDone;
+      return;
+    }
+    const state = messages.find(({ content }) => content.includes("【子任务阶段工作态】"));
+    if (state) {
+      sawStateMessage = true;
+      assert.ok(state.content.includes(secret));
+      assert.ok(!state.content.includes("编造的幻觉引文"));
+    }
+    if (childSteps === 5) {
+      assert.ok(tools.some(({ name }) => name === "read_evidence"));
+      yield call("read_evidence", { evidenceId: "E1.1", query: secret }, "read-back");
+      yield toolsDone;
+      return;
+    }
+    readBackOk = messages.some(({ role, content }) => role === "tool" && content.includes(`[原文 E1.1]`) && content.includes(secret));
+    yield reply(jsonReport([fact("doc:fact", secret, "E1.1")], ["E1.1"]));
+    yield done;
+  } };
+  try {
+    const task = await service.start(
+      { task: "多步读取并汇总", role: "analysis", acceptance: ["有真实引文"], factKeys: ["doc:fact"], budget: { steps: 7 } },
+      { ...owner, workspace: data, disabled: {}, contextWindow: 4_000, provider, trace: { recorder: trace, step: 1 } },
+      { runId: "compact-run", inputId: "compact-input" },
+    ).finished;
+    assert.equal(task.status, "completed");
+    assert.ok(compactCalls >= 1, "应至少触发一次子任务独立摘要");
+    assert.ok(sawStateMessage, "压缩后的后续请求应包含阶段工作态");
+    assert.ok(readBackOk, "压缩后仍应能用 read_evidence 回读早期证据");
+
+    const sessionTrace = readSessionTrace(session.id, "u", true);
+    assert.ok(sessionTrace.rows.some((row) => row.subagentKind === "compact" && row.title.includes("子 Agent 摘要请求")));
+    assert.ok(sessionTrace.rows.some((row) => row.subagentKind === "analysis" && row.title.includes("子 Agent（分析）请求")));
+    assert.ok((sessionTrace.analysis.requests.subagentKinds?.compact ?? 0) >= 1);
+    assert.ok((sessionTrace.analysis.requests.subagentKinds?.analysis ?? 0) >= 1);
+    const analysisRows = sessionTrace.rows.filter((row) => row.subagentKind === "analysis");
+    const detail = readTraceRecordView(session.id, "u", analysisRows.at(-1).id, true);
+    assert.equal(detail.meta.subagentKind, "analysis");
+  } finally { tool.run = original; await service.close(); }
+});
+
+test("主循环与子任务写冲突协调、同批 DAG 接力写同一文件，以及线程列表暴露等待审批标记", { timeout: 5000 }, async () => {
+  const service = new SubagentOrchestrator();
+  const session = store.createSession("u", undefined, undefined, true);
+  const owner = { sessionId: session.id, userId: "u" };
+  const { workspace } = openSessionWorkspace("u", session.id);
+  const restore = useTools([readText, writeFile]);
+  const runtime = { agents, agentSessions, subagents: service, models: () => approvalProvider };
+  routeFixture(runtime);
+  const { GET } = load("apps/server/src/routes/api/sessions/[id]/agent/subagents/route.ts");
+  const routeCtx = { runtime, params: Promise.resolve({ id: session.id }) };
+
+  // 1) 主循环占位期间拒绝独立子任务写入同一文件
+  const release = service.trackParentWrite(owner, "main-owned.txt");
+  assert.throws(
+    () => service.start(editAssignment("main-owned"), { ...owner, workspace, provider: { id: "noop", async *stream() { yield done; } }, disabled: {} }, { runId: "p1", inputId: "p1" }),
+    /正由主对话写入/,
+  );
+  release();
+
+  // 2) 子任务等待审批期间：线程列表报告 awaitingApproval=true，且主循环写同一文件被阻断
+  const approvalProvider = { id: "wait-approval", async *stream({ messages }) {
+    if (!messages.some(({ role }) => role === "tool")) {
+      yield call("write_file", { path: "locked.txt", content: "来自子任务" });
+      yield toolsDone;
+    } else { yield reply(jsonReport([], ["E1.1"])); yield done; }
+  } };
+  const child = service.start(editAssignment("locked"), { ...owner, workspace, provider: approvalProvider, disabled: {}, commandApproval: "ask" }, { runId: "c1", inputId: "c1" });
+  try {
+    let notice;
+    for (let i = 0; i < 100 && !notice; i++) {
+      notice = service.pendingApproval(owner, child.record.id);
+      if (!notice) await delay(5);
+    }
+    assert.ok(notice);
+    const threadsRes = await GET(new Request("http://localhost/subagents?threads=active"), routeCtx);
+    const { tasks: activeThreads } = await threadsRes.json();
+    assert.equal(activeThreads.find(({ id }) => id === child.record.id)?.awaitingApproval, true);
+
+    // 主循环此时尝试写入同一文件，应被独占校验拒绝
+    const mainEvents = [];
+    const mainProvider = { id: "main-collide", async *stream({ messages }) {
+      if (!messages.some(({ role }) => role === "tool")) {
+        yield call("write_file", { path: "locked.txt", content: "主循环冲突写入" });
+        yield toolsDone;
+      } else { yield reply(messages.find(({ role }) => role === "tool").content); yield done; }
+    } };
+    for await (const event of runAgent({ session, workspace, userId: "u", provider: mainProvider, subagents: service, maxSteps: 3 })) mainEvents.push(event);
+    assert.ok(mainEvents.some(({ message }) => message?.role === "tool" && message.content.includes("独占")));
+
+    assert.ok(answerApproval("u", notice.approvalId, "allow"));
+    assert.equal((await child.finished).status, "completed");
+    const afterThreads = (await (await GET(new Request("http://localhost/subagents?threads=1"), routeCtx)).json()).tasks;
+    assert.equal(afterThreads.find(({ id }) => id === child.record.id)?.awaitingApproval, false);
+
+    // 3) 同批有 dependsOn 先后依赖的两个任务允许接力写入同一文件
+    const parent = new ParentDelegation();
+    const relayProvider = { id: "relay-mock", async *stream({ messages }) {
+      const toolMsgs = messages.filter(({ role }) => role === "tool");
+      const isSecond = messages[1].content.includes("第二棒");
+      if (!toolMsgs.length) {
+        yield call("write_file", { path: "relay.txt", content: isSecond ? "第一棒+第二棒" : "第一棒" });
+        yield toolsDone;
+      } else { yield reply(jsonReport([], ["E1.1"])); yield done; }
+    } };
+    try {
+      const relayCall = delegation([
+        { role: "implementation", name: "第一棒", task: "第一棒写入", taskKey: "s1", tools: ["write_file"], writePaths: ["relay.txt"], plan: ["写初稿"], acceptance: ["已写入"] },
+        { role: "implementation", name: "第二棒", task: "第二棒更新", taskKey: "s2", dependsOn: ["s1"], tools: ["write_file"], writePaths: ["relay.txt"], plan: ["接力更新"], acceptance: ["已更新"] },
+      ]);
+      const relayRes = await runSubagentTool(relayCall.call, {
+        ...owner, workspace, provider: relayProvider, disabled: {}, commandApproval: "auto",
+        orchestrator: service, parent, origin: { runId: "relay", inputId: "relay", parentCallId: "relay:batch" },
+      });
+      assert.equal(relayRes.status, "ok");
+      assert.equal(await readFile(path.join(workspace, "relay.txt"), "utf8"), "第一棒+第二棒");
+    } finally { await parent.close(); }
+  } finally {
+    await service.close();
+    restore();
+  }
 });

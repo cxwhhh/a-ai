@@ -72,7 +72,9 @@ export function SubagentThreadTrigger({ sessionId, expanded, onToggle }: {
       {!error && !page?.tasks.length && <p className="panel-empty">{page ? "暂无运行中的子 Agent" : "正在读取子 Agent…"}</p>}
       {page?.tasks.slice(0, 6).map((task) => <div key={task.id} className="out-row">
         <ThreadName task={task} />
-        <span className="chain-ms">{subagentStatusLabels[task.status]}</span>
+        <span className={cx("chain-ms", task.awaitingApproval && "subagent-thread-approval")}>
+          {task.awaitingApproval ? "等待确认" : subagentStatusLabels[task.status]}
+        </span>
       </div>)}
       {(page?.nextBefore || (page?.tasks.length ?? 0) > 6) && <p className="panel-empty">点击查看全部线程</p>}
     </section>, document.body)}
@@ -140,8 +142,9 @@ export function SubagentThreadOverview({ sessionId, layout, onLayout, onSelect, 
             title={task.name} onClick={() => onSelect(task)}>
             <span className="subagent-thread-entry-head">
               <ThreadName task={task} />
-              <span className="subagent-thread-status" title={subagentStatusLabels[task.status]}>
-                {active(task) ? subagentStatusLabels[task.status] : group.label}
+              <span className={cx("subagent-thread-status", task.awaitingApproval && "subagent-thread-approval")}
+                title={task.awaitingApproval ? "子任务正在等待操作确认" : subagentStatusLabels[task.status]}>
+                {task.awaitingApproval ? "等待确认" : active(task) ? subagentStatusLabels[task.status] : group.label}
               </span>
             </span>
             {showStats && task.metrics && <ThreadMetrics metrics={task.metrics} />}

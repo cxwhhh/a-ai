@@ -2,11 +2,11 @@
 
 import { useState, type ReactNode } from "react";
 import type { AgentWorkStatus } from "../../../protocol/src/agent-events";
-import type { TraceAnalysis, TraceRequestTotals, TraceRow, TraceToolState, TraceUsageTotal } from "../../../conversation-trace/src/types";
+import type { SubagentTraceKind, TraceAnalysis, TraceRequestTotals, TraceRow, TraceToolState, TraceUsageTotal } from "../../../conversation-trace/src/types";
 import { STATUS_LABEL } from "../../../protocol/src/lib/shared";
 import { IChevron } from "./Icons";
 import { TraceMeta, TraceNotice, TraceSection, traceDuration, traceNumber, traceTimestamp, type TraceMetaRow } from "./TraceDetailContent";
-import { traceRequestError } from "./TraceRequestContent";
+import { subagentKindNames, traceRequestError } from "./TraceRequestContent";
 
 const workLabels: Record<AgentWorkStatus, string> = {
   queued: "排队", accepted: "已领取", running: "执行中", completed: "完成", cancelled: "取消", failed: "失败",
@@ -36,7 +36,11 @@ function StatsLink({ children, onClick }: { children: ReactNode; onClick(): void
 /** 数字来自会话全量投影。定位入口返回对应的原始记录或轮次。 */
 export function TraceStatistics({ analysis, rows, onOpen }: { analysis: TraceAnalysis; rows: TraceRow[]; onOpen(id: string, turn?: number): void }) {
   const { requests, tools, turns, models, issues, inputs } = analysis;
-  const { reported, estimated, phases, states, decode } = requests;
+  const { reported, estimated, phases, subagentKinds, states, decode } = requests;
+  const subagentBreakdown = Object.entries(subagentKinds ?? {})
+    .filter(([, count]) => typeof count === "number" && count > 0)
+    .map(([kind, count]) => `${subagentKindNames[kind as SubagentTraceKind].replace(/^子 Agent · /, "")} ${count}`)
+    .join(" · ");
   const byId = new Map(rows.map((row) => [row.id, row]));
   const timedTools = tools.reduce((count, tool) => count + tool.elapsed.count, 0);
   const usageRows: TraceMetaRow[] = [
@@ -66,7 +70,7 @@ export function TraceStatistics({ analysis, rows, onOpen }: { analysis: TraceAna
           { label: "进入模型 / 输入", value: `${inputs.consumed} / ${inputs.total}` },
           { label: "输入状态", value: inputStates.join(" · ") || "—" },
           { label: "排队取消", value: inputs.dropped },
-          { label: "模型请求", value: `主请求 ${phases.chat} · 压缩 ${phases.compact} · 子 Agent ${phases.research}` },
+          { label: "模型请求", value: `主请求 ${phases.chat} · 压缩 ${phases.compact} · 子 Agent ${phases.research}${subagentBreakdown ? `（${subagentBreakdown}）` : ""}` },
           { label: "请求状态", value: requestStates || "—" },
           ...(analysis.legacyModelRows ? [{ label: "缺请求快照", value: `${analysis.legacyModelRows} 条旧模型记录` }] : []),
         ]} />

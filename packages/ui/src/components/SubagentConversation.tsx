@@ -53,6 +53,11 @@ export function SubagentConversation({ sessionId, selected, sendKey, modKey, arc
   const revisionPath = fileEditable && view?.type === "file" ? view.path : undefined;
   const verification = task?.revisionVerification;
   const verificationPath = verification?.path;
+  const writeVerifications = !verification && task?.writeVerifications?.length ? task.writeVerifications : undefined;
+  const writesSafe = !task?.writeAttempts?.length ||
+    (!!task.writeVerifications?.length && task.writeVerifications.every(({ status }) => status === "matches-expected" || status === "matches-before"));
+  const canRetryInThread = !!task && !running && task.status !== "queued" && task.status !== "completed" &&
+    canResume && !verification && task.assignment?.mode !== "revision" && writesSafe;
   const messages = useMemo(() => {
     const items = [...(task?.messages ?? []), ...(task?.pendingMessages ?? [])];
     const known = new Set(items.map(({ id }) => id));
@@ -162,13 +167,20 @@ export function SubagentConversation({ sessionId, selected, sendKey, modKey, arc
         approval: task?.pendingApproval,
         placeholder: task && !task.chatActive ? "恢复对话后即可继续发送消息" : running ? "给子 Agent 补充说明…" : loadingFile ? "正在读取所选文件…"
           : revisionPath ? "告诉子 Agent 要怎样调整这个文件…" : "给子 Agent 发消息…",
-        notice: verification && <p className="panel-empty" role="status">
+        notice: verification ? <p className="panel-empty" role="status">
           {revisionStatus[verification.status]} {verificationPath && <button type="button" className="btn ghost"
             onClick={() => openFile(verificationPath)}>打开文件</button>}
-        </p>,
+        </p> : writeVerifications ? <div className="panel-empty" role="status">
+          {writeVerifications.map((item) => <div key={item.path}>
+            <code>{item.path}</code> · {revisionStatus[item.status]}{" "}
+            <button type="button" className="btn ghost" onClick={() => openFile(item.path)}>打开文件</button>
+          </div>)}
+        </div> : undefined,
         action: task && !running && task.status !== "queued" && canResume ? <>
-          {task.status === "interrupted" && !verification && task.assignment?.mode !== "revision" && !task.writeAttempts?.length &&
-            <button type="button" className="btn ghost" disabled={sending} onClick={() => void recoverTask()}>恢复任务</button>}
+          {canRetryInThread &&
+            <button type="button" className="btn ghost" disabled={sending} onClick={() => void recoverTask()}>
+              {task.status === "interrupted" ? "恢复任务" : "重试任务"}
+            </button>}
           <button type="button" className="btn ghost" disabled={sending} onClick={() => void setChatActive(!task.chatActive)}>
             {task.chatActive ? "暂停对话" : "恢复对话"}
           </button>

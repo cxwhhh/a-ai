@@ -12,9 +12,10 @@ import { workspaceOf } from "../../../../../../../../../packages/tools/src/files
 import { openSessionWorkspace } from "../../../../../../../../../packages/workspace/src/session-workspace";
 import { resolvePath } from "../../../../../../../../../packages/workspace/src/access";
 import { readFileHash } from "../../../../../../../../../packages/workspace/src/file-fingerprint";
-import { canAccessTasks, getInterruptedWrite, getSubagentTask, isFileRevision, listRunningDelegations, listSubagentTasks,
-  listSubagentThreads, setSubagentChatActive, type TaskOwner, type TaskRecord } from "../../../../../../../../../packages/subagent/src/ownership-claim";
+import { canAccessTasks, getInterruptedWrite, getInterruptedWrites, getSubagentTask, isFileRevision, listRunningDelegations, listSubagentTasks,
+  listSubagentThreads, setSubagentChatActive, type FileWriteVerification, type TaskOwner, type TaskRecord } from "../../../../../../../../../packages/subagent/src/ownership-claim";
 import { SubagentRequestError } from "../../../../../../../../../packages/subagent/src/task-contract";
+import { verifyTaskWrites } from "../../../../../../../../../packages/subagent/src/write-verification";
 
 const json = (body: unknown, status = 200) => Response.json(body, { status, headers: { "Cache-Control": "private, no-store" } });
 
@@ -39,6 +40,15 @@ async function verifyRevision(owner: TaskOwner, task: TaskRecord, signal: AbortS
   } catch { return { path, status: "unreadable" }; }
 }
 
+/** 核验多文件执行分支记录的写入检查点，返回逐文件状态供详情展示与受控恢复使用。 */
+async function verifyWrites(owner: TaskOwner, task: TaskRecord, signal: AbortSignal): Promise<FileWriteVerification[] | undefined> {
+  if (!task.writeAttempts?.length && !isFileRevision(task)) return;
+  const scope = openSessionWorkspace(owner.userId, owner.sessionId);
+  if (!scope) return task.writeAttempts?.map((path) => ({ path, status: "unreadable" }));
+  const results = await verifyTaskWrites(scope.workspace, task, getInterruptedWrites(owner, task.id), signal);
+  return results.length ? results : undefined;
+}
+
 export async function GET(req: Request, { params, runtime }: RouteContext) {
   const user = await currentUser(req);
   if (!user) return unauthorized();
@@ -49,15 +59,23 @@ export async function GET(req: Request, { params, runtime }: RouteContext) {
   if (id) {
     const task = getSubagentTask(owner, id);
     if (!task) return notFound();
+    const [revisionVerification, writeVerifications] = await Promise.all([
+      verifyRevision(owner, task, req.signal),
+      verifyWrites(owner, task, req.signal),
+    ]);
     return json({ task: { ...task, pendingApproval: runtime?.subagents?.pendingApproval(owner, id),
-      revisionVerification: await verifyRevision(owner, task, req.signal) } });
+      revisionVerification, writeVerifications } });
   }
   const runId = query.get("runId");
   if (runId) return json({ tasks: listRunningDelegations(owner, runId) });
   try {
     const before = query.get("before") ?? undefined;
     const threadMode = query.get("threads");
-    const tasks = threadMode === "active" || threadMode === "1" ? listSubagentThreads(owner, before, threadMode === "active")
+    const tasks = threadMode === "active" || threadMode === "1"
+      ? listSubagentThreads(owner, before, threadMode === "active").map((thread) => ({
+        ...thread,
+        awaitingApproval: Boolean(runtime?.subagents?.pendingApproval(owner, thread.id)),
+      }))
       : listSubagentTasks(owner, before)
       .map(({ messages: _messages, pendingMessages: _pending, unansweredMessages: _unanswered, ...task }) =>
         ({ ...task, pendingApproval: runtime?.subagents?.pendingApproval(owner, task.id) }));
@@ -123,9 +141,16 @@ export async function POST(req: Request, { params, runtime }: RouteContext) {
       contextWindow: currentOption(settings).contextWindow,
       trace: { recorder: createConversationTrace({ sessionId: session.id, runId, inputId, ...selection }), step: 1 },
     };
+    const verifiedWrites = typeof retryOf === "string"
+      ? await (async () => {
+        const prior = getSubagentTask(owner, retryOf);
+        if (!prior || isFileRevision(prior) || !prior.writeAttempts?.length) return undefined;
+        return verifyTaskWrites(workspace, prior, getInterruptedWrites(owner, prior.id), req.signal);
+      })()
+      : undefined;
     const { record, finished } = typeof continuation === "string"
       ? runtime.subagents.continueTask(message, typeof file === "string" ? file : undefined, context, { runId, inputId, retryOf: continuation })
-      : runtime.subagents.start(body, context, { runId, inputId, retryOf });
+      : runtime.subagents.start(body, context, { runId, inputId, retryOf }, undefined, verifiedWrites);
     void finished.catch(() => console.warn("[subagent] 无法保存独立任务终态"));
     return json({ task: record }, 202);
   } catch (error) {

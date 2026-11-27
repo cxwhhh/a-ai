@@ -51,6 +51,7 @@
 .subagent-thread-entries[data-layout="cards"] .subagent-thread-glyph svg { width: 22px; height: 22px; }
 .subagent-thread-entries[data-layout="cards"] .out-name { max-width: 100%; }
 .subagent-thread-status { flex: none; white-space: nowrap; color: var(--fg-2); font-size: 12px; }
+.subagent-thread-approval { color: var(--accent); font-weight: 500; }
 .subagent-thread-metrics {
   display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; padding: 4px 0 8px;
   font-variant-numeric: tabular-nums;

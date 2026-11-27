@@ -45,8 +45,9 @@ export const RESEARCH_SPEC: ToolSpec = withPurpose({
       budget: {
         type: "object",
         properties: {
-          steps: { type: "integer", description: "执行角色最多 24 步。按任务规模分配，预留修改、运行测试和修正的步骤。" }, toolCalls: { type: "integer" },
-          tokens: { type: "integer", description: `整项累计输入和输出额度。省略时使用模型上下文长度与 ${DEFAULT_TASK_TOKENS} 中的较大值。仅需主动收紧预算时填写，手动值上限 ${MAX_TASK_TOKENS}。` },
+          steps: { type: "integer", description: "执行角色最多 24 步。按任务规模分配，预留修改、运行测试和修正的步骤。" },
+          toolCalls: { type: "integer", description: "工具调用次数上限：只读角色默认 16（最高 24），执行角色默认 36（最高 48）。" },
+          tokens: { type: "integer", description: `整项累计输入和输出额度。省略时使用模型上下文长度与 ${DEFAULT_TASK_TOKENS} 中的较大值（执行角色按双倍窗口预留，最高 ${MAX_TASK_TOKENS}）。手动值上限 ${MAX_TASK_TOKENS}。` },
           timeoutMs: { type: "integer", description: `单项总时限，单位为毫秒，范围 ${MIN_TASK_TIMEOUT_MS}–${MAX_TASK_TIMEOUT_MS}，省略时用 ${MIN_TASK_TIMEOUT_MS}。` },
           idleTimeoutMs: { type: "integer", description: "单个子任务持续无有效进展的毫秒数。默认 30000。" },
         },
@@ -109,9 +110,10 @@ export function parseTaskContract(input: unknown): TaskContract {
   }
   if (raw.budget !== undefined) {
     if (!raw.budget || typeof raw.budget !== "object" || Array.isArray(raw.budget)) throw new SubagentRequestError("budget 必须是对象");
+    const roleDef = ROLES[contract.role ?? "research"];
     const limits = {
-      steps: [1, contract.role === "implementation" ? ROLES.implementation.steps : 8], tokens: [512, MAX_TASK_TOKENS], timeoutMs: [MIN_TASK_TIMEOUT_MS, MAX_TASK_TIMEOUT_MS],
-      toolCalls: [0, 24], idleTimeoutMs: [10, 180_000],
+      steps: [1, roleDef.steps], tokens: [512, MAX_TASK_TOKENS], timeoutMs: [MIN_TASK_TIMEOUT_MS, MAX_TASK_TIMEOUT_MS],
+      toolCalls: [0, roleDef.maxToolCalls], idleTimeoutMs: [10, 180_000],
     } as const;
     const budget: Partial<BudgetLimits> = {};
     for (const [key, value] of Object.entries(raw.budget)) {

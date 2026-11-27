@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, type ReactNode } from "react";
-import type { RequestMetrics, TraceRecordDetail, TraceRow } from "../../../conversation-trace/src/types";
+import type { RequestMetrics, SubagentTraceKind, TraceRecordDetail, TraceRow } from "../../../conversation-trace/src/types";
 import { TURN_ENV_SUFFIX } from "../../../protocol/src/lib/message-tags";
 import { IChevron, IWrench } from "./Icons";
 import {
@@ -13,6 +13,16 @@ type RequestRecord = Extract<TraceRecordDetail, { kind: "request" }>;
 export const requestTabs = ["请求消息", "助手输出", "选项", "用量", "计时", "提示词", "工具清单"] as const;
 export type RequestTab = typeof requestTabs[number];
 const phaseNames = { chat: "主请求", compact: "历史压缩", research: "子 Agent" };
+export const subagentKindNames: Record<SubagentTraceKind, string> = {
+  research: "子 Agent · 调研",
+  review: "子 Agent · 审阅",
+  analysis: "子 Agent · 分析",
+  implementation: "子 Agent · 执行与验证",
+  revision: "子 Agent · 文件微调",
+  followup: "子 Agent · 线程续聊",
+  "review-check": "子 Agent · 收尾复核",
+  compact: "子 Agent · 上下文摘要",
+};
 const errorNames = { auth: "鉴权失败", "rate-limit": "限流", request: "请求错误", service: "提供方服务错误", other: "适配器异常" };
 const tokenValue = (value: number) => `${traceNumber(value)} token`;
 
@@ -26,7 +36,7 @@ export function TraceRequestOptions({ record, preview }: { record: RequestRecord
   if (meta.kind !== "request") return null;
   const adapter = request.provider?.options;
   const rows: TraceMetaRow[] = [
-    { label: "阶段", value: phaseNames[meta.phase] },
+    { label: "阶段", value: meta.subagentKind ? subagentKindNames[meta.subagentKind] : phaseNames[meta.phase] },
     { label: "模型", value: <code>{adapter?.model ?? meta.model}</code> },
     { label: "选定强度", value: <code>{meta.effort}</code> },
     ...(adapter?.reasoningEffort ? [{ label: "适配器强度", value: <code>{adapter.reasoningEffort}</code> }] : []),

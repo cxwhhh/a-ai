@@ -52,9 +52,16 @@ export interface TaskRecord extends TaskOrigin {
   interruptedFrom?: "queued" | "running";
   writeAttempts?: string[];
   revisionVerification?: { path?: string; status: "matches-expected" | "matches-before" | "changed" | "unreadable" | "not-started" | "unknown" };
+  /** 多文件执行分支的逐文件核验结果，仅用于展示与受控恢复决策，不修改原终态。 */
+  writeVerifications?: FileWriteVerification[];
   result?: TaskResult;
   createdAt: number;
   updatedAt: number;
+}
+
+export interface FileWriteVerification {
+  path: string;
+  status: "matches-expected" | "matches-before" | "changed" | "unreadable" | "not-started" | "unknown";
 }
 
 type Row = Record<string, SQLOutputValue>;
@@ -200,7 +207,7 @@ export function listSubagentThreads(owner: TaskOwner, before?: string, currentOn
   });
 }
 
-export type SubagentThread = ReturnType<typeof listSubagentThreads>[number];
+export type SubagentThread = ReturnType<typeof listSubagentThreads>[number] & { awaitingApproval?: boolean };
 
 export function subagentName({ name, purpose, task }: TaskContract) {
   return name || (purpose || task).split(/[。！？\n]/, 1)[0].trim().slice(0, 24) || "子任务";
@@ -268,6 +275,16 @@ export function getInterruptedWrite(owner: TaskOwner, id: string) {
   const row = db().prepare(`SELECT snapshot FROM subagent_tasks t WHERE ${owned} AND id=? AND status IN ('interrupted','cancelled','timed-out')`)
     .get(owner.sessionId, owner.userId, id);
   return row ? (JSON.parse(String(row.snapshot)) as Checkpoint).fileWrite : undefined;
+}
+
+/** 读取未正常完成子任务保存的全部写入检查点；旧记录仅有单文件 fileWrite 时自动兼容。 */
+export function getInterruptedWrites(owner: TaskOwner, id: string): TaskFileWrite[] {
+  const row = db().prepare(`SELECT snapshot FROM subagent_tasks t WHERE ${owned} AND id=? AND status IN ('interrupted','cancelled','timed-out','failed','partial')`)
+    .get(owner.sessionId, owner.userId, id);
+  if (!row) return [];
+  const snapshot = JSON.parse(String(row.snapshot)) as Checkpoint;
+  if (snapshot.fileWrites?.length) return snapshot.fileWrites;
+  return snapshot.fileWrite ? [snapshot.fileWrite] : [];
 }
 
 /** 暂停和恢复仅切换最新尝试的对话状态，保持历史执行结果、时间和预算。 */

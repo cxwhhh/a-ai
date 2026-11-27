@@ -83,6 +83,10 @@ function addRequest(totals: TraceRequestTotals, entry: TraceEntry, state: TraceR
   if (entry.meta.kind !== "request") return;
   totals.count++;
   totals.phases[entry.meta.phase]++;
+  if (entry.meta.subagentKind) {
+    totals.subagentKinds ??= {};
+    totals.subagentKinds[entry.meta.subagentKind] = (totals.subagentKinds[entry.meta.subagentKind] ?? 0) + 1;
+  }
   totals.states[state] = (totals.states[state] ?? 0) + 1;
   const metrics: RequestMetrics | undefined = entry.meta.metrics;
   const elapsed = metrics?.streamMs ?? (entry.finishedAt === null ? undefined : entry.finishedAt - entry.at);

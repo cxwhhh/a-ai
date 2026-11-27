@@ -2,11 +2,11 @@ import type { ChatRequest, LLMProvider, ModelRequestOptions, StreamChunk, ToolCa
 import { ModelStreamInterrupted, requireModelEnd } from "../../llm/src/stream";
 import { finishTraceEntry, insertTraceEntry } from "./store";
 import type {
-  RequestMetrics, RequestResponse, RequestSnapshot, TraceEntry, TraceEntryMeta, TraceFinishFacts,
+  RequestMetrics, RequestResponse, RequestSnapshot, SubagentTraceKind, TraceEntry, TraceEntryMeta, TraceFinishFacts,
   TraceLocation, TracePhase, TraceScope, TraceToolResult,
 } from "./types";
 
-type RequestLocation = TraceLocation & { phase: TracePhase; assistantId?: string }
+type RequestLocation = TraceLocation & { phase: TracePhase; subagentKind?: SubagentTraceKind; assistantId?: string }
   & Pick<RequestSnapshot, "agent" | "turnStart" | "referenceIndex">;
 
 /** 连接配置与适配器错误正文只服务执行层，调试快照只保存稳定字段。 */

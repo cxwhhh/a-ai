@@ -3,14 +3,14 @@ import { toolStatus, STATUS_LABEL, type StoredMessage } from "../../protocol/src
 import { db } from "../../storage/src/db";
 import { getSession } from "../../storage/src/store";
 import { parseToolArgs } from "../../agent-loop/src/args";
-import { DELEGATE_SPEC, RESEARCH_SPEC } from "../../subagent/src/task-contract";
+import { DELEGATE_SPEC, RECOVER_DELEGATION_SPEC, RESEARCH_SPEC } from "../../subagent/src/task-contract";
 import { toolSpecs } from "../../tool-runtime/src/index";
 import { foldConsumedWork } from "../../session-projection/src/consumed-work";
 import type { Agent } from "../../agent-core/agent/src/runtime-types";
 import { readAgentEvents } from "../../session/src/log";
 import { fileRecoveryLabel, fileRecoveryMessage, readFileRecoveries } from "../../session/session-recovery/src/file-recovery";
 import { getCurrentPosition, projectSession } from "../../session-projection/src/projection";
-import type { SessionTrace, TraceRequestState, TraceRow, TraceToolState } from "./types";
+import type { SessionTrace, SubagentTraceKind, TraceRequestState, TraceRow, TraceToolState } from "./types";
 import type { AgentLogEntry, AgentLogKind } from "../../protocol/src/agent-events";
 import { listTraceEntries } from "./store";
 import { analyzeSessionTrace } from "./analysis";
@@ -24,6 +24,16 @@ const outcomes: Record<string, string> = {
   queued: "排队中", accepted: "已领取", running: "执行中", completed: "已完成",
   cancelled: "已取消", failed: "失败", "waiting-for-answer": "等待回答",
   "output-truncated": "输出截断", interrupted: "已中断", unknown: "结果未知",
+};
+const subagentKindTitles: Record<SubagentTraceKind, string> = {
+  research: "子 Agent（调研）请求",
+  review: "子 Agent（审阅）请求",
+  analysis: "子 Agent（分析）请求",
+  implementation: "子 Agent（执行与验证）请求",
+  revision: "子 Agent（文件微调）请求",
+  followup: "子 Agent（线程续聊）请求",
+  "review-check": "子 Agent（收尾复核）请求",
+  compact: "子 Agent 摘要请求",
 };
 
 /** 步骤号只在一轮内有效，同一轮的请求和返回必须用同一个作用域关联。 */
@@ -179,16 +189,18 @@ export function readSessionTrace(sessionId: string, userId: string, includeStats
         status, toolState, toolStarted: true, args: meta.preview?.arguments, result: meta.preview?.result,
         detail: meta.errorKind ? { errorKind: meta.errorKind } : undefined });
     } else {
-      const phase = meta.phase === "compact" ? "历史压缩请求" : meta.phase === "research" ? "子 Agent 请求" : "模型请求";
+      const phase = meta.subagentKind ? subagentKindTitles[meta.subagentKind]
+        : meta.phase === "compact" ? "历史压缩请求" : meta.phase === "research" ? "子 Agent 请求" : "模型请求";
       rows.push({ ...base, kind: "model", title: `${phase} · ${meta.model}`, status: outcomes[state],
-        requestPhase: meta.phase, requestState: state, durationMs: meta.metrics?.streamMs ?? base.durationMs, detail: { model: meta.model, effort: meta.effort },
+        requestPhase: meta.phase, subagentKind: meta.subagentKind, requestState: state, durationMs: meta.metrics?.streamMs ?? base.durationMs,
+        detail: { model: meta.model, effort: meta.effort },
         preview: meta.preview, requestMetrics: meta.metrics });
     }
   }
   const used = new Set(rows.map((row) => row.tool));
   // 当前工具定义只从本会话的运行实例取。历史请求里的工具定义仍以请求快照为准。
   const availableSpecs = agent?.runtime.tools.toolSpecs() ?? toolSpecs();
-  const schemas = Object.fromEntries([...availableSpecs, RESEARCH_SPEC, DELEGATE_SPEC].filter((spec) => used.has(spec.name)).map((spec) => [spec.name, spec]));
+  const schemas = Object.fromEntries([...availableSpecs, RESEARCH_SPEC, DELEGATE_SPEC, RECOVER_DELEGATION_SPEC].filter((spec) => used.has(spec.name)).map((spec) => [spec.name, spec]));
   // 同一毫秒内按输入、请求、响应、工具、事件排列；同类记录保留原有顺序。
   const position = (row: TraceRow) => {
     if (row.kind === "input") return 0;

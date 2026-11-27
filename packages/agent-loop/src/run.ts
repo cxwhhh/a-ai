@@ -22,6 +22,7 @@ import { buildContext, compactThreshold, estimateRequest, estimateUsage, planCom
 import { envPrompt, turnEnv } from "./env";
 import { budgetHint, isPlanOnly, Progress, selfCheck } from "./steer";
 import { DELEGATE_SPEC, RESEARCH_SPEC, RECOVER_DELEGATION_SPEC, runSubagentTool, type SubagentOrchestrator } from "../../subagent/src/subagent";
+import { WRITE_TOOLS } from "../../subagent/src/role-budget";
 import { listRecoverableDelegations, subagentName } from "../../subagent/src/ownership-claim";
 import { ParentDelegation } from "../../subagent/src/delegation-policy";
 import { mkdirSync, writeFileSync, existsSync } from "node:fs";
@@ -444,7 +445,10 @@ async function* executeTurn(opts: {
         made,
         emit,
         confirm,
+        subagents: opts.subagents,
         checkpointFileWrite: execution && ((callId, path, before, expected) => {
+          const owner = opts.subagents?.activeWriteOwner({ sessionId: session.id, userId: opts.userId }, path);
+          if (owner) throw new Error(`文件 ${path} 正由运行中的子任务「${owner.name}」独占，请等待该子任务结束后再修改`);
           if (recovery?.files.some((file) => file.inputId === recovery.interruptedInputId &&
             file.path === path && (file.verification === "changed" || file.verification === "unreadable"))) {
             throw new Error(`恢复核验发现 ${path} 已变化或无法读取。本轮请先核对文件内容，再请用户决定如何处理。`);
@@ -793,6 +797,7 @@ interface ExecCtx {
   emit(e: AgentEvent): void;
   confirm(callId: string, req: ApprovalRequest, signal?: AbortSignal): Promise<boolean>;
   checkpointFileWrite?(callId: string, path: string, before: string | null, expected: string): void;
+  subagents?: SubagentOrchestrator;
   disabled: Record<string, string>;
   provider: LLMProvider;
 }
@@ -924,59 +929,73 @@ async function execTool(call: ToolCall, session: Session, ctx: ExecCtx): Promise
     const parsed = parseToolArgs(call.arguments);
     if (!parsed.ok) throw new Error(parsed.error);
     const args = parsed.args;
+    let releaseParentWrite: (() => void) | undefined;
+    if (ctx.subagents && WRITE_TOOLS.has(call.name) && typeof args.path === "string" && args.path.trim()) {
+      try {
+        const target = resolvePath(ctx.workspace, args.path, "write");
+        if (target.inWorkspace) releaseParentWrite = ctx.subagents.trackParentWrite({ sessionId: ctx.sessionId, userId: ctx.userId }, target.shown);
+      } catch (error) {
+        if (error instanceof Error && error.message.includes("独占")) throw error;
+      }
+    }
     const checkpoint = ctx.checkpointFileWrite;
-    const r = await tool.run(args, {
-      sessionId: ctx.sessionId,
-      inputId: ctx.inputId,
-      projectId: session.projectId,
-      userId: ctx.userId,
-      workspace: ctx.workspace,
-      signal: ctx.signal,
-      checkpointFileWrite: checkpoint && ((path, before, expected) => checkpoint(call.id, path, before, expected)),
-      // 绑定 callId：工具里只管调用 onOutput / confirm，不用关心自己是哪次调用
-      onOutput: (delta, stream) => ctx.emit({
-        type: "tool_output",
-        callId: call.id,
-        stream,
-        delta
-      }),
-      confirm: (req) => ctx.confirm(call.id, req),
-      emitArtifact: (a) => {
-        // create_artifact 的网页检查会让模型“改好后用同一个标题重新提交”，以前每次提交都新建一份，
-        // 当前卡片 ID 保持不变，存储层追加正文版本，历史中的旧正文也能追溯。
-        const key = a.workspaceApp ? `app:${a.workspaceApp.id}` : `${a.kind}:${a.title}`;
-        const prev = session.artifacts.find((x) => x.id === ctx.made.get(key));
-        const art: Artifact = prev ? {
-          ...a,
-          id: prev.id,
-          createdAt: prev.createdAt
-        } : {
-          ...a,
-          id: newId("a"),
-          createdAt: Date.now()
-        };
-        art.sourceToolCallId = call.id;
-        // 同时存一份到工作区 output/ 下，在文件夹里也能找到、下载（和 write_document 生成的文件放在一起）
-        if (!art.workspaceApp) art.file = prev?.file ?? saveArtifactFile(ctx.workspace, session.id, art);
-        if (art.file && !prev?.file) art.fileCreated = true;
-        if (art.file && prev?.file && art.kind === "markdown") {
-          const { full } = resolvePath(ctx.workspace, art.file, "write");
-          // 用户勾选过的原文件可能比产出快照更新。这时让模型回读后局部修改。
-          if (existsSync(full) && !replaceWorkspaceFile(full, Buffer.from(prev.content), Buffer.from(art.content))) {
-            throw new Error(`计划文件已更新：${art.file}。请用 read_file 读取并用 edit_file 局部修改。`);
+    let r;
+    try {
+      r = await tool.run(args, {
+        sessionId: ctx.sessionId,
+        inputId: ctx.inputId,
+        projectId: session.projectId,
+        userId: ctx.userId,
+        workspace: ctx.workspace,
+        signal: ctx.signal,
+        checkpointFileWrite: checkpoint && ((path, before, expected) => checkpoint(call.id, path, before, expected)),
+        // 绑定 callId：工具里只管调用 onOutput / confirm，不用关心自己是哪次调用
+        onOutput: (delta, stream) => ctx.emit({
+          type: "tool_output",
+          callId: call.id,
+          stream,
+          delta
+        }),
+        confirm: (req) => ctx.confirm(call.id, req),
+        emitArtifact: (a) => {
+          // create_artifact 的网页检查会让模型“改好后用同一个标题重新提交”，以前每次提交都新建一份，
+          // 当前卡片 ID 保持不变，存储层追加正文版本，历史中的旧正文也能追溯。
+          const key = a.workspaceApp ? `app:${a.workspaceApp.id}` : `${a.kind}:${a.title}`;
+          const prev = session.artifacts.find((x) => x.id === ctx.made.get(key));
+          const art: Artifact = prev ? {
+            ...a,
+            id: prev.id,
+            createdAt: prev.createdAt
+          } : {
+            ...a,
+            id: newId("a"),
+            createdAt: Date.now()
+          };
+          art.sourceToolCallId = call.id;
+          // 同时存一份到工作区 output/ 下，在文件夹里也能找到、下载（和 write_document 生成的文件放在一起）
+          if (!art.workspaceApp) art.file = prev?.file ?? saveArtifactFile(ctx.workspace, session.id, art);
+          if (art.file && !prev?.file) art.fileCreated = true;
+          if (art.file && prev?.file && art.kind === "markdown") {
+            const { full } = resolvePath(ctx.workspace, art.file, "write");
+            // 用户勾选过的原文件可能比产出快照更新。这时让模型回读后局部修改。
+            if (existsSync(full) && !replaceWorkspaceFile(full, Buffer.from(prev.content), Buffer.from(art.content))) {
+              throw new Error(`计划文件已更新：${art.file}。请用 read_file 读取并用 edit_file 局部修改。`);
+            }
+            if (!existsSync(full) && !writeArtifactFile(ctx.workspace, art.file, art.content, true)) art.file = undefined;
+          } else if (art.file && prev?.file && !writeArtifactFile(ctx.workspace, art.file, art.content)) {
+            // 写入失败时仍保存正文，预览和下载可以使用会话快照。
+            art.file = undefined;
           }
-          if (!existsSync(full) && !writeArtifactFile(ctx.workspace, art.file, art.content, true)) art.file = undefined;
-        } else if (art.file && prev?.file && !writeArtifactFile(ctx.workspace, art.file, art.content)) {
-          // 写入失败时仍保存正文，预览和下载可以使用会话快照。
-          art.file = undefined;
-        }
-        if (prev) replaceArtifact(session, art);
-        else addArtifact(session, art);
-        ctx.made.set(key, art.id);
-        ctx.pending.push(art);
-        return art;
-      },
-    });
+          if (prev) replaceArtifact(session, art);
+          else addArtifact(session, art);
+          ctx.made.set(key, art.id);
+          ctx.pending.push(art);
+          return art;
+        },
+      });
+    } finally {
+      releaseParentWrite?.();
+    }
     result.content = r.content;
     result.artifactId = r.artifactId;
     // 工具没抛错也不一定成功：命令退出码 1、超时、用户拒绝都在返回内容里。工具可以自己给 status，没给就按内容判断

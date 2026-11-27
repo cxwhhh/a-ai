@@ -136,6 +136,11 @@ export function SubagentTasks({ sessionId, archived, streaming, enabled }: { ses
             {!!item.result?.writtenPaths?.length && <TraceSection title="已写入文件">
               <ul>{item.result.writtenPaths.map((file) => <li key={file}><code>{file}</code></li>)}</ul>
             </TraceSection>}
+            {!!item.result?.verification?.length && <TraceSection title="执行与验证">
+              <ul>{item.result.verification.map((entry, index) => <li key={`${index}:${entry.command}`}>
+                <code>{entry.command}</code> · {entry.timedOut ? "超时" : `退出码 ${entry.exitCode ?? "未知"}`}
+              </li>)}</ul>
+            </TraceSection>}
             {item.result?.acceptance.length ? <TraceSection title="逐项验收">
               <ul>{item.result.acceptance.map((criterion) => <li key={criterion.criterion}>{criterion.met ? "已确认" : "待核对"} · {criterion.criterion}</li>)}</ul>
             </TraceSection> : null}
@@ -147,7 +152,7 @@ export function SubagentTasks({ sessionId, archived, streaming, enabled }: { ses
             </TraceSection>}
             {active(item) && <button type="button" className="btn ghost" disabled={busy}
               onClick={() => void action(() => api.stopSubagentTask(sessionId, item.id))}>停止任务</button>}
-            {enabled && !active(item) && !archived && item.status !== "completed" && item.assignment?.mode !== "revision" && !item.writeAttempts?.length &&
+            {enabled && !active(item) && !archived && item.status !== "completed" && item.assignment?.mode !== "revision" &&
               !visible.some(({ retryOf }) => retryOf === item.id) && <button type="button" className="btn ghost" disabled={busy}
                 onClick={() => void action(async () => { await api.submitSubagentTask(sessionId, { retryTaskId: item.id }); })}>
                 {item.status === "interrupted" ? "恢复任务" : "重试任务"}

@@ -7,7 +7,7 @@ import { resolvePath } from "../../workspace/src/access";
 import { isSensitivePath, sandboxInfo } from "../../sandbox/src/sandbox";
 import type { TaskContract } from "./task-contract";
 import { SubagentRequestError } from "./task-contract";
-import { WRITE_TOOLS } from "./role-budget";
+import { EXECUTION_TOOLS, WRITE_TOOLS } from "./role-budget";
 
 export const FILE_TOOLS = new Set(["read_file", "read_document", "grep", "glob", "list_files"]);
 // 单 path 的工具可在执行入口预检。多输入和多操作工具需在实现里按读路径检查。
@@ -49,10 +49,11 @@ export function capabilityScope(task: TaskContract, roleTools: readonly string[]
   disabled: Record<string, string>;
   registry?: Pick<ToolRegistry, "toolSpecs">;
   revisionFile?: ReturnType<typeof resolveRevisionFile>;
+  readOnlyFollowup?: boolean;
   priorTools?: string[];
 }) {
-  const { workspace, disabled, registry, revisionFile, priorTools } = options;
-  const implementation = task.role === "implementation";
+  const { workspace, disabled, registry, revisionFile, readOnlyFollowup, priorTools } = options;
+  const implementation = task.role === "implementation" && !readOnlyFollowup;
   if (!implementation && task.writePaths !== undefined) throw new SubagentRequestError("只有 implementation 可声明 writePaths", 403);
   const targets = new Map<string, string>();
   for (const requested of task.writePaths ?? []) {
@@ -63,10 +64,10 @@ export function capabilityScope(task: TaskContract, roleTools: readonly string[]
   }
   const sandbox = implementation && (task.tools === undefined || task.tools.some((name) => name === "run_python" || name === "run_command"))
     ? sandboxInfo().mode : undefined;
-  const canRunPython = sandbox === "docker";
-  const canRunCommand = sandbox === "docker" || sandbox === "seatbelt";
+  const canRunPython = !readOnlyFollowup && sandbox === "docker";
+  const canRunCommand = !readOnlyFollowup && (sandbox === "docker" || sandbox === "seatbelt");
   const parentTools = new Set((registry?.toolSpecs() ?? toolSpecs()).map(({ name }) => name));
-  const readPaths = task.paths ?? (implementation ? task.contextFiles ?? [] : undefined);
+  const readPaths = task.paths ?? (task.role === "implementation" ? task.contextFiles ?? [] : undefined);
   const roots = readPaths?.map((item) => {
     try { return resolvePath(workspace, item, "read").full; }
     catch { throw new SubagentRequestError("子任务的文件范围超出当前工作区或已有授权", 403); }
@@ -80,6 +81,7 @@ export function capabilityScope(task: TaskContract, roleTools: readonly string[]
   const specs = toolSpecs().filter(({ name }) => parentTools.has(name) && !disabled[name] && (revisionFile
     ? name === "read_file" || name === "edit_file"
     : roleTools.includes(name) && (priorTools === undefined || priorTools.includes(name)) &&
+    (!readOnlyFollowup || !EXECUTION_TOOLS.has(name)) &&
     (task.tools === undefined || task.tools.includes(name)) &&
     !(roots?.length === 0 && !targets.size && FILE_READ_TOOLS.has(name)) &&
     (!WRITE_TOOLS.has(name) || targets.size > 0) && (name !== "run_python" || canRunPython) &&
