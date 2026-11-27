@@ -6,7 +6,7 @@ const root = path.resolve(import.meta.dirname, "..");
 const allowedClient = new Set(["apps/web", "packages/ui", "packages/protocol"]);
 const exceptions = new Set([
   "react", "react-dom", "vite", "@vitejs/plugin-react", "tailwind-merge", "react-markdown", "remark-gfm", "highlight.js",
-  "@shadcn/react/questionnaire",
+  "@shadcn/react/questionnaire", "react-aria-components", "@remixicon/react",
   "@base-ui/react/button", "@base-ui/react/collapsible", "@base-ui/react/menu", "@base-ui/react/switch",
 ]);
 const violations: string[] = [];
