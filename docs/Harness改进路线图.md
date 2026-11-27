@@ -201,11 +201,13 @@ M2 与 M3 在共享契约稳定后可以分开推进。优先交付小规模 PPT
 
 #### M2-01 · 本次任务的工作状态（P1）
 
-- [ ] 保存目标、用户最新约束、当前计划、关键发现、已读/已改文件、失败方法、剩余问题和产出引用。
-- [ ] 每步执行后更新；用户补充要求在下一步纳入；约束变化使过时计划或验证明确失效。
-- [ ] 简单问答不强制创建复杂计划；长期偏好记忆与本次工作状态分开。
+- [x] 保存目标、用户最新约束、当前计划、已读/已改文件、失败方法、剩余问题和产出引用（`packages/context-engine/src/working-state.ts` 确定性推导，不依赖额外模型调用或新增表；开放式语义“关键发现”仍由结构化摘要承载）。
+- [x] 跨轮/压缩后自动更新；用户补充要求与 `/任务要求` 纳入上下文，约束变化时使更早的计划和文件验证明确标为过时。
+- [x] 简单问答不注入工作态；长期偏好记忆、显式 `/任务要求` 与本次任务工作态分开。
 
-**涉及：** `run.ts`、`notes.ts`、`shared.ts`、`server/db.ts`；先定义状态结构与恢复规则，再决定是否新增表。
+**进度（2026-11-27）：** 新增 `packages/context-engine/src/working-state.ts`，在 `buildContext()` 中以轮内稳定区间 `[compactStart, stateCutoff)` 推导并注入工作态（避免击穿当轮 Prompt Cache 及避免已压缩原文回流），并由 `working-state.test.mjs` 4 项回归验证。
+
+**涉及：** `packages/context-engine/src/working-state.ts`、`context.ts`、`packages/agent-loop/src/run.ts`、`packages/conversation-trace/src/types.ts`。
 
 #### M2-02 · 长输出保存与上下文压缩（P1）
 
@@ -220,6 +222,10 @@ M2 与 M3 在共享契约稳定后可以分开推进。优先交付小规模 PPT
 **进度（2026-11-26）：** 主、子 Agent 已使用同一个模型上下文配置。子任务的执行和复核已移除 16k 固定上限，默认累计额度随窗口增长。受控模型验证了父子请求轨迹中的窗口一致、子任务可发送超过 16k 的输入、较小模型窗口和显式累计预算仍能约束请求。
 
 **进度（2026-11-27）：** 子 Agent 已支持轮内独立上下文压缩。长步骤触发时按完整工具调用组折叠较早历史并保留最近 2 组与系统/任务前缀，通过程序回检引文过滤幻觉引用，压缩后持久化聊天与原文保持完整，仍可通过 `read_evidence` 按编号回读。最终发送预算和跨会话检索仍待实现。
+
+**进度（2026-11-27 第一阶段）：** 已完成主 Agent 上下文核心改造：（1）`planCompact()`、`lastCompact()` 与 `buildContext()` 支持三层切分（保留最近 2 轮 → 少轮长前文保留最新 1 轮 → 单轮多步/超长输入按完整协议块切分并补回有界用户锚点）；（2）软/硬两道预算水位（大窗口默认 64k、按窗口预留输出空间）、上轮真实 `usage.inputTokens` 保守校准、全量装配后硬预算护栏与 `maxOutputTokens` 收紧；（3）移除正常模式下 `slim()` 的 `slice(-6)` 滑动截断以保护 Prompt Cache，大结果指针直接展示关键字段，将大型委派结果纳入落库卸载并支持 `read_tool_result` 关键词 `query` 回读；（4）`summary.ts` 增加空白归一化与大结果字段回检，`summarize()` 支持带错因纠错重试 1 次。受控模型全量回归 186 项通过。
+
+**进度（2026-11-27 第二阶段）：** 补齐 `slim()` 跳过 `/任务要求` 的 `turnStart` 边界修复与同轮历史自动召回卡片张数锁定；升级历史检索支持单字中文回退匹配、长度归一化排序与共享项目（`share: true`）跨会话检索及执行/工具结果只读回查；将软硬水位、校准系数、预算模式、召回卡片、工作态与压缩次数透出至轨迹「选项」和前端上下文环。全量受控测试 192/192 通过。子 Agent 上下文压缩与 `read_evidence` 由并行分支 `feat/subagent-recovery` 承接，真实模型多步回归对比仍待执行。
 
 **涉及：** `packages/context-engine/src/context.ts`、`packages/agent-loop/src/run.ts`、`packages/storage/src/history-index.ts`、`history.ts`、`tool-results.ts`、`packages/tools/src/history.ts`。
 

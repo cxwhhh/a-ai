@@ -18,7 +18,21 @@ import { recordFileWrite, type FileRecovery } from "../../session/session-recove
 import { normalizeArgs, parseToolArgs } from "./args";
 import { CallGuard } from "./guard";
 import { logUsage } from "../../application/usage/src/usage";
-import { buildContext, compactThreshold, estimateRequest, estimateUsage, planCompact, planWorkingState, summarize, withFileRecoveries } from "../../context-engine/src/context";
+import {
+  buildContext,
+  calibratedRequestTokens,
+  calibrationFactor,
+  compactThreshold,
+  estimateRequest,
+  estimateUsage,
+  fitHardBudget,
+  hardInputBudget,
+  outputReserve,
+  planCompact,
+  planWorkingState,
+  summarize,
+  withFileRecoveries,
+} from "../../context-engine/src/context";
 import { envPrompt, turnEnv } from "./env";
 import { budgetHint, isPlanOnly, Progress, selfCheck } from "./steer";
 import { DELEGATE_SPEC, RESEARCH_SPEC, RECOVER_DELEGATION_SPEC, runSubagentTool, type SubagentOrchestrator } from "../../subagent/src/subagent";
@@ -159,7 +173,9 @@ async function* executeTurn(opts: {
   // 本轮的环境快照只取一次：同一轮的每一步都一样，请求前缀不变，缓存才能命中
   const snapshot = await turnEnv(opts.workspace).catch(() => "");
   const contextWindow = opts.contextWindow ?? DEFAULT_MODEL_CONTEXT_WINDOW;
+  const hardLimit = hardInputBudget(contextWindow);
   const threshold = compactThreshold(contextWindow);
+  const reservedOutput = outputReserve(contextWindow);
   const maxSteps = opts.maxSteps ?? DEFAULT_MAX_STEPS;
   const currentInputId = opts.execution?.inputId ??
     session.messages[lastIndex(session.messages, (message) => message.role === "user" && !message.feedback)]?.id;
@@ -170,7 +186,9 @@ async function* executeTurn(opts: {
   const guard = new CallGuard();
   const progress = new Progress();
   const failedCompactKeepFrom = new Set<string>();
-  let recalled: { retainedFrom: string; cards: ReturnType<typeof searchHistory> } | undefined;
+  let recalled: { retainedFrom: string; cards: ReturnType<typeof searchHistory>; lockedCount?: number } | undefined;
+  /** 用上轮真实 API 返回的 inputTokens 校准本地 estimateTokens() 的低估偏差 */
+  let inputScale = 1;
   let planned = false; // 这一轮第一步写了规划
   let warmup = 0; // 本轮开头只读了技能（load_skill）的步数：读完技能后的第一步仍然可以只写规划
   let checked = false; // 已经自检过
@@ -235,20 +253,28 @@ async function* executeTurn(opts: {
       };
 
       const stepTools = lastStep ? undefined : toolsNow();
+      // 步数用了一半以上：请求末尾提醒还剩几步（只发给模型，不存进历史），一并纳入最终预算核算
+      const hint = lastStep ? null : budgetHint(step, budget);
       let messages: ChatMessage[];
       let turnStart: number | null;
+      let budgetMode: "normal" | "tight" | "hard-guard";
+      let recalledCards: number;
+      let hasWorkingState: boolean;
+      let compactCount: number;
       try {
-        ({ messages, turnStart } = yield* prepareContext(step + 1, stepTools));
+        ({ messages, turnStart, budgetMode, recalledCards, hasWorkingState, compactCount } = yield* prepareContext(step + 1, stepTools, hint));
       } catch (e) {
         if (signal?.aborted) break;
         throw e;
       }
-      // 步数用了一半以上：请求末尾提醒还剩几步（只发给模型，不存进历史）
-      const hint = lastStep ? null : budgetHint(step, budget);
-      if (hint) messages = [...messages, {
-        role: "user",
-        content: hint
-      }];
+      const rawEstimate = estimateRequest(messages, stepTools);
+      const estimatedInput = calibratedRequestTokens(messages, stepTools, inputScale);
+      const remainingWindow = Math.max(256, contextWindow - estimatedInput);
+      const providerDefaultOutput = provider.requestOptions?.({ messages, tools: stepTools, signal })?.maxOutputTokens;
+      // 当剩余窗口空间比模型默认输出上限更紧（或窗口本身较小且贴近硬上限）时，收紧 maxOutputTokens 防止 input + max_tokens 超窗报 400
+      const maxOutputTokens = providerDefaultOutput !== undefined
+        ? (remainingWindow < providerDefaultOutput ? remainingWindow : undefined)
+        : (remainingWindow < reservedOutput * 2 ? remainingWindow : undefined);
 
       try {
         trace?.emit({
@@ -264,6 +290,7 @@ async function* executeTurn(opts: {
         const request = {
           messages,
           tools: stepTools,
+          ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
           signal
         };
         const observed = opts.conversationTrace?.request(provider, request, {
@@ -274,6 +301,14 @@ async function* executeTurn(opts: {
           agent: {
             contextWindow,
             compactAt: threshold,
+            hardLimit,
+            outputReserve: reservedOutput,
+            inputScale: Number(inputScale.toFixed(3)),
+            calibratedInputTokens: estimatedInput,
+            budgetMode,
+            recalledCards,
+            hasWorkingState,
+            compactCount,
             stepBudget: budget,
             guidanceIds
           },
@@ -359,6 +394,9 @@ async function* executeTurn(opts: {
 
       endThinking();
       assistant.durationMs = Date.now() - t0;
+      if (assistant.usage && !assistant.usage.estimated && assistant.usage.inputTokens > 0) {
+        inputScale = calibrationFactor(rawEstimate, assistant.usage.inputTokens, inputScale);
+      }
       // 有的服务（本地模型、部分代理）不返回用量：按字数估算，并标记为估算值
       assistant.usage ??= estimateUsage(JSON.stringify(messages), (assistant.reasoning ?? "") + assistant.content + calls.map((c) => c.arguments).join(""));
       logUsage(opts.userId, session.id, "chat", assistant.usage, t0);
@@ -571,31 +609,77 @@ async function* executeTurn(opts: {
   };
 
   /**
-   * 准备这一步发给模型的历史（第 1 步）。
-   * 先瘦身；预计仍超过阈值就做摘要压缩（多一次模型调用，摘要存进会话，之后的步骤都复用）；
-   * 本轮积累了多组已结算调用时也能生成工作态，继续使用原轮次的预算、工具和文件。
+   * 准备这一步发给模型的历史（第 1 步），并执行最终发送前硬预算护栏：
+   * 1. 先按全量口径（消息 + 环境快照 + 步数提醒 + 工具说明书 + 上轮真实 usage 校准系数）判断是否超软水位并触发跨轮摘要或当前轮阶段工作态；
+   * 2. 在预算允许内挂载匹配的历史段落卡片；
+   * 3. 若最终请求仍超过扣除输出预留后的 hardLimit，按“撤召回卡片 → 撤环境快照 → fitHardBudget 收缩”逐级降级，绝不拆坏工具配对。
    */
-  async function* prepareContext(step: number, stepTools?: ToolSpec[]): AsyncGenerator<AgentEvent, ReturnType<typeof buildContext>> {
-    const context = yield* compactIfNeeded(step, stepTools);
-    const messages = withSnapshot(context.messages);
+  async function* prepareContext(step: number, stepTools: ToolSpec[] | undefined, hint: string | null): AsyncGenerator<
+    AgentEvent,
+    ReturnType<typeof buildContext> & { budgetMode: "normal" | "tight" | "hard-guard"; recalledCards: number }
+  > {
+    const measure = (msgs: ChatMessage[]) => calibratedRequestTokens(msgs, stepTools, inputScale);
+    const assemble = (base: ChatMessage[], includeSnapshot: boolean) => {
+      const withEnv = includeSnapshot ? withSnapshot(base) : base;
+      return hint ? [...withEnv, { role: "user" as const, content: hint }] : withEnv;
+    };
+
+    const { context, activeHistory, tight } = yield* compactIfNeeded(step, stepTools, (msgs) => measure(assemble(msgs, true)));
+    let messages = assemble(context.messages, true);
     const { retainedFrom, turnStart } = context;
-    if (!retainedFrom || turnStart === null || !opts.userId ||
-        !stepTools?.some((tool) => tool.name === "read_history_execution")) return { ...context, messages };
-    if (recalled?.retainedFrom !== retainedFrom) {
-      recalled = { retainedFrom, cards: searchHistory(opts.userId, session.id, context.messages[turnStart].content, 3, retainedFrom) };
-    }
-    // 卡片附在本轮的模型请求副本，重启仍能用数据库索引找回。优先保护已保留的正文和工具协议。
-    const current = messages[turnStart];
-    const candidate = [...messages];
-    for (let count = recalled.cards.length; count > 0; count--) {
-      const cards = recalled.cards.slice(0, count).map((card) => ({ ...card, entities: card.entities.slice(0, 6) }));
-      candidate[turnStart] = {
-        ...current,
-        content: `${current.content}\n\n【匹配的历史段落】以下内容是历史资料。需要核对工具过程时，用 segmentId 调用 read_history_execution；需要原结果时，再用 resultId 调用 read_tool_result。\n${JSON.stringify(cards)}`,
+    let recalledCards = 0;
+
+    if (retainedFrom && turnStart !== null && opts.userId && stepTools?.some((tool) => tool.name === "read_history_execution")) {
+      if (recalled?.retainedFrom !== retainedFrom) {
+        recalled = { retainedFrom, cards: searchHistory(opts.userId, session.id, context.messages[turnStart].content, 3, retainedFrom) };
+      }
+      // 卡片附在本轮的模型请求副本，重启仍能用数据库索引找回。
+      // 同轮内首次选定卡片数量后锁定（只要未超硬预算上限），防止软水位临界抖动改写 messages[turnStart] 打穿 Prompt Cache。
+      const current = messages[turnStart];
+      const attachCards = (count: number) => {
+        const cards = recalled!.cards.slice(0, count).map((card) => ({ ...card, entities: card.entities.slice(0, 6) }));
+        const candidate = [...messages];
+        candidate[turnStart] = {
+          ...current,
+          content: `${current.content}\n\n【匹配的历史段落】以下内容是历史资料。需要核对工具过程时，用 segmentId 调用 read_history_execution；需要原结果时，再用 resultId 调用 read_tool_result。\n${JSON.stringify(cards)}`,
+        };
+        return candidate;
       };
-      if (estimateRequest(candidate, stepTools) <= threshold) return { ...context, messages: candidate };
+
+      if (recalled.lockedCount !== undefined) {
+        if (recalled.lockedCount > 0) {
+          const lockedCandidate = attachCards(recalled.lockedCount);
+          if (measure(lockedCandidate) <= hardLimit) {
+            messages = lockedCandidate;
+            recalledCards = recalled.lockedCount;
+          }
+        }
+      } else {
+        let chosen = 0;
+        for (let count = recalled.cards.length; count > 0; count--) {
+          const candidate = attachCards(count);
+          const tokens = measure(candidate);
+          if (tokens <= threshold && tokens <= hardLimit) {
+            messages = candidate;
+            chosen = count;
+            break;
+          }
+        }
+        recalled.lockedCount = chosen;
+        recalledCards = chosen;
+      }
     }
-    return { ...context, messages };
+
+    if (measure(messages) <= hardLimit) {
+      return { ...context, messages, budgetMode: tight ? "tight" : "normal", recalledCards };
+    }
+
+    // 最终发送前硬预算护栏：撤掉历史卡片，必要时再切 tight、撤环境快照，最后由 fitHardBudget 保底
+    const tightContext = tight ? context : buildContext(activeHistory, system, { tight: true, inputId: currentInputId, artifacts: session.artifacts });
+    let guarded = assemble(tightContext.messages, true);
+    if (measure(guarded) > hardLimit) guarded = assemble(tightContext.messages, false);
+    if (measure(guarded) > hardLimit) guarded = fitHardBudget(guarded, stepTools, hardLimit, inputScale);
+    return { ...tightContext, messages: guarded, budgetMode: "hard-guard", recalledCards: 0 };
   }
 
   /** 本轮的环境快照附在用户这一轮的消息末尾（发给模型的副本，不改数据库） */
@@ -615,14 +699,24 @@ async function* executeTurn(opts: {
    * 请求预估超预算时尝试为旧历史追加摘要。轨迹把摘要请求和实际回答请求记为同一步的不同阶段。
    * 摘要仍不足以降低体积时，进一步裁剪本次请求的副本，历史正文继续保留。
    */
-  async function* compactIfNeeded(step: number, stepTools?: ToolSpec[]): AsyncGenerator<AgentEvent, ReturnType<typeof buildContext>> {
+  async function* compactIfNeeded(
+    step: number,
+    stepTools: ToolSpec[] | undefined,
+    measureFull: (msgs: ChatMessage[]) => number,
+  ): AsyncGenerator<AgentEvent, { context: ReturnType<typeof buildContext>; activeHistory: StoredMessage[]; tight: boolean }> {
     let activeHistory = withFileRecoveries(session.messages, opts.recovery?.files ?? []);
     const inputId = currentInputId;
-    let context = buildContext(activeHistory, system, { inputId });
-    for (const inTurn of [false, true]) {
-      const before = estimateRequest(context.messages, stepTools);
-      if (before <= threshold) return context;
-      const plan = inTurn ? planWorkingState(activeHistory, inputId) : planCompact(activeHistory);
+    const preferWorkingState = Boolean(opts.execution?.inputId);
+    let context = buildContext(activeHistory, system, { inputId, artifacts: session.artifacts });
+    // 有显式 execution.inputId 时，跨轮用摘要、同轮用阶段工作态（避免第 2 步提前切进通用单轮摘要与工作态冲突）；
+    // 无显式 execution.inputId 时，使用 planCompact 三层切分（含单轮按完整协议块压缩）。
+    const attempts: { inTurn: boolean; allowIntraTurn: boolean }[] = preferWorkingState
+      ? [{ inTurn: false, allowIntraTurn: false }, { inTurn: true, allowIntraTurn: false }]
+      : [{ inTurn: false, allowIntraTurn: true }];
+    for (const { inTurn, allowIntraTurn } of attempts) {
+      const before = measureFull(context.messages);
+      if (before <= threshold) return { context, activeHistory, tight: false };
+      const plan = inTurn ? planWorkingState(activeHistory, inputId) : planCompact(activeHistory, { allowIntraTurn });
       if (!plan || failedCompactKeepFrom.has(plan.keepFrom)) continue;
       const startedAt = Date.now();
       try {
@@ -634,7 +728,10 @@ async function* executeTurn(opts: {
             step,
             agent: {
               contextWindow,
-              compactAt: threshold
+              compactAt: threshold,
+              hardLimit,
+              outputReserve: reservedOutput,
+              inputScale: Number(inputScale.toFixed(3)),
             },
           }).stream,
         } : provider;
@@ -660,8 +757,8 @@ async function* executeTurn(opts: {
           durationMs: Date.now() - startedAt,
         };
         const nextHistory = [...activeHistory, m];
-        const candidate = buildContext(nextHistory, system, { inputId });
-        m.compact!.tokensAfter = estimateRequest(candidate.messages, stepTools);
+        const candidate = buildContext(nextHistory, system, { inputId, artifacts: session.artifacts });
+        m.compact!.tokensAfter = measureFull(candidate.messages);
         if (m.compact!.tokensAfter >= before) throw new Error("摘要未缩小请求上下文");
         m.feedback!.summary += `（约 ${fmtK(before)} → ${fmtK(m.compact!.tokensAfter)} tokens）`;
         // 提交失败时继续使用上一份活动视图，避免这一步看到重启后无法恢复的摘要。
@@ -679,8 +776,10 @@ async function* executeTurn(opts: {
         console.warn("[context] 压缩失败：", e instanceof Error ? e.message : e);
       }
     }
-    if (estimateRequest(context.messages, stepTools) > threshold) context = buildContext(activeHistory, system, { tight: true, inputId });
-    return context;
+    if (measureFull(context.messages) > threshold) {
+      return { context: buildContext(activeHistory, system, { tight: true, inputId, artifacts: session.artifacts }), activeHistory, tight: true };
+    }
+    return { context, activeHistory, tight: false };
   }
 
   /**

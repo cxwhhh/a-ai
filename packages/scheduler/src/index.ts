@@ -7,12 +7,22 @@ const encoder = new TextEncoder();
 
 /** 一个运行拥有一个取消信号。订阅关闭只撤销监听，执行权一直保留到最后收尾。 */
 export class ScheduledRun {
+  readonly owner: string;
+  readonly sessionId: string;
+  readonly lease: AgentRun;
+  readonly cancellation: AbortController;
   readonly subscribers = new Set<ReadableStreamDefaultController<Uint8Array>>();
   readonly frames: { id: number; data: Uint8Array }[] = [];
   private sequence = 0;
   private closed = false;
 
-  constructor(readonly owner: string, readonly sessionId: string, readonly lease: AgentRun, readonly cancellation: AbortController) {}
+  // 显式声明字段并在构造函数内赋值，避免 TypeScript 参数属性在 Node --experimental-strip-types 下触发语法错误。
+  constructor(owner: string, sessionId: string, lease: AgentRun, cancellation: AbortController) {
+    this.owner = owner;
+    this.sessionId = sessionId;
+    this.lease = lease;
+    this.cancellation = cancellation;
+  }
 
   get id() { return this.lease.id; }
   get done() { return this.closed; }
