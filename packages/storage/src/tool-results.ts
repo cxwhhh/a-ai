@@ -1,6 +1,7 @@
 import { toolStatus, type StoredMessage } from "../../protocol/src/lib/shared";
 import { estimateTokens } from "../../protocol/src/lib/tokens";
 import { db } from "./db";
+import { resolveReadableSession } from "./history";
 
 const INLINE_TOKENS = 1_200;
 export const TOOL_RESULT_PAGE_CHARS = 2_000;
@@ -83,13 +84,23 @@ export function describeToolResult(name: string, content: string): StoredMessage
 }
 
 /**
- * 以消息 ID 回读当前会话的有效工具结果。摘要覆盖的原消息仍能读取。
+ * 以消息 ID 回读当前会话（或同项目已开启共享的历史会话）的有效工具结果。摘要覆盖的原消息仍能读取。
  * 传入 query 时在原文中按关键词定位命中片段（不区分大小写），避免在大结果里盲翻偏移。
  */
-export function readToolResult(userId: string, sessionId: string, resultId: string, offset: number, limit: number, query?: string) {
+export function readToolResult(
+  userId: string,
+  sessionId: string,
+  resultId: string,
+  offset: number,
+  limit: number,
+  query?: string,
+  targetSessionId?: string,
+) {
+  const readableSessionId = resolveReadableSession(userId, sessionId, targetSessionId);
+  if (!readableSessionId) return null;
   const row = db().prepare(`SELECT m.data FROM messages m JOIN sessions s ON s.id = m.session_id
     WHERE m.id = ? AND s.id = ? AND s.user_id = ? AND m.role = 'tool' AND m.superseded_by IS NULL`)
-    .get(resultId, sessionId, userId);
+    .get(resultId, readableSessionId, userId);
   if (!row) return null;
   const message = JSON.parse(String(row.data)) as StoredMessage;
   const chars = Array.from(message.content);

@@ -178,7 +178,7 @@ async function* executeTurn(opts: {
   const guard = new CallGuard();
   const progress = new Progress();
   let failedCompactKeepFrom: string | undefined;
-  let recalled: { retainedFrom: string; cards: ReturnType<typeof searchHistory> } | undefined;
+  let recalled: { retainedFrom: string; cards: ReturnType<typeof searchHistory>; lockedCount?: number } | undefined;
   /** 用上轮真实 API 返回的 inputTokens 校准本地 estimateTokens() 的低估偏差 */
   let inputScale = 1;
   let planned = false; // 这一轮第一步写了规划
@@ -265,8 +265,12 @@ async function* executeTurn(opts: {
       const hint = lastStep ? null : budgetHint(step, budget);
       let messages: ChatMessage[];
       let turnStart: number | null;
+      let budgetMode: "normal" | "tight" | "hard-guard";
+      let recalledCards: number;
+      let hasWorkingState: boolean;
+      let compactCount: number;
       try {
-        ({ messages, turnStart } = yield* prepareContext(step + 1, stepTools, hint));
+        ({ messages, turnStart, budgetMode, recalledCards, hasWorkingState, compactCount } = yield* prepareContext(step + 1, stepTools, hint));
       } catch (e) {
         if (signal?.aborted) break;
         throw e;
@@ -305,6 +309,14 @@ async function* executeTurn(opts: {
           agent: {
             contextWindow,
             compactAt: threshold,
+            hardLimit,
+            outputReserve: reservedOutput,
+            inputScale: Number(inputScale.toFixed(3)),
+            calibratedInputTokens: estimatedInput,
+            budgetMode,
+            recalledCards,
+            hasWorkingState,
+            compactCount,
             stepBudget: budget,
             guidanceIds
           },
@@ -606,7 +618,10 @@ async function* executeTurn(opts: {
    * 2. 在预算允许内挂载匹配的历史段落卡片；
    * 3. 若最终请求仍超过扣除输出预留后的 hardLimit，按“撤召回卡片 → 撤环境快照 → fitHardBudget 收缩”逐级降级，绝不拆坏工具配对。
    */
-  async function* prepareContext(step: number, stepTools: ToolSpec[] | undefined, hint: string | null): AsyncGenerator<AgentEvent, ReturnType<typeof buildContext>> {
+  async function* prepareContext(step: number, stepTools: ToolSpec[] | undefined, hint: string | null): AsyncGenerator<
+    AgentEvent,
+    ReturnType<typeof buildContext> & { budgetMode: "normal" | "tight" | "hard-guard"; recalledCards: number }
+  > {
     const measure = (msgs: ChatMessage[]) => calibratedRequestTokens(msgs, stepTools, inputScale);
     const assemble = (base: ChatMessage[], includeSnapshot: boolean) => {
       const withEnv = includeSnapshot ? withSnapshot(base) : base;
@@ -616,36 +631,59 @@ async function* executeTurn(opts: {
     const { context, activeHistory, tight } = yield* compactIfNeeded(step, stepTools, (msgs) => measure(assemble(msgs, true)));
     let messages = assemble(context.messages, true);
     const { retainedFrom, turnStart } = context;
+    let recalledCards = 0;
 
     if (retainedFrom && turnStart !== null && opts.userId && stepTools?.some((tool) => tool.name === "read_history_execution")) {
       if (recalled?.retainedFrom !== retainedFrom) {
         recalled = { retainedFrom, cards: searchHistory(opts.userId, session.id, context.messages[turnStart].content, 3, retainedFrom) };
       }
-      // 卡片附在本轮的模型请求副本，重启仍能用数据库索引找回。优先保护已保留的正文和工具协议。
+      // 卡片附在本轮的模型请求副本，重启仍能用数据库索引找回。
+      // 同轮内首次选定卡片数量后锁定（只要未超硬预算上限），防止软水位临界抖动改写 messages[turnStart] 打穿 Prompt Cache。
       const current = messages[turnStart];
-      const candidate = [...messages];
-      for (let count = recalled.cards.length; count > 0; count--) {
-        const cards = recalled.cards.slice(0, count).map((card) => ({ ...card, entities: card.entities.slice(0, 6) }));
+      const attachCards = (count: number) => {
+        const cards = recalled!.cards.slice(0, count).map((card) => ({ ...card, entities: card.entities.slice(0, 6) }));
+        const candidate = [...messages];
         candidate[turnStart] = {
           ...current,
           content: `${current.content}\n\n【匹配的历史段落】以下内容是历史资料。需要核对工具过程时，用 segmentId 调用 read_history_execution；需要原结果时，再用 resultId 调用 read_tool_result。\n${JSON.stringify(cards)}`,
         };
-        const tokens = measure(candidate);
-        if (tokens <= threshold && tokens <= hardLimit) {
-          messages = candidate;
-          break;
+        return candidate;
+      };
+
+      if (recalled.lockedCount !== undefined) {
+        if (recalled.lockedCount > 0) {
+          const lockedCandidate = attachCards(recalled.lockedCount);
+          if (measure(lockedCandidate) <= hardLimit) {
+            messages = lockedCandidate;
+            recalledCards = recalled.lockedCount;
+          }
         }
+      } else {
+        let chosen = 0;
+        for (let count = recalled.cards.length; count > 0; count--) {
+          const candidate = attachCards(count);
+          const tokens = measure(candidate);
+          if (tokens <= threshold && tokens <= hardLimit) {
+            messages = candidate;
+            chosen = count;
+            break;
+          }
+        }
+        recalled.lockedCount = chosen;
+        recalledCards = chosen;
       }
     }
 
-    if (measure(messages) <= hardLimit) return { ...context, messages };
+    if (measure(messages) <= hardLimit) {
+      return { ...context, messages, budgetMode: tight ? "tight" : "normal", recalledCards };
+    }
 
     // 最终发送前硬预算护栏：撤掉历史卡片，必要时再切 tight、撤环境快照，最后由 fitHardBudget 保底
-    const tightContext = tight ? context : buildContext(activeHistory, system, { tight: true, inputId: currentInputId });
+    const tightContext = tight ? context : buildContext(activeHistory, system, { tight: true, inputId: currentInputId, artifacts: session.artifacts });
     let guarded = assemble(tightContext.messages, true);
     if (measure(guarded) > hardLimit) guarded = assemble(tightContext.messages, false);
     if (measure(guarded) > hardLimit) guarded = fitHardBudget(guarded, stepTools, hardLimit, inputScale);
-    return { ...tightContext, messages: guarded };
+    return { ...tightContext, messages: guarded, budgetMode: "hard-guard", recalledCards: 0 };
   }
 
   /** 本轮的环境快照附在用户这一轮的消息末尾（发给模型的副本，不改数据库） */
@@ -673,7 +711,7 @@ async function* executeTurn(opts: {
     const history = withFileRecoveries(session.messages, opts.recovery?.files ?? []);
     let activeHistory = history;
     const inputId = currentInputId;
-    let context = buildContext(history, system, { inputId });
+    let context = buildContext(history, system, { inputId, artifacts: session.artifacts });
     const before = measureFull(context.messages);
     if (before <= threshold) return { context, activeHistory, tight: false };
 
@@ -689,7 +727,10 @@ async function* executeTurn(opts: {
             step,
             agent: {
               contextWindow,
-              compactAt: threshold
+              compactAt: threshold,
+              hardLimit,
+              outputReserve: reservedOutput,
+              inputScale: Number(inputScale.toFixed(3)),
             },
           }).stream,
         } : provider;
@@ -714,7 +755,7 @@ async function* executeTurn(opts: {
           durationMs: Date.now() - startedAt,
         };
         const nextHistory = [...history, m];
-        const candidate = buildContext(nextHistory, system, { inputId });
+        const candidate = buildContext(nextHistory, system, { inputId, artifacts: session.artifacts });
         m.compact!.tokensAfter = measureFull(candidate.messages);
         if (m.compact!.tokensAfter >= before) throw new Error("摘要未缩小请求上下文");
         m.feedback!.summary += `（约 ${fmtK(before)} → ${fmtK(m.compact!.tokensAfter)} tokens）`;
@@ -734,7 +775,7 @@ async function* executeTurn(opts: {
       }
     }
     if (measureFull(context.messages) > threshold) {
-      return { context: buildContext(activeHistory, system, { tight: true, inputId }), activeHistory, tight: true };
+      return { context: buildContext(activeHistory, system, { tight: true, inputId, artifacts: session.artifacts }), activeHistory, tight: true };
     }
     return { context, activeHistory, tight: false };
   }

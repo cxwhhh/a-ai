@@ -53,7 +53,20 @@ export interface RequestSnapshot {
   tools: ToolSpec[];
   temperature?: number;
   provider?: { label: string; options?: ModelRequestOptions };
-  agent?: { contextWindow?: number; compactAt?: number; stepBudget?: number; guidanceIds?: string[] };
+  agent?: {
+    contextWindow?: number;
+    compactAt?: number;
+    hardLimit?: number;
+    outputReserve?: number;
+    inputScale?: number;
+    calibratedInputTokens?: number;
+    budgetMode?: "normal" | "tight" | "hard-guard";
+    recalledCards?: number;
+    hasWorkingState?: boolean;
+    compactCount?: number;
+    stepBudget?: number;
+    guidanceIds?: string[];
+  };
 }
 
 export type ResponseBlock =

@@ -13,6 +13,7 @@ type RequestRecord = Extract<TraceRecordDetail, { kind: "request" }>;
 export const requestTabs = ["请求消息", "助手输出", "选项", "用量", "计时", "提示词", "工具清单"] as const;
 export type RequestTab = typeof requestTabs[number];
 const phaseNames = { chat: "主请求", compact: "历史压缩", research: "子 Agent" };
+const budgetModeNames = { normal: "正常", tight: "紧急收紧", "hard-guard": "硬预算护栏" };
 const errorNames = { auth: "鉴权失败", "rate-limit": "限流", request: "请求错误", service: "提供方服务错误", other: "适配器异常" };
 const tokenValue = (value: number) => `${traceNumber(value)} token`;
 
@@ -45,7 +46,17 @@ export function TraceRequestOptions({ record, preview }: { record: RequestRecord
         { label: "输入 ID", value: <code>{meta.inputId}</code> },
         ...(agent?.stepBudget === undefined ? [] : [{ label: "本轮步数预算", value: agent.stepBudget }]),
         ...(agent?.contextWindow === undefined ? [] : [{ label: "配置上下文", value: tokenValue(agent.contextWindow) }]),
-        ...(agent?.compactAt === undefined ? [] : [{ label: "压缩触发阈值", value: tokenValue(agent.compactAt) }]),
+        ...(agent?.compactAt === undefined ? [] : [{ label: "软压缩水位", value: tokenValue(agent.compactAt) }]),
+        ...(agent?.hardLimit === undefined ? [] : [{ label: "输入硬上限", value: tokenValue(agent.hardLimit) }]),
+        ...(agent?.outputReserve === undefined ? [] : [{ label: "输出预留", value: tokenValue(agent.outputReserve) }]),
+        ...(agent?.calibratedInputTokens === undefined ? [] : [{
+          label: "校准后预估输入",
+          value: `${tokenValue(agent.calibratedInputTokens)}${agent.inputScale !== undefined && agent.inputScale > 1 ? `（×${agent.inputScale}）` : ""}`,
+        }]),
+        ...(agent?.budgetMode === undefined ? [] : [{ label: "上下文模式", value: budgetModeNames[agent.budgetMode] }]),
+        ...(agent?.hasWorkingState === undefined ? [] : [{ label: "任务工作态", value: agent.hasWorkingState ? "已注入" : "未注入" }]),
+        ...(agent?.recalledCards === undefined ? [] : [{ label: "历史召回卡片", value: `${agent.recalledCards} 条` }]),
+        ...(agent?.compactCount === undefined ? [] : [{ label: "累计摘要压缩", value: `${agent.compactCount} 次` }]),
         ...(agent?.guidanceIds?.length ? [{ label: "本步引导", value: agent.guidanceIds.map((id) => <div key={id}><code>{id}</code></div>) }] : []),
         ...(request.temperature === undefined ? [] : [{ label: "请求温度", value: request.temperature }]),
       ]} />

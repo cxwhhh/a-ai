@@ -158,6 +158,7 @@ export function ContextRing(props: {
   const conv = Math.max(0, used - fixed);
 
   // 本会话的调用：对话的每一步 + 上下文压缩（压缩也是一次模型调用，用量记在摘要消息上）
+  const compactCount = props.messages.filter((m) => m.feedback?.kind === "compact").length;
   const total = props.messages.filter((m) => m.usage && (m.role === "assistant" || m.feedback?.kind === "compact")).reduce(
     (t, m) => ({
       calls: t.calls + 1,
@@ -224,6 +225,7 @@ export function ContextRing(props: {
           <div className="pop-sep" />
           <div className="ctx-title">本会话 Token</div>
           <Kv k="模型调用" v={`${total.calls} 次`} />
+          {compactCount > 0 && <Kv k="上下文压缩" v={`${compactCount} 次`} />}
           <Kv k="输入" v={fmtNum(total.input)} sub={total.cache ? `缓存命中 ${fmtNum(total.cache)}（${Math.round((total.cache / Math.max(1, total.input)) * 100)}%）` : undefined} />
           <Kv k="输出" v={fmtNum(total.output)} sub={total.reasoning ? `其中思考 ${fmtNum(total.reasoning)}` : undefined} />
           {last?.usage && <Kv k="最近一次请求" v={`${fmtNum(last.usage.inputTokens)} → ${fmtNum(last.usage.outputTokens)}`} />}

@@ -1,11 +1,12 @@
 import type { ChatMessage, LLMProvider, ToolSpec, Usage } from "../../llm/src/types";
 import { requireModelEnd } from "../../llm/src/stream";
-import type { StoredMessage } from "../../protocol/src/lib/shared";
+import type { Artifact, StoredMessage } from "../../protocol/src/lib/shared";
 import { STATUS_LABEL, toolStatus } from "../../protocol/src/lib/shared";
 import { estimateTokens } from "../../protocol/src/lib/tokens";
 import { FEEDBACK_TAG } from "../../verifier/src/verify";
 import { fileRecoveryMessage, type FileRecovery } from "../../session/session-recovery/src/file-recovery";
 import { SUMMARY_FORMAT, validateSummary } from "./summary";
+import { workingStatePrompt } from "./working-state";
 
 /**
  * 上下文管理：决定“这一步发给模型的历史长什么样”。
@@ -136,25 +137,46 @@ function requirementUpdateNotice(message: StoredMessage) {
 }
 
 /** 组装模型上下文，同时保留轨迹所需的本轮起点。单轮内压缩时自动补回本轮用户锚点，保证首条非系统消息为 user。 */
-export function buildContext(messages: StoredMessage[], system: string, opts: { tight?: boolean; inputId?: string } = {}) {
+export function buildContext(messages: StoredMessage[], system: string, opts: { tight?: boolean; inputId?: string; artifacts?: readonly Artifact[] } = {}) {
   const c = lastCompact(messages);
+  const compactCount = messages.reduce((n, m) => n + (m.feedback?.kind === "compact" ? 1 : 0), 0);
   const requirements = taskRequirementsPrompt(messages);
   const summary = c ? `${COMPACT_TITLE}\n\n${c.message.content}` : "";
-  const sys = [system, summary, requirements].filter(Boolean).join("\n\n");
+  // 确定“轮内稳定”的工作态区间：只归纳 [compactStart, stateCutoff) 中尚未被摘要覆盖的历史轮次，
+  // 既避免把已压缩掉的原始正文重新泄漏回系统提示词，又保持同一轮各步之间的系统前缀完全稳定。
+  let currentTurnIndex = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (isRealUser(messages[i])) {
+      currentTurnIndex = i;
+      break;
+    }
+  }
+  const compactStart = c ? c.keepIndex : 0;
+  const stateCutoff = Math.max(compactStart, currentTurnIndex > 0 ? currentTurnIndex : 0);
+  const workingState = stateCutoff > compactStart
+    ? workingStatePrompt(messages.slice(compactStart), stateCutoff - compactStart, opts.artifacts)
+    : "";
+  const sys = [system, summary, workingState, requirements].filter(Boolean).join("\n\n");
   // 单轮内压缩的保留起点可能是 assistant 或过程反馈，不能直接以 assistant 开头（Anthropic 等接口要求首条为 user）。
   // 补回所属轮次的真实用户锚点，既满足协议，也让轨迹 turnStart 和环境快照继续挂载在本轮输入上。
   const anchor = c && c.turnUserIndex < c.keepIndex ? anchorUser(messages[c.turnUserIndex]) : null;
   const tail = c ? messages.slice(c.keepIndex).filter((m) => m.feedback?.kind !== "compact") : messages.filter((m) => m.feedback?.kind !== "compact");
   const kept = anchor ? [anchor, ...tail] : tail;
   const slimmed = slim(kept, opts.tight);
-  const input = kept.findIndex((message) => message.id === opts.inputId && message.role === "user" && !message.feedback);
+  const input = kept.findIndex((message) => message.id === opts.inputId && isRealUser(message));
   const context: ChatMessage[] = [{
     role: "system",
     content: sys
   }, ...pairCalls(slimmed)];
   const start = input < 0 ? -1 : context.indexOf(slimmed[input]);
   // retainedFrom 交给 history_segments 做历史召回上界，必须对应真实的轮次用户消息 ID。
-  return { messages: context, turnStart: start < 0 ? null : start, retainedFrom: c ? messages[c.turnUserIndex].id : null };
+  return {
+    messages: context,
+    turnStart: start < 0 ? null : start,
+    retainedFrom: c ? messages[c.turnUserIndex].id : null,
+    hasWorkingState: Boolean(workingState),
+    compactCount,
+  };
 }
 
 /**
@@ -343,10 +365,10 @@ function formatToolResultPointer(m: StoredMessage) {
 
 /** 第 1 层：瘦身。只改发给模型的副本，不改数据库里的消息 */
 function slim(messages: StoredMessage[], tight = false): ChatMessage[] {
-  // 当前轮 = 最后一条用户真正发的消息之后（自动反馈、补充想法不算新的一轮）
+  // 当前轮 = 最后一条用户真正发的消息之后（自动反馈、补充想法、/任务要求指令都不算新的一轮）
   let turnStart = 0;
   for (let i = messages.length - 1; i >= 0; i--)
-    if (messages[i].role === "user" && !messages[i].feedback) {
+    if (isRealUser(messages[i])) {
       turnStart = i;
       break;
     }

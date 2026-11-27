@@ -6,7 +6,9 @@ import { data, db, load, runAgent, store } from "../../../tests/fixtures/agent-r
 const { searchHistory, readHistoryExecution } = load("packages/storage/src/history.ts");
 const { migrateHistoryIndex } = load("packages/storage/src/history-index.ts");
 const { searchSavedHistory, readSavedHistoryExecution } = load("packages/tools/src/history.ts");
+const { readSavedToolResult } = load("packages/tools/src/read-tool-result.ts");
 const { readToolResult } = load("packages/storage/src/tool-results.ts");
+const { createProject } = load("packages/application/projects/src/projects.ts");
 
 const append = (s, role, content, more = {}) => {
   const m = { id: store.newId("m"), role, content, createdAt: 1, ...more };
@@ -103,4 +105,66 @@ test("自动召回只发送被摘要覆盖的相关卡片，手动检索排除�
   }
   assert.equal(count, 1);
   assert.equal(store.getSession(s.id, "u").messages.find((m) => m.id === current.id).content, current.content);
+});
+
+test("支持单字中文检索，相关性按段落工具调用数归一化排序", () => {
+  const s = store.createSession("u");
+  const noisy = append(s, "user", "顺便看下税率说明");
+  for (let i = 0; i < 15; i++) {
+    append(s, "assistant", "", { toolCalls: [call(`n${i}`, `misc_${i}.txt`)] });
+    append(s, "tool", "ok", { toolCallId: `n${i}`, status: "ok" });
+  }
+  const focused = append(s, "user", "核对日本消费税税率与关税规则");
+  append(s, "assistant", "", { toolCalls: [call("f1", "tax.csv")] });
+  append(s, "tool", "ok", { toolCallId: "f1", status: "ok" });
+
+  const hits = searchHistory("u", s.id, "税", 5);
+  assert.equal(hits.length, 2);
+  assert.equal(hits[0].segmentId, focused.id);
+  assert.equal(hits[1].segmentId, noisy.id);
+});
+
+test("同项目开启共享后可跨会话检索并回查执行与工具原文，未共享或跨项目跨用户严格拒绝", async () => {
+  db().prepare("INSERT OR IGNORE INTO users(id,username,password_hash,created_at) VALUES (?,?,?,?)").run("other", "other", "x", 1);
+  const sharedProj = createProject("u", { name: "共享项目", description: "", memory: "off", share: true });
+  const privateProj = createProject("u", { name: "私密项目", description: "", memory: "off", share: false });
+  const s1 = store.createSession("u", "预算核算", sharedProj.id);
+  const s2 = store.createSession("u", "复盘汇报", sharedProj.id);
+  const sPriv = store.createSession("u", "私密核算", privateProj.id);
+  const sOtherUser = store.createSession("other", "他人会话");
+
+  const seg1 = append(s1, "user", "核对 FY2026_BUDGET 东京预算表");
+  append(s1, "assistant", "", { toolCalls: [call("c-budget", "fy2026_budget.csv")] });
+  const tr1 = append(s1, "tool", "关键结论：FY2026_BUDGET 总额 880 万", { toolCallId: "c-budget", status: "ok" });
+
+  const segPriv = append(sPriv, "user", "私密 FY2026_BUDGET 数据");
+  append(sPriv, "assistant", "", { toolCalls: [call("c-priv", "secret.csv")] });
+  const trPriv = append(sPriv, "tool", "机密 999 万", { toolCallId: "c-priv", status: "ok" });
+
+  const cur2 = append(s2, "user", "汇总一下 FY2026_BUDGET");
+  const ctx2 = { userId: "u", sessionId: s2.id, inputId: cur2.id };
+
+  // 1. 同项目开启 share：可跨会话检索到 s1，并继续读执行清单与工具原文
+  const res = JSON.parse((await searchSavedHistory.run({ query: "FY2026_BUDGET", scope: "project" }, ctx2)).content);
+  assert.equal(res.scope, "project");
+  assert.equal(res.matches.length, 1);
+  assert.equal(res.matches[0].segmentId, seg1.id);
+  assert.equal(res.matches[0].sessionId, s1.id);
+  assert.equal(res.matches[0].sessionTitle, "预算核算");
+
+  const exec = JSON.parse((await readSavedHistoryExecution.run({ segmentId: seg1.id, sessionId: s1.id }, ctx2)).content);
+  assert.equal(exec.sessionId, s1.id);
+  assert.equal(exec.calls[0].resultId, tr1.id);
+
+  const body = JSON.parse((await readSavedToolResult.run({ resultId: tr1.id, sessionId: s1.id, query: "880" }, ctx2)).content);
+  assert.match(body.content, /880 万/);
+
+  // 2. 跨项目（sPriv 不在同一项目）或未开启 share 的项目严格拒绝
+  assert.equal(readHistoryExecution("u", s2.id, segPriv.id, 0, 5, sPriv.id), null);
+  assert.equal(readToolResult("u", s2.id, trPriv.id, 0, 100, undefined, sPriv.id), null);
+  assert.deepEqual(searchHistory("u", sPriv.id, "FY2026_BUDGET", 5, undefined, "project"), []);
+
+  // 3. 跨用户严格拒绝
+  assert.equal(readHistoryExecution("other", sOtherUser.id, seg1.id, 0, 5, s1.id), null);
+  assert.equal(readToolResult("other", sOtherUser.id, tr1.id, 0, 100, undefined, s1.id), null);
 });
