@@ -2,6 +2,7 @@
 import { useState } from "react";
 import { AuthCard, AuthMediaCarousel } from "./base/auth/auth-card";
 import { LinkButton } from "./base/buttons/link-button";
+import { CoreLogo } from "./CoreLogo";
 import "./LoginForm.css";
 
 const slides = [
@@ -54,6 +55,7 @@ export function LoginForm() {
         username={username}
         onUsernameChange={setUsername}
         centered
+        logo={registering ? undefined : <CoreLogo size={72} morph={false} />}
         confirmPassword
         providers={[]}
         media={<AuthMediaCarousel slides={slides} />}
