@@ -119,8 +119,10 @@ export function readToolResult(
       if (pos + lineLen > offset && line.toLowerCase().includes(needle)) {
         totalMatches++;
         const snippet = line.length > 360 ? line.slice(0, 360) + "…" : line;
-        if (budget > 0) {
-          hits.push({ line: i + 1, offset: pos, text: snippet.slice(0, budget) });
+        // 至少保证每页推进 1 条命中；若本页已有命中且剩余预算装不下整行，改由下一页从该行完整开始，
+        // 避免把命中行拦腰截断（丢失行尾关键词）或让后续短行越序插队。
+        if (nextOffset === null && (hits.length === 0 || snippet.length <= budget)) {
+          hits.push({ line: i + 1, offset: pos, text: snippet.slice(0, Math.max(1, budget)) });
           budget = Math.max(0, budget - snippet.length - 1);
         } else if (nextOffset === null) {
           nextOffset = pos;

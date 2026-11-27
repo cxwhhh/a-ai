@@ -344,12 +344,21 @@ export function fitHardBudget(msgs: ChatMessage[], tools: ToolSpec[] | undefined
   }
   if (fits()) return copy;
 
-  // 3. 极端兜底（例如单条超长用户输入本身就超出整个窗口）：按剩余字符预算裁短最后一条 user 消息，保住头尾
+  // 3. 极端兜底（例如单条超长用户输入本身就超出整个窗口）：按该消息实际字/token 密度计算裁剪量，
+  // 避免纯英文/代码/日志（约 4 字 = 1 token）只裁掉 excessTokens * 1.25 字符后仍远超 hardLimit。
+  const factor = Number.isFinite(scale) ? Math.max(1, scale) : 1;
   for (let i = copy.length - 1; i >= 1 && !fits(); i--) {
     if (copy[i].role !== "user" || copy[i].content.length <= 400) continue;
-    const excessTokens = calibratedRequestTokens(copy, tools, scale) - hardLimit;
-    const targetChars = Math.max(400, copy[i].content.length - Math.ceil(excessTokens * 1.25));
-    copy[i].content = clip(copy[i].content, targetChars);
+    for (let round = 0; round < 4 && !fits() && copy[i].content.length > 400; round++) {
+      const excessTokens = calibratedRequestTokens(copy, tools, scale) - hardLimit;
+      const msgTokens = Math.max(1, estimateTokens(copy[i].content) * factor);
+      const charsPerToken = Math.max(1, copy[i].content.length / msgTokens);
+      const trimChars = Math.max(1, Math.ceil(excessTokens * charsPerToken * 1.15));
+      const targetChars = Math.max(400, copy[i].content.length - trimChars);
+      const clipped = clip(copy[i].content, targetChars);
+      if (clipped.length >= copy[i].content.length) break;
+      copy[i].content = clipped;
+    }
   }
   return copy;
 }
